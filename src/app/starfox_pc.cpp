@@ -4451,13 +4451,17 @@ public:
                     (result_five << 3U) | (result_five >> 2U));
             }
         };
-        // Both smart bombs and death use cartridge colour math. Replace the
-        // scenery first so the later colour operation covers enhanced pixels.
-        const bool environment_before_bomb = (circle.active && circle.radius != 0U
+        // Replace scenery before anything that shades the finished surface.
+        // In particular, the smooth ground uses palette endpoints rather than
+        // incoming RGB: applying it after a ray mask erases the ground shadow.
+        // Keep this aligned with the resident GPU environment -> colour math
+        // -> shadows order, including CPU fallback for a resident ray mask.
+        const bool environment_before_early_effects = (circle.active && circle.radius != 0U
             && (circle.affected_layers & 0x3fU) != 0U)
             || effects.colour_math.active || effects.background_fixed_white_subtract != 0U
-            || effects.environment.cpu_water_scene!=nullptr;
-        if (environment_before_bomb) {
+            || effects.environment.cpu_water_scene!=nullptr
+            || effects.shadow_mask!=nullptr || effects.resident_shadow.buffer!=nullptr;
+        if (environment_before_early_effects) {
             const bool profile_water=effects.environment.cpu_water_scene && std::getenv("STARFOX_TRACE_SCENE_COST");
             const auto water_start=profile_water?std::chrono::steady_clock::now():std::chrono::steady_clock::time_point{};
             double grid_ms=0;
@@ -4910,7 +4914,7 @@ public:
         style_gpu.world_effect=static_cast<unsigned>(world_effect_);
         style_gpu.model_intensity=effect_intensity_; style_gpu.world_intensity=world_effect_intensity_;
         style_gpu.material=unsigned(material_);
-        if (!environment_before_bomb) style_gpu.environment=effects.environment;
+        if (!environment_before_early_effects) style_gpu.environment=effects.environment;
         style_gpu.manipulation=unsigned(manipulation_);style_gpu.manipulation_intensity=manipulation_intensity_;
         style_gpu.persistence_mode=starfox::render::persistence_mode(manipulation_==starfox::render::Effect::off?effect_:manipulation_);
         style_gpu.persistence_models=true;style_gpu.persistence_intensity=manipulation_==starfox::render::Effect::off?effect_intensity_:manipulation_intensity_;
@@ -5014,10 +5018,10 @@ public:
         }
         if (!apply_gpu_effects(framebuffer,style_gpu)) {
             if (!gpu_safe_effects) {
-            if (!environment_before_bomb) starfox::render::apply_environment(effects.environment,framebuffer,rgba_,&presentation_workers_);
+            if (!environment_before_early_effects) starfox::render::apply_environment(effects.environment,framebuffer,rgba_,&presentation_workers_);
             apply_cpu_style();
             } else {
-                if (!environment_before_bomb) starfox::render::apply_environment(effects.environment,framebuffer,rgba_,&presentation_workers_);
+                if (!environment_before_early_effects) starfox::render::apply_environment(effects.environment,framebuffer,rgba_,&presentation_workers_);
             }
         if (bloom_layer_ready_) bloom_base_rgba_ = rgba_;
         bloom_pass_.apply(bloom_, bloom_2d_, framebuffer, rgba_, &presentation_workers_);
