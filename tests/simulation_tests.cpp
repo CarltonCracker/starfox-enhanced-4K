@@ -7287,7 +7287,13 @@ int main(int argc, char** argv) {
         require(boot_game.pregame_selection() == 17U,
                 "3D BLOOM did not follow 2D BLOOM");
         drive_boot({0, starfox::input::down, 0});
-        require(boot_game.pregame_selection()==12U,"retired smoothing must not occupy a menu row");
+        const auto three_d_rows = starfox::simulation::pregame_menu_order(
+            starfox::simulation::PregamePage::three_d);
+        const auto bloom_row = std::find(three_d_rows.begin(), three_d_rows.end(), 17U);
+        require(bloom_row != three_d_rows.end() && std::next(bloom_row) != three_d_rows.end()
+                && boot_game.pregame_selection() == *std::next(bloom_row)
+                && std::find(three_d_rows.begin(), three_d_rows.end(), 19U) == three_d_rows.end(),
+            "retired smoothing must not occupy a menu row");
         boot_game.set_model_smoothing(3);
         require(boot_game.model_smoothing()==0,"legacy settings re-enabled retired smoothing");
         select_menu_action(boot_game, starfox::simulation::PregamePage::three_d, 79U, &boot_audio);

@@ -2172,6 +2172,8 @@ if(STARFOX_BUILD_TESTS)
     add_executable(starfox_hitlist_tests tests/hitlist_tests.cpp)
     add_executable(starfox_level_clear_tests tests/level_clear_tests.cpp)
     target_link_libraries(starfox_level_clear_tests PRIVATE starfox_core)
+    add_executable(starfox_stage_results_feedback_tests tests/stage_results_feedback_tests.cpp)
+    target_link_libraries(starfox_stage_results_feedback_tests PRIVATE starfox_core)
     target_link_libraries(starfox_hitlist_tests PRIVATE starfox_core)
 
     if(STARFOX_BUILD_RUNTIME)
@@ -2530,6 +2532,16 @@ if(STARFOX_BUILD_TESTS)
                     "$<TARGET_FILE:starfox_pc>"
                     "${CMAKE_CURRENT_SOURCE_DIR}/upstream-ultrastarfox/SF.SFC"
                     "${CMAKE_CURRENT_SOURCE_DIR}/upstream-ultrastarfox/SYMBOLS.TXT")
+        add_test(NAME starfox_upstream_stage_results_feedback COMMAND starfox_stage_results_feedback_tests
+            "${CMAKE_CURRENT_SOURCE_DIR}/upstream-ultrastarfox/SF.SFC"
+            "${CMAKE_CURRENT_SOURCE_DIR}/upstream-ultrastarfox/SYMBOLS.TXT")
+        if(TARGET starfox_gpu_model_batches_check)
+            add_test(NAME starfox_gpu_emissive_shadows COMMAND starfox_gpu_model_batches_check
+                "${CMAKE_CURRENT_SOURCE_DIR}/upstream-ultrastarfox/SF.SFC"
+                "${CMAKE_CURRENT_SOURCE_DIR}/upstream-ultrastarfox/SYMBOLS.TXT" --emissive-shadows)
+            set_tests_properties(starfox_gpu_emissive_shadows PROPERTIES
+                RUN_SERIAL TRUE TIMEOUT 120 LABELS native_gpu)
+        endif()
             set_tests_properties(starfox_isolated_effects PROPERTIES TIMEOUT 240)
         endif()
         add_test(
