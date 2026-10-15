@@ -42,6 +42,7 @@ extern "C" void StarfoxPS5_HideSplashScreen(void);
 #include "starfox/render/background_renderer.hpp"
 #include "starfox/render/pixel_filter.hpp"
 #include "starfox/render/display_aspect.hpp"
+#include "starfox/app/display_guide.hpp"
 #include "starfox/render/row_workers.hpp"
 #include "starfox/render/dust_renderer.hpp"
 #include "starfox/render/shadow_mask.hpp"
@@ -11256,7 +11257,11 @@ int main(int argc, char** argv) {
                     draw_centred("A BIND  Y DEFAULT  B DONE", 207, 13U);
                 } else {
                     if (game.pregame_page() == starfox::simulation::PregamePage::main) {
-                        draw_centred("STAR FOX ENHANCED", 5, 14U);
+                        const bool display_guide = starfox::app::display_guide_visible(
+                            game.pregame_page(), game.pregame_selection());
+                        if (display_guide) starfox::app::draw_display_guide(framebuffer);
+                        draw_centred(display_guide ? "OUTLINE = GAME AREA"
+                            : "STAR FOX ENHANCED", 5, display_guide ? 10U : 14U);
                     }
                     const auto draw_cursor = [&framebuffer, viewport_origin,
                                                   menu_cursor_x](

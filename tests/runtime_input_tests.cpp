@@ -6,6 +6,7 @@
 #include "starfox/app/presentation_capture.hpp"
 #include "starfox/app/gpu_launch_guard.hpp"
 #include "starfox/app/plain_ui_pixels.hpp"
+#include "starfox/app/display_guide.hpp"
 #include "starfox/app/touch_overlay.hpp"
 #include "starfox/input/buttons.hpp"
 #include "starfox/render/effect_types.hpp"
@@ -65,6 +66,43 @@ int main(int argc, char** argv) {
     }
     check_atomic_files();
     check_android_renderer_window();
+    {
+        using starfox::app::display_guide_visible;
+        using starfox::simulation::PregamePage;
+        for (const auto page : {PregamePage::main, PregamePage::options,
+                 PregamePage::two_d, PregamePage::three_d, PregamePage::cheats,
+                 PregamePage::global, PregamePage::stereo}) {
+            for (unsigned selection = 0; selection < 80; ++selection)
+                require(display_guide_visible(page, selection)
+                        == (page == PregamePage::main
+                            && (selection == 3 || selection == 43)),
+                    "Display guide appeared outside the two display controls");
+        }
+        // Preset canvases, an Android-like fitted canvas and scaled preview UI.
+        // Every edge must be visible; no menu glyph/interior may be overwritten.
+        for (const unsigned width : {256U, 358U, 398U, 498U, 523U, 796U}) {
+            for (const unsigned scale : {1U, 2U, 4U}) {
+                starfox::render::Framebuffer frame{width, 224, scale};
+                frame.clear(7);
+                starfox::app::draw_display_guide(frame);
+                for (unsigned y = 0; y < frame.stored_height(); ++y) {
+                    for (unsigned x = 0; x < frame.stored_width(); ++x) {
+                        const bool edge = x / scale == 0 || x / scale == width - 1
+                            || y / scale == 0 || y / scale == 223;
+                        require(frame.get_stored(x, y) == (edge ? 122 : 7),
+                            "Display guide changed menu interior or missed a canvas edge");
+                    }
+                }
+            }
+        }
+        for (const auto extent : {std::array{0U, 224U}, std::array{256U, 0U},
+                 std::array{1U, 1U}}) {
+            starfox::render::Framebuffer frame{extent[0], extent[1]};
+            starfox::app::draw_display_guide(frame);
+            require(frame.pixels().empty() || frame.get(0, 0) == 122,
+                "Display guide failed for a degenerate canvas");
+        }
+    }
     {
         starfox::app::PlainUiPixels cache;
         std::array<std::uint8_t,4> pixels{0,1,2,255};
