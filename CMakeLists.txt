@@ -1885,6 +1885,18 @@ if(STARFOX_BUILD_TESTS)
     # must not be asked to pretend to be another platform at the same time.
     if(NOT CMAKE_CROSSCOMPILING AND NOT WINDOWS_STORE AND NOT ANDROID
         AND NOT IOS AND NOT SWITCH AND NOT VITA AND NOT STARFOX_PS5)
+        foreach(policy IN ITEMS desktop android switch)
+            set(target starfox_audio_playback_policy_${policy}_tests)
+            add_executable(${target} tests/audio_playback_policy_tests.cpp)
+            target_include_directories(${target} PRIVATE include)
+            target_compile_features(${target} PRIVATE cxx_std_20)
+            if(policy STREQUAL android)
+                target_compile_definitions(${target} PRIVATE __ANDROID__=1)
+            elseif(policy STREQUAL switch)
+                target_compile_definitions(${target} PRIVATE __SWITCH__=1)
+            endif()
+            add_test(NAME ${target} COMMAND ${target})
+        endforeach()
         foreach(policy IN ITEMS desktop ios android switch uwp vita ps5)
             set(target starfox_render_scale_policy_${policy}_tests)
             add_executable(${target} tests/render_scale_policy_tests.cpp)
@@ -2222,6 +2234,14 @@ if(STARFOX_BUILD_TESTS)
         add_test(NAME starfox_audio_queue_tests COMMAND starfox_audio_queue_tests)
         set_tests_properties(starfox_audio_queue_tests PROPERTIES
             ENVIRONMENT "SDL_AUDIODRIVER=dummy")
+        if(NOT TARGET starfox_vr_audio_check)
+            # PCM playback has no OpenXR dependency. Exercise the same Quest
+            # host during ordinary desktop tests without a second build tree.
+            add_executable(starfox_vr_audio_check
+                tests/vr_pcm_output_tests.cpp src/vr/pcm_output.cpp)
+            target_link_libraries(starfox_vr_audio_check PRIVATE starfox_core SDL3::SDL3)
+            add_test(NAME starfox_vr_audio_check COMMAND starfox_vr_audio_check)
+        endif()
         set_tests_properties(starfox_runtime_input_tests PROPERTIES
             ENVIRONMENT "SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS=1"
             # Both host variants intentionally exercise the same temporary

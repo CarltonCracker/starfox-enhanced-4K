@@ -25,6 +25,7 @@ int main() try {
     starfox::vr::PcmOutput output;
     std::array<int16_t,3200> samples{};
     require(!output.push(samples));require(output.open());
+    require(output.status().find("callback-frames=")!=std::string::npos);
     require(output.push(samples) && output.queued_bytes()==0);
     require(output.set_active(true));
     for(unsigned i=0;i<100;++i) {

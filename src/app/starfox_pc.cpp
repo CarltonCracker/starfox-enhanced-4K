@@ -1607,12 +1607,7 @@ public:
         SDL_SetHintWithPriority(SDL_HINT_AUDIO_DRIVER, "ps5", SDL_HINT_OVERRIDE);
         SDL_SetHintWithPriority(SDL_HINT_GPU_DRIVER, "vulkan", SDL_HINT_OVERRIDE);
 #endif
-#if defined(__SWITCH__)
-        // AUDOUT owns two device buffers.  Keep each one short enough that
-        // button/fire audio remains perceptually attached to its video frame.
-        static_cast<void>(SDL_SetHint(
-            SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, "512"));
-#endif
+        starfox::app::configure_realtime_audio_device();
 #if defined(SDL_PLATFORM_VITA)
         // SDL exposes both Vita touch surfaces as mice by default.  This
         // native-controller target does not draw mobile controls, and the
@@ -6872,6 +6867,10 @@ public:
     AudioOutput(const AudioOutput&) = delete;
     AudioOutput& operator=(const AudioOutput&) = delete;
 
+    [[nodiscard]] std::string playback_description() const {
+        return starfox::app::realtime_audio_device_description(stream_);
+    }
+
     struct PreparedState {
         starfox::audio::Spc700Audio emulator;
         starfox::audio::Msu1Audio msu;
@@ -6918,7 +6917,7 @@ public:
         // previous 100 ms prime was consumed during that 1.5-second pause in
         // game activity, so source audio began with an empty SDL queue and
         // underruns on the first scheduling wobble. A small, non-emulated
-        // lead-in starts the real stream with more than one logic tick of headroom
+        // lead-in starts the real stream with platform-appropriate headroom
         // without advancing the SPC ahead of cartridge state.
         constexpr std::size_t startup_frames =
             starfox::audio::Spc700Audio::sample_rate
@@ -9121,6 +9120,7 @@ int main(int argc, char** argv) {
 
         startup_trace->mark("opening audio device");
         AudioOutput audio{msu1_pack};
+        startup_trace->mark(audio.playback_description());
         startup_trace->mark("audio device ready; priming cartridge audio");
 #if defined(STARFOX_UWP)
         log_uwp_startup("audio device opened");
