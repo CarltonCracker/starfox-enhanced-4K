@@ -34,6 +34,7 @@
 #include "check_dedither.inc"
 #include "check_environment_reflection.inc"
 #include "check_host_bloom_ink.inc"
+#include "check_environment_overlays.inc"
 #endif
 int main() {
     using namespace starfox::render;
@@ -48,6 +49,9 @@ int main() {
     if(!device.Get()) {std::cerr<<SDL_GetError()<<'\n';return 1;}
     std::cout<<"Portable GPU driver: "<<SDL_GetGPUDeviceDriver(device.Get())<<'\n';
     SdlGpuEffects gpu;
+    try {check_environment_overlays(gpu,device.Get());}
+    catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 118;}
+    if(std::getenv("STARFOX_TEST_ENVIRONMENT_OVERLAYS_ONLY")) return 0;
 #if defined(_WIN32)
     if(std::getenv("STARFOX_TEST_D3D11_SCREEN_REFLECTION_ONLY")) {
         try {
