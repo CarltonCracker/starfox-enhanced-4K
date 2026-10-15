@@ -13,12 +13,13 @@ void PcmOutput::close() noexcept {
 }
 bool PcmOutput::open() {
     close();
+    app::configure_realtime_audio_device();
     if(!SDL_InitSubSystem(SDL_INIT_AUDIO)) {status_=SDL_GetError();return false;}
     initialized_=true;
     const SDL_AudioSpec spec{SDL_AUDIO_S16,2,int(audio::Spc700Audio::sample_rate)};
     stream_=SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK,&spec,nullptr,nullptr);
     if(!stream_) {status_=SDL_GetError();close();return false;}
-    status_="Native PCM playback ready";return true;
+    status_="Native PCM playback ready; "+app::realtime_audio_device_description(stream_);return true;
 }
 bool PcmOutput::set_active(bool active) {
     if(!stream_) {status_="PCM playback is not open";return false;}
