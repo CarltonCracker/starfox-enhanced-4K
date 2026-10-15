@@ -73,6 +73,9 @@ public:
     void end_write_coverage() noexcept {track_coverage_=false;}
     [[nodiscard]] bool tracks_write_coverage() const noexcept {return track_coverage_;}
     [[nodiscard]] std::span<const std::uint8_t> write_coverage() const noexcept {return coverage_;}
+    // Bulk compositors own coverage updates just as they own pixel/tag writes.
+    // Only use this storage while tracks_write_coverage() is true.
+    [[nodiscard]] std::uint8_t* write_coverage_data() noexcept {return coverage_.data();}
     // Bulk pixel writers must mark coverage too; colour comparison cannot
     // detect black or same-colour foreground writes.
     void mark_written(std::size_t first,std::size_t count=1) noexcept {
