@@ -332,11 +332,14 @@ void main(uint3 id:SV_DispatchThreadID) {
     }
     // Emissive colour must erase hidden receiver metadata too. Transparent
     // texels retain the background unmodified, exactly like GpuScene.
-#if !defined(STARFOX_PIXEL_ONLY_RASTER)
     if((painterFlags&2u)!=0 && have_pixel) {
-        packed&=0x9c00ffffu;surface=float4(0,0,1,0);
-    }
+        // Match scene_portable's unfused merge: a light is not a shadow
+        // receiver. Preserve this bit even in the metadata-free pixel path.
+        packed=(packed&0x9c00ffffu)|0x20000000u;
+#if !defined(STARFOX_PIXEL_ONLY_RASTER)
+        surface=float4(0,0,1,0);
 #endif
+    }
     pixels[outputIndex]=packed;
 #if !defined(STARFOX_PIXEL_ONLY_RASTER)
     if(want_surface!=0) surfaces[outputIndex]=surface;

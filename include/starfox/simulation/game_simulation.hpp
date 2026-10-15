@@ -263,6 +263,7 @@ struct StageResultsState {
     std::uint16_t total_percentage{};
     std::array<std::uint8_t, 3> teammate_health{};
     bool visible{};
+    bool credit_bonus{};
 };
 
 struct BriefingState {
@@ -807,6 +808,7 @@ private:
         const input::TickInput& input);
     [[nodiscard]] GameTickResult tick_continue_screen(const input::TickInput& input);
     [[nodiscard]] GameTickResult tick_stage_results(const input::TickInput& input);
+    void advance_retail_stage_tally();
     void finish_stage_results();
     void begin_special_exit(bool fade_to_white);
     void update_special_exit();

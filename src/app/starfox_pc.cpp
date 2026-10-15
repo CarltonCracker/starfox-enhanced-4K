@@ -9106,6 +9106,7 @@ int main(int argc, char** argv) {
                 std::string{"missing game text symbol: "} + name};
         };
         const auto score_text = game_text_symbol("SCORETXT");
+        const auto bonus_text = game_text_symbol("BONUSTXT");
         const auto total_score_text = game_text_symbol("TOTALSCORETXT");
         const auto team_text = game_text_symbol("TEAMTXT");
         const auto teammate_face_positions = game_text_symbol("NAMEGFXPOS");
@@ -14691,17 +14692,19 @@ int main(int argc, char** argv) {
                 && game.experience()
                     != starfox::simulation::Experience::starfox_ex) {
                 text_renderer.draw_game_text(
-                    score_text, 16, 24, superfx_ui);
+                    results.credit_bonus ? bonus_text : score_text, 16, 24, superfx_ui);
                 text_renderer.draw_game_text(
                     total_score_text, 16, 40, superfx_ui);
                 text_renderer.draw_game_text(
                     team_text, 48, 69, superfx_ui);
-                sprite_renderer.draw_completion_bar(results.displayed_percentage, superfx_ui);
-                const auto percentage_text = std::to_string(results.displayed_percentage) + "%";
+                if (!results.credit_bonus) {
+                    sprite_renderer.draw_completion_bar(results.displayed_percentage, superfx_ui);
+                    const auto percentage_text = std::to_string(results.displayed_percentage) + "%";
+                    // Align both values with the right edge of Slippy's frame.
+                    text_renderer.draw_ascii(percentage_text,
+                        208 - text_renderer.measure_ascii(percentage_text), 24, superfx_ui);
+                }
                 const auto total_text = std::to_string(results.total_percentage * 100U);
-                // Align both values with the right edge of Slippy's frame.
-                text_renderer.draw_ascii(percentage_text,
-                    208 - text_renderer.measure_ascii(percentage_text), 24, superfx_ui);
                 text_renderer.draw_ascii(total_text,
                     208 - text_renderer.measure_ascii(total_text), 40, superfx_ui);
                 constexpr std::array<std::int32_t, 3> face_x{16, 96, 176};

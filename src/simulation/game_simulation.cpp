@@ -71,6 +71,8 @@ constexpr std::uint16_t map = 5U;
 constexpr std::uint16_t black_hole_map = 6U;
 constexpr std::uint16_t briefing = 7U;
 constexpr std::uint16_t briefing_short = 8U;
+constexpr std::uint16_t player_down_band = 38U;
+constexpr std::uint16_t player_down_orchestra = 39U;
 constexpr std::uint16_t game_over = 40U;
 constexpr std::uint16_t continue_screen = 41U;
 constexpr std::uint16_t staff_roll = 49U;
@@ -2138,6 +2140,9 @@ StageResultsState GameSimulation::stage_results_state() const noexcept {
         flow_state_ == GameFlowState::stage_results
             && (byte(results_exit_) == 0U
                 || (starfox_ex_cartridge_ && byte(results_exit_) == 2U)),
+        flow_state_ == GameFlowState::stage_results
+            && !starfox_ex_cartridge_
+            && byte(ram_symbol("CLB1")) == 1U,
     };
 }
 
@@ -2416,10 +2421,17 @@ void GameSimulation::stop_music_on_player_death() {
     deferred_msu_track_.reset();
     deferred_msu_frames_=0U;
     if (map_.read_native_byte(background_music_command_)!=0x11U) {
-        request_music(0xf0U);
-        map_.write_native_byte(background_music_count_,1U);
-        background_music_hold_phases_=2U;
+        // The HP0/cockpit path can skip the source startbgm branch. The
+        // immediate cut above must be followed by Player Down, not latched
+        // as another stop which would also cancel the MSU replacement.
+        request_music(0x11U);
     }
+    // PLAYERDEAD_ISTRAT may have selected this cue earlier in this very
+    // transfer. Reassert it after the cleanup stop, otherwise the mixer sees
+    // play -> stop in one batch and the entire death cue is silent (#9).
+    if (!starfox_ex_cartridge_)
+        request_msu_music(map_.read_native_byte(ram_symbol("ORCHORBAND")) == 1U
+            ? msu_track::player_down_orchestra : msu_track::player_down_band, false);
 }
 
 void GameSimulation::service_audio_irq(std::vector<std::uint8_t>& commands) {
@@ -5105,7 +5117,66 @@ void GameSimulation::service_level_exit() {
         }
         return;
     }
+    // The retail tally is host-composited over the translated live TRANSFER.
+    // Keep END_LEVEL_SEQ's counters in cartridge RAM, including its delayed
+    // score-store/checkbonus and credit animation, rather than only advancing
+    // the percentage shown by the host.
+    map_.write_native_word(ram_symbol("CLA1"), 0U);
+    map_.write_native_word(ram_symbol("CLA2"), stage_percentage_);
+    map_.write_native_word(ram_symbol("CLAM"), 0U);
+    map_.write_native_word(ram_symbol("CLB1"), 0U);
+    map_.write_native_word(ram_symbol("CLBM"), previous_total_percentage_);
+    map_.write_native_word(ram_symbol("PLOTX1"), 0U);
+    map_.write_native_byte(ram_symbol("ONECREDSPR"), 0U);
     map_.write_native_word(level_finished_, 0U);
+}
+
+void GameSimulation::advance_retail_stage_tally() {
+    // MAIN.ASM prints the graph/bonus first, then advances CLAM. In
+    // particular, queue the last tally click even when the target is zero;
+    // play the completion cue eighteen source updates later, not immediately.
+    const auto bonus_state = ram_symbol("CLB1");
+    const auto credit_delay = ram_symbol("PLOTX1");
+    auto bonus = map_.read_native_word(bonus_state);
+    if (bonus == 1U) {
+        const auto delay = map_.read_native_word(credit_delay);
+        if (delay != 0U) {
+            map_.write_native_word(credit_delay, delay - 1U);
+            if (delay == 2U) {
+                const auto credits = ram_symbol("CREDITS");
+                map_.write_native_byte(credits, map_.read_native_byte(credits) + 1U);
+                map_.write_native_byte(ram_symbol("ONECREDSPR"), 1U);
+            }
+        }
+    } else if (bonus > 1U) {
+        map_.write_native_word(bonus_state, --bonus);
+        if (bonus == 2U) {
+            queue_sound_effect(0x1aU);
+            map_.write_native_word(credit_delay, 10U);
+        }
+    }
+    const auto count_state = ram_symbol("CLAM");
+    const auto count = map_.read_native_word(count_state);
+    if (count == 0U) {
+        queue_sound_effect(0x12U);
+        displayed_stage_percentage_ = static_cast<std::uint8_t>(
+            std::min<unsigned>(stage_percentage_, displayed_stage_percentage_ + 3U));
+        map_.write_native_word(ram_symbol("CLA1"), displayed_stage_percentage_);
+        if (displayed_stage_percentage_ == stage_percentage_)
+            map_.write_native_word(count_state, 20U);
+    } else if (count > 1U) {
+        map_.write_native_word(count_state, count - 1U);
+        if (count == 3U) {
+            queue_sound_effect(0x11U);
+            const auto pointer = map_.read_native_word(percentage_pointer_);
+            map_.write_native_byte(percentage_buffer_ + pointer, stage_percentage_);
+            map_.write_native_word(percentage_pointer_, pointer + 1U);
+            ex_results_recorded_ = true; // finish_stage_results must not append twice.
+            Wdc65816Registers registers;
+            registers.status = 0x04U; // CHECKBONUS is a near, 16-bit A/X/Y routine.
+            map_.call_native_near_routine(rom_symbol("CHECKBONUS"), registers);
+        }
+    }
 }
 
 GameTickResult GameSimulation::tick_stage_results(const input::TickInput& input) {
@@ -5189,6 +5260,8 @@ GameTickResult GameSimulation::tick_stage_results(const input::TickInput& input)
 }
 
 void GameSimulation::finish_stage_results() {
+    if (!starfox_ex_cartridge_)
+        map_.write_native_byte(ram_symbol("ONECREDSPR"), 0U);
     if (!ex_results_recorded_) {
         const auto pointer = map_.read_native_word(percentage_pointer_);
         map_.write_native_byte(percentage_buffer_ + pointer, stage_percentage_);
@@ -5715,12 +5788,8 @@ GameTickResult GameSimulation::tick(const input::TickInput& input) {
         }
         ++flow_ticks_;
         if (frontend_phase_ != FrontendPhase::stage_results_fade_to_map) {
-            if (displayed_stage_percentage_ < stage_percentage_) {
-                displayed_stage_percentage_ = static_cast<std::uint8_t>(
-                    std::min<std::uint16_t>(stage_percentage_,
-                        static_cast<std::uint16_t>(
-                            displayed_stage_percentage_) + 3U));
-            }
+            if (map_.read_native_byte(results_exit_) == 0U)
+                advance_retail_stage_tally();
             const auto exit_signal = map_.read_native_byte(results_exit_);
             if (exit_signal != 0U && exit_signal != 2U) {
                 // END_LEVEL_SEQ is driven by CLB2 from the active map script,

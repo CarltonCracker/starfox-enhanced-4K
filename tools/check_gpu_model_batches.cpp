@@ -9,15 +9,19 @@
 // splits (emissive model, surface-metadata change, small arena).
 #include "starfox/render/gpu_scene.hpp"
 #include "starfox/render/gpu_scene_counters.hpp"
+#include "starfox/render/gpu_composite.hpp"
+#include "starfox/render/sdl_gpu_effects.hpp"
 #include "starfox/assets/shape_decoder.hpp"
 #include <SDL3/SDL.h>
 #include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <optional>
 #include <iostream>
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -74,7 +78,9 @@ void set_unbatched(bool unbatched) {
 } // namespace
 
 int main(int argc,char** argv) try {
-    if(argc!=3) throw std::runtime_error("usage: starfox_gpu_model_batches_check ROM SYMBOLS");
+    if(argc!=3 && !(argc==4 && std::string_view(argv[3])=="--emissive-shadows"))
+        throw std::runtime_error("usage: starfox_gpu_model_batches_check ROM SYMBOLS [--emissive-shadows]");
+    const bool shadows_only=argc==4;
     const auto rom=starfox::assets::RomImage::load(argv[1]);
     const auto symbols=starfox::assets::SymbolMap::load(argv[2]);
     const starfox::assets::ShapeDecoder decoder(rom,symbols);
@@ -104,7 +110,7 @@ int main(int argc,char** argv) try {
     unsigned cases=0;std::uint64_t bounded_total=0,compact_total=0;
     const char* view_names[]{"flat","banked","near-plane"};
     const char* layout_names[]{"overlap","spread","splits"};
-    for(unsigned scale:{1U,2U,4U,10U}) for(unsigned view=0;view<3;++view) for(unsigned layout=0;layout<3;++layout) {
+    if(!shadows_only) for(unsigned scale:{1U,2U,4U,10U}) for(unsigned view=0;view<3;++view) for(unsigned layout=0;layout<3;++layout) {
         RenderSettings settings;settings.render_scale=scale;
         RenderPose base;base.use_rotation_matrix=true;base.continuous_geometry=base.subpixel_projection=true;
         base.vanish_x=112;base.vanish_y=96;
@@ -156,7 +162,7 @@ int main(int argc,char** argv) try {
     }
     // Compact row kernels own only 128 columns. Wider public-API frames
     // must keep the exact dense/serial fallback, not drop the right edge.
-    {
+    if(!shadows_only) {
         constexpr unsigned width=8256,height=64;
         RenderSettings settings;settings.render_scale=1;
         std::vector<GpuSceneDraw> draws;
@@ -179,10 +185,49 @@ int main(int argc,char** argv) try {
         if(!right) throw std::runtime_error("Wide fallback fixture never drew past compact column 128");
         ++cases;
     }
+    // #6 / PR #19: test final shadow composition, not only equality of the
+    // model rasters. Emissive beams must retain ownership when landing on
+    // either ping-pong target, while ordinary geometry remains shadowed.
+    for(bool metadata:{false,true}) for(bool bounded:{false,true}) for(unsigned preceding:{0U,3U})
+        for(bool emissive:{false,true}) {
+            constexpr unsigned w=224,h=192;
+            RenderSettings settings;
+            RenderPose pose;pose.z=500;pose.vanish_x=w/2;pose.vanish_y=h/2;
+            pose.use_rotation_matrix=pose.continuous_geometry=pose.subpixel_projection=true;
+            pose.rotation_matrix={32767,0,0,0,32767,0,0,0,32767};
+            std::vector<GpuSceneDraw> draws;
+            for(unsigned i=0;i<=preceding;++i) {
+                GpuModelDraw draw{&solids[0],pose,settings,metadata};
+                draw.bounded_raster=bounded;draw.emissive=emissive && i==preceding;
+                draws.emplace_back(draw);
+            }
+            GpuScene scene;
+            const auto model=render(scene,device,1,draws,w,h);
+            Framebuffer frame(w,h);frame.enable_layer_tags(true);
+            std::vector<std::uint8_t> coverage(w*h),mask(w*h,255),rgba;
+            std::array<Rgba8,256> palette;palette.fill({200,200,200,255});palette[0]={0,0,0,255};
+            GpuComposite composite;
+            if(!composite.compose(scene.resident_output(),1,frame,coverage,{},palette))
+                throw std::runtime_error(composite.status());
+            SdlGpuEffects effects;
+            GpuEffectSettings shadow;shadow.shadow_mask=mask;shadow.shadow_width=w;shadow.shadow_height=h;
+            if(!effects.apply_resident(composite.output(),frame,rgba,shadow))
+                throw std::runtime_error(effects.status());
+            unsigned checked{};
+            for(std::size_t i=0;i<model.coverage.size();++i) if(model.coverage[i] && model.pixels[i]) {
+                ++checked;
+                for(unsigned c=0;c<3;++c) if(rgba.at(i*4+c)!=(emissive?200:0))
+                    throw std::runtime_error("Emissive beam/opaque receiver shadow regression: metadata="
+                        +std::to_string(metadata)+" bounded="
+                        +std::to_string(bounded)+" preceding="+std::to_string(preceding)
+                        +" emissive="+std::to_string(emissive)+" actual="+std::to_string(rgba.at(i*4+c)));
+            }
+            if(!checked) throw std::runtime_error("Emissive shadow fixture drew nothing");
+        }
     full_frame.release_device();sequential.release_device();batched.release_device();
     SDL_DestroyGPUDevice(device);SDL_Quit();
     std::cout<<cases<<" model batch cases: full-frame, bounded and batched rasters identical"
         " (colours, layer tags, coverage, surfaces, depth); "<<bounded_total<<" bounded dispatches, "
-        <<compact_total<<" compact tile lists\n";
+        <<compact_total<<" compact tile lists; 16 emissive/opaque shadow cases pass\n";
     return 0;
 } catch(const std::exception& e) {std::cerr<<e.what()<<'\n';return 1;}
