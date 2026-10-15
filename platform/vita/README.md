@@ -24,6 +24,14 @@ The VPK is cross-compiled and its package structure is verified. Boot,
 controller input, audio latency and sustained performance still need a real
 Vita/PlayStation TV test. Start with 1x Render Upscale on this hardware.
 
+The package includes an opaque bubble icon and a complete LiveArea background/
+launch gate. Build validation checks those images, their template references,
+the application title/version, and the SELF header. It does not establish that
+the game boots or resolve a console-specific launch error. The source-only
+`Portable platform builds` workflow (`source_checks_only=true`,
+`source_check_os=vita-package`) tests the same packaging helper with a tiny SDK
+program, without uploading game data or publishing a release.
+
 ## Building
 
 Install [VitaSDK](https://vitasdk.org/), including `zlib` and `libvita2d`, put

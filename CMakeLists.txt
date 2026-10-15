@@ -1587,23 +1587,8 @@ if(STARFOX_BUILD_RUNTIME)
         endif()
     endif()
     if(VITA)
-        if(NOT DEFINED ENV{VITASDK} OR "$ENV{VITASDK}" STREQUAL "")
-            message(FATAL_ERROR "VITASDK must point to an installed VitaSDK")
-        endif()
-        include("$ENV{VITASDK}/share/vita.cmake" REQUIRED)
-        set(STARFOX_VITA_TITLE_ID "SFXE00001" CACHE STRING
-            "Nine-character PS Vita title id")
-        set(STARFOX_VITA_APP_VERSION "00.07" CACHE STRING
-            "Two-component PS Vita application version")
-        # SCE metadata is appended to the executable segment by vita-elf-create.
-        # A separate adjacent read-only segment leaves no room for that data.
-        target_link_options(starfox_pc PRIVATE
-            "-Wl,--defsym=__sce_headroom=0x10000")
-        vita_create_self(eboot.bin starfox_pc)
-        vita_create_vpk(StarFoxEnhanced.vpk
-            "${STARFOX_VITA_TITLE_ID}" eboot.bin
-            VERSION "${STARFOX_VITA_APP_VERSION}"
-            NAME "Star Fox Enhanced")
+        include(cmake/VitaPackage.cmake)
+        starfox_add_vita_package(starfox_pc)
     endif()
 
     if(STARFOX_PS5)
@@ -2510,6 +2495,8 @@ if(STARFOX_BUILD_TESTS)
 
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
+        add_test(NAME starfox_vita_package_tests
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_vita_package.py")
         add_test(NAME starfox_ps5_splash_routes
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ps5_splash_routes.py")
         add_test(NAME starfox_shader_payload_partition_tests

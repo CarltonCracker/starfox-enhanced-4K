@@ -18,9 +18,9 @@ on:
         required: false
         default: false
       source_check_os:
-        description: Select a source-check runner without rebuilding other platforms
+        description: Select source checks without rebuilding or releasing other platforms
         type: choice
-        options: [both, windows, linux]
+        options: [both, windows, linux, vita-package]
         default: both
   push:
     tags:
@@ -31,7 +31,7 @@ permissions:
 
 jobs:
   source-checks:
-    if: ${{ inputs.source_checks_only }}
+    if: ${{ inputs.source_checks_only && inputs.source_check_os != 'vita-package' }}
     name: Source checks (${{ matrix.os }})
     strategy:
       fail-fast: false
@@ -86,6 +86,27 @@ jobs:
           path: build/source-checks/Testing/Temporary/LastTest.log
           if-no-files-found: ignore
           retention-days: 7
+
+  vita-package-check:
+    if: ${{ inputs.source_checks_only && inputs.source_check_os == 'vita-package' }}
+    name: Vita source-only package check
+    runs-on: ubuntu-latest
+    container:
+      options: --user 0:0
+      image: vitasdk/vitasdk:nightly-non-root-20260829@sha256:8c025f249ce33e3c76f92f422099bfb8b01a4e1a1f67db175df53257c2bbc28b
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run asset-free metadata/artwork regressions
+        run: python3 tests/test_vita_package.py
+      - name: Cross-compile SDK probe through the real packaging helper
+        shell: bash
+        run: |
+          cmake -S tests/fixtures/vita_package -B "build/validation/active/vita fixture" -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$VITASDK/share/vita.toolchain.cmake" -DCMAKE_BUILD_TYPE=Release
+          cmake --build "build/validation/active/vita fixture" --target StarFoxEnhanced.vpk-vpk
+          "$VITASDK/bin/arm-vita-eabi-readelf" -h "build/validation/active/vita fixture/vita_package_fixture" | grep -q 'Machine:.*ARM'
+          python3 tools/check_vita_package.py "build/validation/active/vita fixture/StarFoxEnhanced.vpk"
+      # No game runtime, ROM/BIN, executable artifacts, or release is uploaded.
 
   windows-x64:
     if: ${{ !inputs.quest_only && !inputs.source_checks_only }}
@@ -741,8 +762,7 @@ jobs:
         run: |
           vpk="dist/StarFoxEnhanced-vita/StarFoxEnhanced.vpk"
           test -s "${vpk}"
-          cmake -E tar tf "${vpk}" > vita-contents.txt
-          grep -Fxq 'eboot.bin' vita-contents.txt
+          python3 tools/check_vita_package.py "${vpk}"
           cmake -E tar cf \
             StarFoxEnhanced-0.0.8.6-vita.zip \
             --format=zip dist/StarFoxEnhanced-vita

@@ -43,8 +43,7 @@ vita)
     bash tools/build_vita.sh "$CI_PROJECT_DIR"
     vpk=dist/StarFoxEnhanced-vita/StarFoxEnhanced.vpk
     test -s "$vpk"
-    cmake -E tar tf "$vpk" > build/vita-contents.txt
-    grep -Fxq eboot.bin build/vita-contents.txt
+    python3 tools/check_vita_package.py "$vpk"
     cmake -E tar cf "release-out/StarFoxEnhanced-${version}-vita.zip" \
         --format=zip dist/StarFoxEnhanced-vita
     ;;
