@@ -211,13 +211,20 @@ inline float environment_horizon_slope(const std::array<std::int16_t,9>& view) n
 inline std::optional<std::array<float,2>> environment_raster_horizon(
     const simulation::SnesPpuState& p,float source_horizon,unsigned scroll_x) {
     if(p.background_mode!=2 || !p.bg2_vertical_offsets_enabled || p.tunnel_scene) return std::nullopt;
+    const float period=float(((p.bg2_screen_size&2)?64:32)*(p.bg2_tile_size_16?16:8));
     double sx=0,sy=0,sxx=0,sxy=0,n=0;float previous=0;
     for(unsigned i=0;i<32;++i) {
         const unsigned at=(0x2fa0+i)*2;
         const unsigned word=p.vram[at]|(unsigned(p.vram[at+1])<<8);
         if(!(word&0x4000)) continue;
-        float y=float(word&511);
-        if(n) y=previous+std::remainder(y-previous,512.f);
+        float y=float(word&(unsigned(period)-1U));
+        if(n) {
+            // Use the native background fitter's atlas period and tie rule,
+            // including 8px atlases and vertically doubled tilemaps.
+            float delta=y-previous;
+            delta-=period*std::floor((delta+period*.5f)/period);
+            y=previous+delta;
+        }
         previous=y;const double x=8.0*(i+1);
         sx+=x;sy+=y;sxx+=x*x;sxy+=x*y;++n;
     }
@@ -225,7 +232,7 @@ inline std::optional<std::array<float,2>> environment_raster_horizon(
     const double d=n*sxx-sx*sx;
     const double slope=d?(n*sxy-sx*sy)/d:0;
     const double center=(sy-slope*sx)/n+slope*(128+(scroll_x&7));
-    const float offset=float(center+512*std::round((source_horizon-112-center)/512));
+    const float offset=float(center+period*std::round((source_horizon-112-center)/period));
     return std::array<float,2>{source_horizon-offset,float(-slope)};
 }
 // Independent from model materials: these decorate authored landscape fills.

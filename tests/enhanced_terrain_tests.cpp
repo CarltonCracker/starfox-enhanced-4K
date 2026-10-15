@@ -4,11 +4,19 @@
 #include "starfox/render/packed_faces.hpp"
 #include "starfox/render/packed_bsp.hpp"
 #include "environment_screen_reflection_cases.hpp"
+#include "background_roll_cases.hpp"
+#include "starfox/render/background_renderer.hpp"
 #include <iostream>
 #include <stdexcept>
 static void require(bool yes,const char* message){if(!yes) throw std::runtime_error(message);}
 int main() {
     using namespace starfox::render;
+    check_wrapped_background_roll([](const auto& p,unsigned width) {
+        Framebuffer frame(width,192);
+        BackgroundRenderer renderer;
+        renderer.draw_bg2(p,3,0,frame,TilePriorityPass::all,int(width)/2-128,true);
+        return frame.pixels();
+    });
     RowWorkers reflection_workers;reflection_workers.set_worker_count(4);
     check_environment_screen_reflection_cases([&](const auto& frame,auto pixels,const auto& effects) {
         auto parallel=pixels;

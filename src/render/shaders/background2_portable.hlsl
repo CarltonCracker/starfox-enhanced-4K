@@ -33,7 +33,11 @@ int truncNumber(Sf64 x) {
 int roundNumber(Sf64 x) {
     bool negative=(x.hi>>31)!=0;x.hi&=0x7fffffff;
     int integer=truncNumber(x);
-    if(!sf_less(sf_sub(x,number(integer)),sf_from_float_bits(asuint(0.5)))) ++integer;
+    Sf64 fraction=sf_sub(x,number(integer)),half=sf_from_float_bits(asuint(0.5));
+    // Ordinary landscape ties round toward +infinity, so a whole atlas
+    // period never changes the sampled row. Retain the old tunnel/star rule.
+    bool up=negative && !(flags&416u)?sf_less(half,fraction):!sf_less(fraction,half);
+    if(up) ++integer;
     return negative?-integer:integer;
 }
 uint tileAt(uint x,uint y) {
@@ -65,10 +69,15 @@ void prepare() {
     int first=-1,last=-1,firstRaw=0,lastRaw=0;
     if(flags&4u) for(int i=0;i<32;++i) {
         uint word=readWord(0x2fa0u+uint(i));if(!(word&0x4000u)) continue;
-        int raw=int(word&8191u);unwrapped=count?unwrapped+difference(raw,prev):raw;
+        // Bank tables can wrap at the atlas height before the 13-bit scroll
+        // register wraps. Fit the same texture-space continuation as the CPU.
+        int period=(flags&416u)?8192:int(tilesHigh*tileEdge);
+        int raw=int(word&uint(period-1));
+        int delta=(raw-prev)&(period-1);if(delta>period/2-1) delta-=period;
+        unwrapped=count?unwrapped+delta:raw;
         Sf64 x=number(i+1),y=number(unwrapped);
         sx=sf_add(sx,x);sy=sf_add(sy,y);sxx=sf_add(sxx,sf_mul(x,x));sxy=sf_add(sxy,sf_mul(x,y));
-        if(!count) {first=i;firstRaw=raw;}last=i;lastRaw=raw;prev=raw;++count;
+        if(!count) {first=i;firstRaw=int(word&8191u);}last=i;lastRaw=int(word&8191u);prev=raw;++count;
     }
     Sf64 slope=number(0),intercept=slope;
     if(count) {
