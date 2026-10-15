@@ -1,46 +1,19 @@
 #include "starfox/vr/source_sprites.hpp"
 #include "starfox/vr/packed_vram.hpp"
-#include "starfox/vr/frame_menu.hpp"
 #include "starfox/vr/game_scene.hpp"
+#include "starfox/vr/presentation.hpp"
 #include "starfox/vr/background_tiles.hpp"
 #include "starfox/render/palette.hpp"
 #include "starfox/render/scaled_text_renderer.hpp"
 #include "starfox/render/sprite_renderer.hpp"
 #include "starfox/render/hud_layout.hpp"
 #include "starfox/simulation/game_simulation.hpp"
+#include "starfox/simulation/math.hpp"
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
+#include <unordered_map>
 namespace starfox::vr {
-std::vector<DrawPacket> layout_a_menu_packets(const assets::RomImage& rom,const assets::SymbolMap& symbols,
-    const FrameMenu& menu,bool srgb) {
-    std::array<uint16_t,256> palette{};palette[1]=0x7fff;palette[2]=0x03ff;
-    std::vector<DrawPacket> rows;
-    const unsigned visible_rows=std::min(6U,menu.row_count());
-    const int footer=67+18*int(visible_rows);
-    rows.push_back(layout_a_surface(true,menu.selection-menu.first_visible_row(),srgb,visible_rows));
-    const auto add=[&](std::string_view text,int y,uint8_t ink) {
-        auto row=source_ui_text_packet(rom,symbols,text,16,y,240,ink,palette,15,srgb,true);
-        row.model=identity_matrix;rows.push_back(std::move(row));
-    };
-    const auto first=menu.first_visible_row();
-    if(menu.language>=1 && menu.language<=4) {
-        const auto add_unicode=[&](std::u32string_view text,int y,uint8_t ink) {
-            auto row=source_unicode_ui_text_packet(rom,symbols,text,16,y,ink,palette,15,srgb);
-            row.model=identity_matrix;rows.push_back(std::move(row));
-        };
-        const auto labels=menu.localized_labels();add_unicode(menu.translate(menu.title()),35,1);
-        for(unsigned i=first;i<labels.size() && i<first+6;++i)
-            add_unicode((i==menu.selection?U"> ":U"  ")+labels[i],67+int(i-first)*18,i==menu.selection?2:1);
-        const auto help=menu.localized_help();add_unicode(help[0],footer+8,1);add_unicode(help[1],footer+26,1);
-    } else {
-        add(menu.title(),35,1);const auto labels=menu.labels();
-        for(unsigned i=first;i<labels.size() && i<first+6;++i)
-            add((i==menu.selection?"> ":"  ")+labels[i],67+int(i-first)*18,i==menu.selection?2:1);
-        add("STICK: MOVE",footer+8,1);add("MENU: SELECT",footer+26,1);
-    }
-    return rows;
-}
 std::vector<DrawPacket> layout_a_instrument_packets(const assets::RomImage& rom,const assets::SymbolMap& symbols,
     const GameSceneSnapshot& scene,render::ScaledTextRenderer& text,bool srgb) {
     const auto layout=layout_a_hud(scene.meters.extended);
@@ -101,11 +74,11 @@ DrawPacket layout_a_surface(bool menu,unsigned selection,bool srgb,unsigned menu
 std::vector<DrawPacket> source_dialogue_packets(const assets::RomImage& rom,
     const assets::SymbolMap& symbols,const simulation::DialogueState& dialogue,
     render::ScaledTextRenderer& layout,const std::array<uint16_t,256>& cgram,
-    unsigned brightness,bool srgb) {
+    unsigned brightness,bool srgb,const render::TextureOverrides* portraits) {
     std::vector<DrawPacket> packets;
     if(!dialogue.active) return packets;
     packets.push_back(source_portrait_packet(rom,symbols,dialogue.portrait_frame,
-        dialogue.alternate_portraits,cgram,brightness,srgb));
+        dialogue.alternate_portraits,cgram,brightness,srgb,portraits));
     if(dialogue.text_visible && (dialogue.text_address&0xffffU)>=0x8000U) {
         const auto translated=layout.translated_game_text_lines(dialogue.text_address,92);
         int y=dialogue.three_lines?153:169;
@@ -148,8 +121,7 @@ DrawPacket source_dialogue_meter_packet(const simulation::DialogueState& dialogu
     rectangle(84,179,84+std::min<unsigned>(dialogue.meter_health,41),187,114);
     return packet;
 }
-DrawPacket source_portrait_packet(const assets::RomImage& rom,const assets::SymbolMap& symbols,
-    uint8_t frame,bool alternate,const std::array<uint16_t,256>& cgram,unsigned brightness,bool srgb) {
+uint32_t source_portrait_address(const assets::SymbolMap& symbols,uint8_t frame,bool alternate) {
     const auto address=[&](const char* name) {
         for(auto value:symbols.find(name))
             if((value&0xffffU)>=0x8000U && ((value>>16)&255U)<0x70U) return value;
@@ -158,12 +130,56 @@ DrawPacket source_portrait_packet(const assets::RomImage& rom,const assets::Symb
     auto base=alternate?address("FACEDATA2"):0U;
     if(!base) base=address("FACEDATA");
     if(!base) throw std::runtime_error("Missing portrait data");
+    return base+uint32_t(frame)*640;
+}
+DrawPacket source_portrait_packet(const assets::RomImage& rom,const assets::SymbolMap& symbols,
+    uint8_t frame,bool alternate,const std::array<uint16_t,256>& cgram,unsigned brightness,bool srgb,
+    const render::TextureOverrides* portraits) {
+    const auto address=source_portrait_address(symbols,frame,alternate);
+    // The same 32x40 placement as the native portrait below, corrected for
+    // SNES pixel aspect.
+    const auto corner_vertex=[](unsigned corner) {
+        const float u=(corner==1 || corner==2)?32.F:0.F,v=corner>=2?40.F:0.F;
+        SceneVertex vertex{};
+        vertex.position[0]=80.F-(32.F-u)*7.F/6.F;vertex.position[1]=152.F+v;
+        vertex.uv[0]=u;vertex.uv[1]=v;
+        return vertex;
+    };
+    if(portraits) {
+        const auto found=portraits->find(address);
+        if(found!=portraits->end() && found->second.width && found->second.height
+            && found->second.rgba.size()==std::size_t(found->second.width)*found->second.height) {
+            // Replacement art through the shader's resident-texture
+            // replacement path: a material header (masks at 9/10, image
+            // offset+1 at 12, packed size at 13) followed by RGBA words.
+            // The screen fade is baked in, as the native palette is.
+            const auto& image=found->second;
+            constexpr uint32_t header=14;
+            DrawPacket packet;
+            auto& texels=packet.geometry.texels;
+            texels.assign(header,0U);
+            texels[9]=31;texels[10]=39;texels[12]=header+1;texels[13]=image.width|(image.height<<16);
+            texels.reserve(header+image.rgba.size());
+            const auto level=std::min(brightness,15U);
+            for(const auto pixel:image.rgba) {
+                uint32_t faded=pixel&0xff000000U;
+                for(unsigned shift:{0U,8U,16U}) faded|=((((pixel>>shift)&255U)*level)/15U)<<shift;
+                texels.push_back(faded);
+            }
+            for(unsigned corner:{0U,1U,2U,0U,2U,3U}) {
+                auto vertex=corner_vertex(corner);
+                vertex.texture[3]=8388608U|4U|(srgb?2U:0U);
+                packet.geometry.vertices.push_back(vertex);
+            }
+            return packet;
+        }
+    }
     // Keep the authored planar tiles packed: the existing background shader
     // decodes their four bitplanes and palette, with no CPU pixel rasterization.
     simulation::SnesPpuState ppu{};
     ppu.main_screen=1;ppu.background_mode=1;ppu.bg1_screen_base=512;
     ppu.cgram=cgram;
-    for(unsigned i=0;i<640;++i) ppu.vram[i]=rom.read8(base+uint32_t(frame)*640+i);
+    for(unsigned i=0;i<640;++i) ppu.vram[i]=rom.read8(address+i);
     for(unsigned x=0;x<4;++x) for(unsigned y=0;y<5;++y) {
         const unsigned offset=1024+(y*32+x)*2;
         const unsigned tile=x*5+y;
@@ -173,14 +189,28 @@ DrawPacket source_portrait_packet(const assets::RomImage& rom,const assets::Symb
     auto packet=background_tile_packet(ppu,BackgroundLayer::bg1,options,srgb);
     packet.geometry.vertices.clear();
     for(bool ink:{false,true}) for(unsigned corner:{0U,1U,2U,0U,2U,3U}) {
-        const float u=(corner==1 || corner==2)?32.F:0.F,v=corner>=2?40.F:0.F;
-        SceneVertex vertex{};
         // Correct SNES pixel aspect without moving the right edge into text.
-        vertex.position[0]=80.F-(32.F-u)*7.F/6.F;vertex.position[1]=152.F+v;
-        vertex.uv[0]=u;vertex.uv[1]=v;
+        auto vertex=corner_vertex(corner);
         // Tile index zero is transparent in the shared shader. Its native
         // portrait meaning is palette 112, supplied by this backing quad.
         vertex.texture[1]=ink?0U:112U;vertex.texture[3]=(ink?8U:32U)|(srgb?2U:0U);
+        packet.geometry.vertices.push_back(vertex);
+    }
+    return packet;
+}
+DrawPacket source_colour_math_packet(const simulation::ColourMathEffectState& effect,bool srgb) {
+    DrawPacket packet;
+    if(!effect.active || effect.affected_layers==0U) return packet;
+    const auto channel=[srgb](std::uint8_t value) {
+        const double v=double(((value&31U)<<3U)|((value&31U)>>2U))/255.;
+        return float(srgb?(v<=.04045?v/12.92:std::pow((v+.055)/1.055,2.4)):v);
+    };
+    const float colour[4]{channel(effect.red),channel(effect.green),channel(effect.blue),1};
+    const float corners[4][2]{{-1,-1},{1,-1},{1,1},{-1,1}};
+    for(unsigned corner:{0U,1U,2U,0U,2U,3U}) {
+        SceneVertex vertex{};
+        vertex.position[0]=corners[corner][0];vertex.position[1]=corners[corner][1];
+        for(unsigned c=0;c<4;++c) vertex.color[c]=vertex.odd_color[c]=colour[c];
         packet.geometry.vertices.push_back(vertex);
     }
     return packet;
@@ -354,6 +384,172 @@ DrawPacket source_ui_text_packet(const assets::RomImage& rom,const assets::Symbo
     }
     return packet;
 }
+namespace {
+struct ReticleObject {int x{},y{};uint8_t attributes{};uint16_t tile{};};
+// The four reticle objects (x, y, attributes) when they use the retail art.
+std::optional<std::array<ReticleObject,4>> reticle_objects(const simulation::SnesPpuState& ppu) {
+    if(!(ppu.main_screen&16)) return {};
+    std::array<ReticleObject,4> found{};std::size_t count=0;
+    for(unsigned object=0;object<128;++object) {
+        const auto low=object*4;
+        const uint16_t tile=uint16_t(ppu.oam[low+2])|uint16_t((ppu.oam[low+3]&1U)<<8);
+        if((tile&0x7fU)!=0x61U) continue;
+        if(ppu.oam[low]==248 && ppu.oam[low+1]==248) continue;
+        if(count==4) return {};
+        const auto high=ppu.oam[512+object/4]>>((object%4)*2);
+        if(high&2) return {}; // Large objects are not the retail 8x8 quarters.
+        int x=ppu.oam[low]+((high&1)<<8);if(x>=256) x-=512;
+        found[count++]={x,int(ppu.oam[low+1]),ppu.oam[low+3],tile};
+        // Retail quarter art, rows top to bottom (bit 7 = left pixel).
+        constexpr std::array<uint8_t,8> retail{0x3f,0x3f,0xff,0xf0,0xe8,0xe4,0xe2,0xe1};
+        const unsigned select=ppu.object_select;
+        unsigned table=(select&7U)*0x2000U;
+        if(tile&256U) table+=(((select>>3)&3U)+1U)*0x1000U;
+        std::array<uint8_t,8> stored{};
+        for(unsigned row=0;row<8;++row) {
+            const auto address=(table*2U+(tile&255U)*32U+row*2U)&0xffffU;
+            stored[row]=ppu.vram[address]|ppu.vram[(address+1)&0xffffU]
+                |ppu.vram[(address+16)&0xffffU]|ppu.vram[(address+17)&0xffffU];
+        }
+        const auto reverse=[](uint8_t v) {uint8_t r=0;for(unsigned b=0;b<8;++b) if(v&(1U<<b)) r|=uint8_t(128U>>b);return r;};
+        bool matched=false;
+        for(unsigned flips=0;flips<4 && !matched;++flips) {
+            matched=true;
+            for(unsigned row=0;row<8 && matched;++row) {
+                auto value=stored[(flips&2)?7-row:row];
+                if(flips&1) value=reverse(value);
+                matched=value==retail[row];
+            }
+            // Fold the stored art's own orientation into the object flips.
+            if(matched) found[count-1].attributes^=uint8_t(((flips&1)?64U:0U)|((flips&2)?128U:0U));
+        }
+        if(!matched) return {};
+    }
+    if(count!=4) return {};
+    return found;
+}
+}
+DrawPacket source_vector_reticle_packet(const simulation::SnesPpuState& previous,
+    const simulation::SnesPpuState& current,double alpha,unsigned brightness,bool srgb) {
+    if(brightness>15) throw std::invalid_argument("Invalid reticle brightness");
+    DrawPacket packet;packet.model={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
+    const auto now=reticle_objects(current);
+    if(!now) return packet;
+    // Rigid group motion between ticks (the cartridge rebuilds it at 20 Hz).
+    double dx=0,dy=0;
+    if(const auto before=reticle_objects(previous); before && alpha>=0 && alpha<1) {
+        const auto origin=[](const std::array<ReticleObject,4>& objects) {
+            int x=objects[0].x,y=objects[0].y;
+            for(const auto& object:objects) {x=std::min(x,object.x);y=std::min(y,object.y);}
+            return std::array<int,2>{x,y};
+        };
+        const auto a=origin(*before),b=origin(*now);
+        if(std::abs(b[0]-a[0])<64 && std::abs(b[1]-a[1])<64) {
+            dx=(a[0]-b[0])*(1.-alpha);dy=(a[1]-b[1])*(1.-alpha);
+        }
+    }
+    for(const auto& object:*now) {
+        // Ink: the art is single-colour; use its first opaque pixel's index.
+        const uint32_t ink=128U+((object.attributes>>1)&7U)*16U+[&] {
+            const unsigned select=current.object_select;
+            unsigned table=(select&7U)*0x2000U;
+            if(object.tile&256U) table+=(((select>>3)&3U)+1U)*0x1000U;
+            const unsigned address=(table*2U+(object.tile&255U)*32U+2U*2U)&0xffffU;
+            for(unsigned bit=0;bit<8;++bit) {
+                unsigned index=0;
+                for(unsigned pair=0;pair<2;++pair) {
+                    if(current.vram[(address+pair*16)&0xffffU]&(128U>>bit)) index|=1U<<(pair*2);
+                    if(current.vram[(address+pair*16+1)&0xffffU]&(128U>>bit)) index|=2U<<(pair*2);
+                }
+                if(index) return index;
+            }
+            return 1U;
+        }();
+        const bool flip_x=(object.attributes&64)!=0,flip_y=(object.attributes&128)!=0;
+        const auto emit=[&](double x,double y) {
+            SceneVertex v{};
+            v.position[0]=float(object.x+dx+(flip_x?8.-x:x));
+            v.position[1]=float(object.y+dy+(flip_y?8.-y:y));
+            v.texture[1]=ink;v.texture[3]=32|(srgb?2:0);packet.geometry.vertices.push_back(v);
+        };
+        const auto triangle=[&](std::array<double,2> a,std::array<double,2> b,std::array<double,2> c) {
+            emit(a[0],a[1]);emit(b[0],b[1]);emit(c[0],c[1]);
+        };
+        const auto rectangle=[&](double x0,double y0,double x1,double y1) {
+            triangle({x0,y0},{x1,y0},{x1,y1});triangle({x0,y0},{x1,y1},{x0,y1});
+        };
+        // Bracket (tile-local pixel edges): top arm, side arm, rounded outer
+        // corner (radius 2 about 2,2) and the inner corner's fillet.
+        rectangle(2,0,8,3);rectangle(0,2,3,8);
+        constexpr double pi=3.14159265358979323846;
+        for(unsigned step=0;step<8;++step) {
+            const double a0=pi+step*(pi/2)/8,a1=pi+(step+1)*(pi/2)/8;
+            triangle({2,2},{2+2*std::cos(a0),2+2*std::sin(a0)},{2+2*std::cos(a1),2+2*std::sin(a1)});
+        }
+        triangle({3,3},{4,3},{3,4});
+        // One-pixel diagonal from pixel (4,4) to pixel (7,7).
+        // Band |y-x| <= 0.707 (one pixel wide across the line) between the
+        // first pixel's corner (x+y=8) and the last pixel's corner (x+y=16).
+        const double h=.3535533905932738;
+        triangle({4-h,4+h},{4+h,4-h},{8+h,8-h});
+        triangle({4-h,4+h},{8+h,8-h},{8-h,8+h});
+    }
+    auto& data=packet.geometry.texels;data.resize(272);data[13]=15-brightness;
+    const auto palette=render::decode_bgr555_palette(current.cgram);
+    for(unsigned i=0;i<256;++i) data[16+i]=palette[i].r|(uint32_t(palette[i].g)<<8)|(uint32_t(palette[i].b)<<16)|0xff000000U;
+    return packet;
+}
+DrawPacket source_cockpit_hud_packet(const simulation::TrigTables& trigonometry,double rotation,
+    uint8_t colour,uint8_t damage_flags,const std::array<uint16_t,256>& cgram,unsigned brightness,bool srgb) {
+    if(brightness>15 || !std::isfinite(rotation)) throw std::invalid_argument("Invalid cockpit HUD options");
+    DrawPacket packet;packet.model={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
+    rotation=std::fmod(rotation,256.);if(rotation<0) rotation+=256.;
+    const auto angle=uint8_t(rotation);const double fraction=rotation-angle;
+    const double sine=std::lerp(double(trigonometry.sin8(angle)),double(trigonometry.sin8(uint8_t(angle+1U))),fraction);
+    const double cosine=std::lerp(double(trigonometry.cos8(angle)),double(trigonometry.cos8(uint8_t(angle+1U))),fraction);
+    // MROTPNTY: (value * trig) / 512 about the fixed 112,96 viewport centre.
+    const auto rotate=[&](double x,double y) {
+        return std::array<double,2>{112.+(x*cosine+y*sine)/512.,96.+(y*cosine-x*sine)/512.};
+    };
+    const uint8_t normal=uint8_t(112U+(colour&15U)),damaged=114U;
+    const auto paint=[&](std::array<double,2> a,std::array<double,2> b,uint8_t ink) {
+        // The desktop plots each Bresenham point as a full source pixel:
+        // sweep a unit square from a to b (convex hull of both squares).
+        std::array<std::array<double,2>,8> points{};
+        for(unsigned i=0;i<4;++i) {
+            const double dx=(i==1 || i==2)?1:0,dy=i>=2?1:0;
+            points[i]={a[0]+dx,a[1]+dy};points[i+4]={b[0]+dx,b[1]+dy};
+        }
+        std::sort(points.begin(),points.end());
+        const auto cross=[](const auto& o,const auto& p,const auto& q) {
+            return (p[0]-o[0])*(q[1]-o[1])-(p[1]-o[1])*(q[0]-o[0]);
+        };
+        std::vector<std::array<double,2>> hull;
+        for(int pass=0;pass<2;++pass) {
+            const auto start=hull.size();
+            for(std::size_t n=0;n<points.size();++n) {
+                const auto& point=points[pass?points.size()-1-n:n];
+                while(hull.size()>=start+2 && cross(hull[hull.size()-2],hull.back(),point)<=0) hull.pop_back();
+                hull.push_back(point);
+            }
+            hull.pop_back();
+        }
+        for(std::size_t i=1;i+1<hull.size();++i) for(const auto& corner:{hull[0],hull[i],hull[i+1]}) {
+            SceneVertex v{};v.position[0]=float(corner[0]);v.position[1]=float(corner[1]);
+            v.texture[1]=ink;v.texture[3]=32|(srgb?2:0);packet.geometry.vertices.push_back(v);
+        }
+    };
+    const auto positive=(damage_flags&2U)?damaged:normal,negative=(damage_flags&1U)?damaged:normal;
+    // Exact MHUD.MC geometry: the vertical pair plus mirrored wing triangles.
+    for(const auto& [x1,y1,x2,y2]:std::array<std::array<double,4>,4>{{{0,200,0,265},{250,0,315,-32},{315,-32,315,32},{250,0,315,32}}}) {
+        paint(rotate(x1,y1),rotate(x2,y2),positive);
+        paint(rotate(-x1,-y1),rotate(-x2,-y2),negative);
+    }
+    auto& data=packet.geometry.texels;data.resize(272);data[13]=15-brightness;
+    const auto palette=render::decode_bgr555_palette(cgram);
+    for(unsigned i=0;i<256;++i) data[16+i]=palette[i].r|(uint32_t(palette[i].g)<<8)|(uint32_t(palette[i].b)<<16)|0xff000000U;
+    return packet;
+}
 DrawPacket source_meter_packet(const simulation::MeterState& meters,
     const std::array<uint16_t,256>& cgram,unsigned brightness,bool srgb,
     unsigned viewport_width,bool anchor_to_edges,const render::HudLayout* layout) {
@@ -380,9 +576,13 @@ DrawPacket source_meter_packet(const simulation::MeterState& meters,
 }
 DrawPacket source_sprite_packet(const simulation::SnesPpuState& ppu,unsigned brightness,
     std::optional<unsigned> priority,bool srgb,const simulation::MeterState* meters,
-    const render::HudLayout* layout,SourceSpritePass pass) {
+    const render::HudLayout* layout,SourceSpritePass pass,const render::SpriteOverrides* overrides) {
     if(brightness>15 || (priority && *priority>3)) throw std::invalid_argument("Invalid source sprite options");
     DrawPacket packet;packet.model={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
+    // Vertices drawn from replacement art; their material headers follow the
+    // packed VRAM once its size is fixed.
+    struct Replaced {std::size_t vertex;const render::TextureOverrideImage* image;uint32_t size;};
+    std::vector<Replaced> replaced;
     if(!(ppu.main_screen&16)) return packet;
     constexpr unsigned sizes[6][2]{{8,16},{8,32},{8,64},{16,32},{16,64},{32,64}};
     const auto selection=std::min(unsigned(ppu.object_select>>5),5U);
@@ -415,10 +615,19 @@ DrawPacket source_sprite_packet(const simulation::SnesPpuState& ppu,unsigned bri
             else if(y_byte>=128 && x<128) element=render::HudElement::comms;
         }
         if((pass==SourceSpritePass::hud && !element) || (pass==SourceSpritePass::world && element)) continue;
+        if(pass==SourceSpritePass::all_but_reticle && reticle) continue;
         const auto offset=layout && element?(*layout)[*element]:render::HudOffset{};
         const int size=int(sizes[selection][(high>>1)&1]);
         const int left=std::max(x,0),right=std::min(x+size,256);
         if(right<=left) continue;
+        const render::TextureOverrideImage* image=nullptr;
+        if(overrides && !overrides->empty()) {
+            const auto found=overrides->find(render::sprite_override_key(
+                render::object_inks(ppu,tile,unsigned(size)),unsigned(size),(attr>>1)&7U));
+            if(found!=overrides->end() && found->second.width && found->second.height
+                && found->second.rgba.size()==std::size_t(found->second.width)*found->second.height)
+                image=&found->second;
+        }
         for(int wrap=0;wrap<2;++wrap) {
             const int y=int(ppu.oam[low+1])+(boss_label?1:0)-wrap*256;
             const int top=std::max(y,0),bottom=std::min(y+size,224);
@@ -429,6 +638,12 @@ DrawPacket source_sprite_packet(const simulation::SnesPpuState& ppu,unsigned bri
                 v.uv[0]=float(corners[corner][0]-x);v.uv[1]=float(corners[corner][1]-y);
                 v.texture[1]=ppu.object_select|((uint32_t(ppu.oam[low+2])|((attr&1U)<<8))<<8);
                 v.texture[2]=attr|(uint32_t(size)<<8);v.texture[3]=16|(srgb?2:0);
+                if(image) {
+                    if(attr&0x40) v.uv[0]=float(size)-v.uv[0];
+                    if(attr&0x80) v.uv[1]=float(size)-v.uv[1];
+                    v.texture[1]=v.texture[2]=0;v.texture[3]=8388608U|4U|(srgb?2U:0U);
+                    replaced.push_back({packet.geometry.vertices.size(),image,uint32_t(size)});
+                }
                 packet.geometry.vertices.push_back(v);
             }
         }
@@ -438,6 +653,27 @@ DrawPacket source_sprite_packet(const simulation::SnesPpuState& ppu,unsigned bri
     const auto palette=render::decode_bgr555_palette(ppu.cgram);
     for(unsigned i=0;i<256;++i) data[16+i]=palette[i].r|(uint32_t(palette[i].g)<<8)|(uint32_t(palette[i].b)<<16)|0xff000000U;
     pack_vram(ppu.vram,std::span<uint32_t,16384>(data.data()+272,16384));
+    // Replacement art through the shader's resident-texture replacement path
+    // (as portraits): a material header (masks at 9/10, image offset+1 at 12,
+    // packed size at 13) then RGBA words with the screen fade baked in. The
+    // key includes the OBJ size, so each image has one size.
+    std::unordered_map<const render::TextureOverrideImage*,uint32_t> headers;
+    for(const auto& item:replaced) {
+        auto [entry,added]=headers.try_emplace(item.image,uint32_t(data.size()));
+        if(added) {
+            const auto header=entry->second;
+            const auto& image=*item.image;
+            data.resize(header+14,0U);
+            data[header+9]=data[header+10]=item.size-1;
+            data[header+12]=header+15;data[header+13]=image.width|(image.height<<16);
+            for(const auto pixel:image.rgba) {
+                uint32_t faded=pixel&0xff000000U;
+                for(unsigned shift:{0U,8U,16U}) faded|=((((pixel>>shift)&255U)*brightness)/15U)<<shift;
+                data.push_back(faded);
+            }
+        }
+        packet.geometry.vertices[item.vertex].texture[0]=entry->second;
+    }
     return packet;
 }
 }

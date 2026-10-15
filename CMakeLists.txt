@@ -618,6 +618,14 @@ if(STARFOX_BUILD_TOOLS)
     add_executable(starfox_shape_coverage src/app/shape_coverage.cpp)
     target_link_libraries(starfox_shape_coverage PRIVATE starfox_core)
 
+    add_executable(starfox_texture_dump src/app/texture_dump.cpp)
+    target_link_libraries(starfox_texture_dump PRIVATE starfox_core)
+    if(MINGW)
+        # Modders run this from Explorer, without the toolchain on PATH.
+        target_link_options(starfox_texture_dump PRIVATE
+            -static -static-libgcc -static-libstdc++)
+    endif()
+
     add_executable(starfox_map_trace src/app/map_trace.cpp)
     target_link_libraries(starfox_map_trace PRIVATE starfox_core)
 
@@ -961,6 +969,7 @@ if(STARFOX_BUILD_RUNTIME)
             target_include_directories(starfox_core BEFORE PRIVATE "${sdl3_SOURCE_DIR}/src/video/directx")
         endif()
     endif()
+    include(cmake/Modern.cmake)
     if(ANDROID)
         # SDLActivity loads libmain.so. SDL_main.h exports SDL_main from the
         # otherwise-identical portable runtime entry point.
@@ -974,6 +983,10 @@ if(STARFOX_BUILD_RUNTIME)
     endif()
     if(WIN32 AND NOT WINDOWS_STORE AND STARFOX_ENABLE_LEIASR)
         target_compile_definitions(starfox_pc PRIVATE STARFOX_LEIASR_HOST=1)
+    endif()
+    if(TARGET starfox_modern)
+        target_link_libraries(starfox_pc PRIVATE starfox_modern)
+        target_compile_definitions(starfox_pc PRIVATE STARFOX_MODERN=1)
     endif()
     if(IOS)
         enable_language(OBJCXX)
@@ -2118,6 +2131,8 @@ if(STARFOX_BUILD_TESTS)
 
     add_executable(starfox_direct_audio_tests tests/direct_audio_tests.cpp)
     target_link_libraries(starfox_direct_audio_tests PRIVATE starfox_core)
+    add_executable(starfox_credits_restart_tests tests/credits_restart_tests.cpp)
+    target_link_libraries(starfox_credits_restart_tests PRIVATE starfox_core)
 
     add_executable(starfox_transition_parity_tests
         tests/transition_parity_tests.cpp)
@@ -2201,6 +2216,9 @@ if(STARFOX_BUILD_TESTS)
             ENVIRONMENT "SDL_AUDIODRIVER=dummy")
         set_tests_properties(starfox_runtime_input_tests PROPERTIES
             ENVIRONMENT "SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS=1"
+            # Both host variants intentionally exercise the same temporary
+            # config filenames; do not let parallel CTest writers collide.
+            RESOURCE_LOCK starfox_runtime_input_fixture_files
             TIMEOUT 10)
         if(WIN32 AND NOT WINDOWS_STORE)
             # Exercise UWP's pre-initialization configuration on the host as
@@ -2211,7 +2229,8 @@ if(STARFOX_BUILD_TESTS)
             target_link_libraries(starfox_uwp_input_tests PRIVATE starfox_core SDL3::SDL3)
             add_test(NAME starfox_uwp_input_tests COMMAND starfox_uwp_input_tests)
             set_tests_properties(starfox_uwp_input_tests PROPERTIES
-                ENVIRONMENT "SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS=1" TIMEOUT 10)
+                ENVIRONMENT "SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS=1"
+                RESOURCE_LOCK starfox_runtime_input_fixture_files TIMEOUT 10)
         endif()
     endif()
 
@@ -2241,6 +2260,10 @@ if(STARFOX_BUILD_TESTS)
                     "${CMAKE_CURRENT_SOURCE_DIR}/upstream-ultrastarfox/SF.SFC"
                     "${CMAKE_CURRENT_SOURCE_DIR}/upstream-ultrastarfox/SYMBOLS.TXT"
         )
+        add_test(NAME starfox_upstream_credits_restart COMMAND starfox_credits_restart_tests
+            "${CMAKE_CURRENT_SOURCE_DIR}/upstream-ultrastarfox/SF.SFC"
+            "${CMAKE_CURRENT_SOURCE_DIR}/upstream-ultrastarfox/SYMBOLS.TXT")
+        set_tests_properties(starfox_upstream_credits_restart PROPERTIES TIMEOUT 600)
         add_test(
             NAME starfox_upstream_transition_parity
             COMMAND starfox_transition_parity_tests
@@ -2390,6 +2413,9 @@ if(STARFOX_BUILD_TESTS)
                     "${STARFOX_EX_ROM_FILE}"
                     "${STARFOX_EX_SYMBOLS_FILE}"
         )
+        add_test(NAME starfox_ex_credits_restart COMMAND starfox_credits_restart_tests
+            "${STARFOX_EX_ROM_FILE}" "${STARFOX_EX_SYMBOLS_FILE}")
+        set_tests_properties(starfox_ex_credits_restart PROPERTIES TIMEOUT 600)
         add_test(
             NAME starfox_ex_transition_parity
             COMMAND starfox_transition_parity_tests
@@ -2445,6 +2471,8 @@ if(STARFOX_BUILD_TESTS)
 
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
+        add_test(NAME starfox_ps5_splash_routes
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ps5_splash_routes.py")
         add_test(NAME starfox_shader_payload_partition_tests
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_shader_payload_partition.py")
         if(WIN32 AND NOT WINDOWS_STORE AND NOT CMAKE_CROSSCOMPILING)

@@ -1,4 +1,7 @@
 #include "starfox/audio/spc700_audio.hpp"
+#if defined(STARFOX_MODERN)
+#include "starfox/modern/modern_runtime.hpp"
+#endif
 #include "starfox/compat/bit_cast.hpp"
 #include "starfox/render/effects.hpp"
 #include "starfox/render/global_enhancements.hpp"
@@ -599,6 +602,13 @@ std::uint32_t effective_render_scale_factor(
     const auto factor = render_scale_factor(game.render_scale());
     return game.gpu_fast() ? factor : std::min<std::uint32_t>(factor,
         static_cast<std::uint32_t>(starfox::simulation::standard_render_scale_count));
+}
+
+// The RENDERER row's value.
+std::string_view renderer_label(const starfox::simulation::GameSimulation& game) noexcept {
+    if(game.renderer_mode()==starfox::simulation::RendererMode::software) return "SOFTWARE";
+    if(game.modern_renderer()) return "MODERN - EXPERIMENTAL, VERY FAST";
+    return game.gpu_fast()?"GPU FAST":"GPU";
 }
 
 // Above 4x, GPU FAST traces ray-traced shadows and reflections at 4x: their
@@ -1721,7 +1731,9 @@ public:
     explicit Window(starfox::simulation::RendererMode renderer_mode,
         DlssHost* dlss=nullptr, bool start_fullscreen=false,
         starfox::render::RendererBackend backend=starfox::render::RendererBackend::automatic,
-        starfox::app::GpuLaunchGuard* gpu_guard=nullptr,bool startup_sr_platform=false):dlss_(dlss),gpu_launch_guard_(gpu_guard),renderer_backend_(backend) {
+        starfox::app::GpuLaunchGuard* gpu_guard=nullptr,bool startup_sr_platform=false,
+        std::uint16_t fixed_width=0,std::uint16_t fixed_height=0):dlss_(dlss),gpu_launch_guard_(gpu_guard),renderer_backend_(backend) {
+        fixed_window_width_=fixed_width;fixed_window_height_=fixed_height;
         sr_backend_request_.update(startup_sr_platform,false,false);
         if(!starfox::render::renderer_backend_supported(renderer_backend_))
             renderer_backend_=starfox::render::RendererBackend::automatic;
@@ -1739,6 +1751,9 @@ public:
 #endif
         // Benchmarks can present at a real output size (e.g. 3840x2160).
         int window_width=1024,window_height=896;
+        if(fixed_window_width_ && fixed_window_height_) {
+            window_width=fixed_window_width_;window_height=fixed_window_height_;
+        }
         if (const auto* size=std::getenv("STARFOX_TEST_WINDOW_SIZE");
             size && std::getenv("STARFOX_TEST_FRAMES")) {
             char* end=nullptr;
@@ -1799,6 +1814,7 @@ public:
         }
     }
     void release_renderer_resources() {
+        if(renderer_release_callback_) renderer_release_callback_();
         release_sr_platform();
         sr_platform_attempted_=false;sr_failure_reported_=false;
         SDL_DestroyTexture(plain_ui_texture_);plain_ui_texture_=nullptr;
@@ -1885,6 +1901,12 @@ public:
     Window& operator=(const Window&) = delete;
 
     [[nodiscard]] SDL_Renderer* renderer() const noexcept { return renderer_; }
+    [[nodiscard]] std::array<std::uint16_t,2> fixed_window_size() const noexcept {
+        return {fixed_window_width_,fixed_window_height_};
+    }
+    void set_renderer_release_callback(std::function<void()> callback) {
+        renderer_release_callback_=std::move(callback);
+    }
     [[nodiscard]] starfox::simulation::RendererMode renderer_mode() const noexcept {return renderer_mode_;}
     [[nodiscard]] starfox::app::GpuFallbackReason take_gpu_fallback() noexcept {
         return std::exchange(gpu_fallback_reason_,starfox::app::GpuFallbackReason::none);
@@ -5242,6 +5264,14 @@ public:
 #endif
         return (SDL_GetWindowFlags(window_) & SDL_WINDOW_FULLSCREEN) != 0U;
     }
+    // Alt+1..4: windowed at that multiple of the native 224-line canvas;
+    // Alt+0 returns to the automatic size.
+    void set_window_multiple(std::uint32_t multiple) noexcept {
+        fixed_window_width_=fixed_window_height_=0;
+        window_multiple_=std::min(multiple,8U);
+        if ((SDL_GetWindowFlags(window_) & SDL_WINDOW_FULLSCREEN) == 0U && texture_width_ && texture_height_)
+            set_windowed_size(texture_width_, texture_height_);
+    }
     void toggle_fullscreen() {
 #if defined(STARFOX_DISPLAYXR)
         if(leia_requested_ || leia_.close_pending()) set_leia_requested(false);
@@ -6322,15 +6352,22 @@ private:
 
     void set_windowed_size(std::uint32_t width, std::uint32_t height) noexcept {
         // Fit follows the user's window, never resize the window to its canvas.
-        if (fit_screen_) return;
+        if (fit_screen_) {SDL_SetWindowAspectRatio(window_,0.F,0.F);return;}
+        if(fixed_window_width_ && fixed_window_height_) {
+            SDL_SetWindowAspectRatio(window_,0.F,0.F);
+            SDL_SetWindowSize(window_,fixed_window_width_,fixed_window_height_);return;
+        }
         const auto raster_width = width / window_scale_;
         const auto raster_height = height / window_scale_;
-        const auto integer_scale = raster_width <= snes_width
+        const auto integer_scale = window_multiple_ ? window_multiple_ : raster_width <= snes_width
             ? 4U : (raster_width <= widescreen_16_9_width ? 3U : 2U);
-        SDL_SetWindowSize(window_,
-            static_cast<int>(starfox::render::presentation_width(
-                raster_width * integer_scale,raster_height * integer_scale)),
-            static_cast<int>(raster_height * integer_scale));
+        const auto window_width=starfox::render::presentation_width(
+            raster_width * integer_scale,raster_height * integer_scale);
+        // Dragging the window keeps the canvas aspect (no stretched frames).
+        SDL_SetWindowAspectRatio(window_,0.F,0.F);
+        SDL_SetWindowSize(window_,static_cast<int>(window_width),static_cast<int>(raster_height * integer_scale));
+        const float aspect=float(window_width)/float(raster_height * integer_scale);
+        SDL_SetWindowAspectRatio(window_,aspect,aspect);
     }
 
     void ensure_bloom_texture(std::uint32_t width,std::uint32_t height) {
@@ -6560,6 +6597,8 @@ private:
     }
 
     std::uint32_t window_scale_{1U};
+    std::uint32_t window_multiple_{};
+    std::uint16_t fixed_window_width_{},fixed_window_height_{};
     SDL_Window* window_{};
     const starfox::app::TouchLayoutConfig* touch_layout_config_{};
     bool touch_editor_active_{};
@@ -6689,6 +6728,7 @@ private:
     bool temporal_enabled_{},temporal_pending_{};
     bool last_present_succeeded_{};
     std::function<void()> present_pacer_;
+    std::function<void()> renderer_release_callback_;
     std::uint64_t present_pacing_ns_{};
     starfox::render::GpuScene late_scene_;
     starfox::render::GpuScene background_scene_;
@@ -7901,7 +7941,8 @@ int main(int argc, char** argv) {
 #endif
         Window window{initial_window_renderer,&dlss,
             !std::getenv("STARFOX_TEST_HIDDEN") && (startup_fullscreen || saved_pregame.fullscreen),
-            static_cast<starfox::render::RendererBackend>(saved_pregame.renderer_backend),gpu_guard,startup_sr_platform};
+            static_cast<starfox::render::RendererBackend>(saved_pregame.renderer_backend),gpu_guard,startup_sr_platform,
+            saved_pregame.window_width,saved_pregame.window_height};
         window.set_startup_trace(&*startup_trace);
         const auto touch_layout_path=starfox::app::touch_layout_settings_path();
         starfox::app::TouchLayoutConfig touch_layout_config{};
@@ -8192,6 +8233,7 @@ int main(int argc, char** argv) {
                 window.leia_requested(),
                 static_cast<std::uint8_t>(game.asteroid_models()),
                 static_cast<std::uint8_t>(game.gpu_renderer()),
+                window.fixed_window_size()[0],window.fixed_window_size()[1],
             };
         };
         {
@@ -8258,7 +8300,13 @@ int main(int argc, char** argv) {
             game.set_renderer_mode(
                 static_cast<starfox::simulation::RendererMode>(
                     saved_pregame.renderer_mode));
-            game.set_gpu_renderer(saved_pregame.gpu_renderer == 1U
+#if defined(STARFOX_MODERN)
+            game.set_modern_available(true);
+#endif
+            // Saved 2 (MODERN) loads as GPU ACCURATE in builds without it.
+            game.set_gpu_renderer(saved_pregame.gpu_renderer == 2U
+                ? starfox::simulation::GpuRenderer::modern
+                : saved_pregame.gpu_renderer == 1U
                 ? starfox::simulation::GpuRenderer::fast
                 : starfox::simulation::GpuRenderer::accurate);
             game.set_msu1_available(msu1_pack.available());
@@ -8281,10 +8329,22 @@ int main(int argc, char** argv) {
                     ? starfox::simulation::RendererMode::software
                     : starfox::simulation::RendererMode::gpu);
                 // GPU and GPU_ACCURATE select the original path.
-                game.set_gpu_renderer(value == "GPU_FAST"
+                game.set_gpu_renderer(value == "MODERN"
+                    ? starfox::simulation::GpuRenderer::modern
+                    : value == "GPU_FAST"
                     ? starfox::simulation::GpuRenderer::fast
                     : starfox::simulation::GpuRenderer::accurate);
             }
+#if defined(STARFOX_MODERN)
+            // The A/B launchers' switch: start in MODERN whatever the saved
+            // renderer. Only once, so the RENDERER row can still change it.
+            static bool modern_forced{};
+            if(const auto* flag=std::getenv("STARFOX_MODERN"); !modern_forced && flag && std::string_view(flag)=="1") {
+                modern_forced=true;
+                game.set_renderer_mode(starfox::simulation::RendererMode::gpu);
+                game.set_gpu_renderer(starfox::simulation::GpuRenderer::modern);
+            }
+#endif
             if (const auto* forced_enhanced = std::getenv(
                     "STARFOX_TEST_ENHANCED")) {
                 game.set_two_d_filter(std::string_view{forced_enhanced} != "0"
@@ -9494,6 +9554,14 @@ int main(int argc, char** argv) {
         game.set_shape_face_counts(&shape_face_counts);
         std::unordered_set<std::uint32_t> invalid_shapes;
         std::uint64_t presented_frames = 0;
+        const auto complete_presentation=[&] {
+#if defined(STARFOX_PS5)
+            // Every successful presenter, including preview-OFF and loading
+            // UI, must uncover VideoOut. The platform retries failed hides.
+            StarfoxPS5_HideSplashScreen();
+#endif
+            ++presented_frames;
+        };
         std::uint64_t source_logic_frames = 0;
         std::uint64_t profile_scene_cuts{};
         std::uint64_t profile_camera_cuts{};
@@ -9639,6 +9707,28 @@ int main(int argc, char** argv) {
             std::chrono::milliseconds{250}};
         live_fps.reset(raster_timestamp, game.presentation_fps());
         starfox::app::MenuSettingsResetHold settings_reset_hold;
+#if defined(STARFOX_MODERN)
+        // MODERN (RENDERER row, or STARFOX_MODERN=1): frames come from the
+        // shared VR scene code on SDL_GPU. Host-drawn screens (the pre-game
+        // menu, host overlays) or any MODERN failure fall back to the
+        // existing renderer (GPU FAST) for that frame. The runtime exists
+        // only while MODERN is selected, so its tick history never goes stale.
+        std::shared_ptr<starfox::modern::ModernRuntime> modern;
+        const auto sync_modern=[&] {
+            if(game.modern_renderer() && !modern) {
+                modern=std::make_shared<starfox::modern::ModernRuntime>(game,rom,symbols);
+                // Window outlives this scene. A weak owner also makes teardown
+                // safe during exceptions and after a cartridge replacement.
+                window.set_renderer_release_callback([owner=std::weak_ptr(modern)] {
+                    if(auto active=owner.lock()) active->release_renderer();
+                });
+            } else if(!game.modern_renderer() && modern) {
+                window.set_renderer_release_callback({});modern.reset();
+            }
+        };
+        sync_modern();
+        bool modern_failure_reported=false;
+#endif
         while (running) {
             if(test_frames && std::getenv("STARFOX_TEST_REVIVAL")
                 && std::getenv("STARFOX_TEST_REVIVAL_FRAME")
@@ -9833,6 +9923,15 @@ int main(int argc, char** argv) {
                     && (event.key.scancode == SDL_SCANCODE_RETURN
                         || event.key.scancode == SDL_SCANCODE_KP_ENTER)
                     && (event.key.mod & SDL_KMOD_ALT) != 0U;
+                if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat
+                    && (event.key.mod & SDL_KMOD_ALT) != 0U
+                    && (event.key.mod & (SDL_KMOD_CTRL | SDL_KMOD_SHIFT)) == 0U
+                    && event.key.scancode >= SDL_SCANCODE_1 && event.key.scancode <= SDL_SCANCODE_4) {
+                    window.set_window_multiple(1U + unsigned(event.key.scancode - SDL_SCANCODE_1));
+                } else if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat
+                    && (event.key.mod & SDL_KMOD_ALT) != 0U && event.key.scancode == SDL_SCANCODE_0) {
+                    window.set_window_multiple(0U);
+                }
                 if (fullscreen_key) {
                     window.toggle_fullscreen();
                     saved_pregame.fullscreen = window.fullscreen();
@@ -10798,6 +10897,10 @@ int main(int argc, char** argv) {
                     }
                     const bool runtime_options_were_open=game.runtime_options_open();
                     const auto tick_result = game.tick(controls);
+#if defined(STARFOX_MODERN)
+                    sync_modern();
+                    if(modern) modern->capture_tick();
+#endif
 #if defined(__ANDROID__)
                     // Do not let the setup toggle re-enter the broken native
                     // GPU path on this device. All other Android GPUs retain
@@ -10972,7 +11075,10 @@ int main(int argc, char** argv) {
                     7U * 16U + 4U);
                 // Translated labels need breathing room at the same readable
                 // font size, not narrower letters to fit the English column.
-                const auto menu_extra = game.language() != 0U
+                // MODERN's full RENDERER name needs the same room in English.
+                const auto menu_extra = (game.language() != 0U
+                        || (game.modern_renderer()
+                            && game.pregame_page() == starfox::simulation::PregamePage::main))
                     && !hud_editor.active && !remap_menu.active
                     && game.pregame_page() != starfox::simulation::PregamePage::options
                     ? std::min<std::int32_t>(64, (display_width - snes_width) / 2) : 0;
@@ -10981,6 +11087,15 @@ int main(int argc, char** argv) {
                 const std::int32_t menu_label_x = 32 - menu_extra;
                 const std::int32_t menu_value_right = 236 + menu_extra;
                 const std::int32_t menu_cursor_x = 20 - menu_extra;
+                // A 4:3 menu has no room for it, so it shows the short name
+                // rather than printing over the label.
+                const auto renderer_value = [&]() -> std::string_view {
+                    const auto full = renderer_label(game);
+                    return !game.modern_renderer()
+                        || text_renderer.measure_ascii("RENDERER") + 8
+                            + text_renderer.measure_ascii(full) <= menu_value_right - menu_label_x
+                        ? full : std::string_view{"MODERN"};
+                }();
                 setup_overlay_left = menu_left;
                 setup_overlay_right = menu_right;
                 for (std::int32_t x = menu_left + viewport_origin;
@@ -11208,7 +11323,7 @@ int main(int argc, char** argv) {
                         for(std::size_t row=0;row<order.size();++row) {
                             std::string_view label;std::string value;
                             switch(order[row]) {
-                            case 16:label="RENDERER";value=game.renderer_mode()==starfox::simulation::RendererMode::gpu?"GPU":"SOFTWARE";break;
+                            case 16:label="RENDERER";value=renderer_value;break;
                             case 15:label="GPU BACKEND";value=starfox::render::renderer_backend_names[unsigned(window.renderer_backend())];break;
                             case 9:label="STEREOSCOPIC 3D";value="A  OPEN";break;
                             case 0:label="CHEATS";value="A  OPEN";break;
@@ -11332,10 +11447,7 @@ int main(int argc, char** argv) {
                                 ? std::string_view{"SOFTWARE ONLY"}
                                 :
 #endif
-                            game.renderer_mode()
-                                    == starfox::simulation::RendererMode::gpu
-                                ? std::string_view{"GPU"}
-                                : std::string_view{"SOFTWARE"},
+                            renderer_value,
                             row_y[4], game.pregame_selection() == 4U);
                         const auto msu1_value = game.msu1_available()
                             ? on_off(game.msu1_music())
@@ -11517,7 +11629,7 @@ int main(int argc, char** argv) {
                         std::chrono::steady_clock::now()-profile_frame_start).count();
                     std::cerr<<"plain-menu: frame="<<presented_frames<<" scale=1 effects=0 scene=0 work-us="<<elapsed<<'\n';
                 }
-                live_fps.record_frame(std::chrono::steady_clock::now());++presented_frames;
+                live_fps.record_frame(std::chrono::steady_clock::now());complete_presentation();
 #if defined(__ANDROID__)
                 if(android_deferred_gpu_start) {
                     android_deferred_gpu_start=false;SDL_PumpEvents();
@@ -11541,7 +11653,7 @@ int main(int argc, char** argv) {
                     const auto record_native_submission=[&] {
                         if(window.leia_presented_frames()==previous_native_frames) return;
                         if(!presented_frames) startup_trace->mark("first calibrated Leia game/menu frame presented");
-                        live_fps.record_frame(std::chrono::steady_clock::now());++presented_frames;
+                        live_fps.record_frame(std::chrono::steady_clock::now());complete_presentation();
                         if(test_frames && presented_frames>=test_frames) running=false;
                     };
                     if(leia_history_generation!=window.leia_generation()) {
@@ -11819,6 +11931,51 @@ int main(int argc, char** argv) {
             if (interpolation_alpha > 0.0 && interpolation_alpha < 1.0) {
                 ++profile_fractional_presentations;
             }
+#if defined(STARFOX_MODERN)
+            // Host overlays (EXIT GAME?, save slots, HUD/touch editors, key
+            // remapping, frame freeze) are drawn by the existing presentation
+            // path, so those frames fall back to it.
+            const bool host_overlay=exit_confirmation || state_slot_window || hud_editor.active
+                || touch_editor.active || remap_menu.active || frame_frozen;
+            if(modern && !host_overlay && starfox::modern::ModernRuntime::draws(game)) {
+                const bool final_test_frame=test_frames!=0 && presented_frames+1U>=test_frames;
+                // STARFOX_CAPTURE_DIR sequences use the same frame naming as
+                // the existing renderer's captures.
+                std::string modern_capture;
+                if(final_test_frame && capture_path_text) modern_capture=capture_path_text;
+                else if(!capture_directory.empty() && presented_frames>=capture_start
+                    && (presented_frames-capture_start)%capture_interval==0U) {
+                    auto name=std::to_string(presented_frames);
+                    if(name.size()<6U) name.insert(0U,6U-name.size(),'0');
+                    modern_capture=(capture_directory/(name+".bmp")).string();
+                }
+                // ON-SCREEN FPS, placed as the existing presentation places it.
+                starfox::modern::HostOverlay fps_overlay;
+                if(game.show_fps()) {
+                    live_fps_overlay.clear();
+                    text_renderer.draw_ascii("FPS "+std::to_string(live_fps.fps()),0,0,live_fps_overlay,1U,0U);
+                    fps_overlay={&live_fps_overlay,int(display_width-live_fps_overlay.width()-4U),4,
+                        int(display_width),int(snes_height)};
+                }
+                // Same internal raster as the existing renderer: canvas x scale.
+                if(modern->present(window.renderer(),interpolation_alpha,
+                    int(display_width*render_scale),int(snes_height*render_scale),
+                    modern_capture.empty()?nullptr:modern_capture.c_str(),fps_overlay)) {
+                    if(!advance_frozen_frame) live_fps.record_frame(std::chrono::steady_clock::now());
+                    if(presented_frames==0) startup_trace->mark("first game/menu frame presented");
+                    complete_presentation();
+                    if(test_frames!=0 && presented_frames>=test_frames) {
+                        if(modern->unsupported_models()) std::cerr<<"modern: unsupported warp/axis models in final frame="<<modern->unsupported_models()<<'\n';
+                        running=false;
+                    }
+                    continue;
+                }
+                if(!modern_failure_reported) {
+                    std::cerr<<"modern: falling back to the existing renderer: "<<modern->status()<<'\n';
+                    modern_failure_reported=true;
+                }
+            }
+#endif
             const auto interpolate_raster_word = [interpolation_alpha](
                 std::int16_t previous_value, std::int16_t current_value) {
                 return interpolate_source_word(
@@ -15605,11 +15762,6 @@ int main(int argc, char** argv) {
                     <<preparation_events.jobs<<" event-pumps="<<preparation_events.pumps<<'\n';
 #endif
             }
-#if defined(STARFOX_PS5)
-            // The system's launch splash covers the title until the title
-            // hides it (ProsperoEden hides it on its first presented frame).
-            if(presented_frames==0) StarfoxPS5_HideSplashScreen();
-#endif
             const auto profile_present_done = std::chrono::steady_clock::now();
             const auto work_without_pacing=[&](std::chrono::steady_clock::time_point start) {
                 const auto elapsed=static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -15782,7 +15934,7 @@ int main(int argc, char** argv) {
                 }
             }
 #endif
-            ++presented_frames;
+            complete_presentation();
 #if defined(__ANDROID__)
             if(android_deferred_gpu_start) {
                 android_deferred_gpu_start=false;

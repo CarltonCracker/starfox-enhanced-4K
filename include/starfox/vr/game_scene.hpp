@@ -1,5 +1,5 @@
 #pragma once
-#if !defined(__3DS__) && !defined(STARFOX_SCENE_SOURCE_ONLY) && __has_include("starfox/vr/presentation.hpp") && __has_include(<openxr/openxr.h>)
+#if !defined(__3DS__) && !defined(STARFOX_SCENE_SOURCE_ONLY) && __has_include("starfox/vr/presentation.hpp")
 #include "starfox/vr/presentation.hpp"
 #define STARFOX_SCENE_TRACKED_HELPERS
 #endif
@@ -74,6 +74,8 @@ struct GameSceneSnapshot {
     simulation::DialogueState dialogue;
     bool paused{};
     simulation::CircleEffectState circle;
+    // TRANS.ASM fixed-colour math (damage flash, scripted full-screen flashes).
+    simulation::ColourMathEffectState colour_math;
     simulation::WindowWipeState wipe;
     bool native_ex_bitmap{};
     bool ex_title_logo_screen{};
@@ -108,6 +110,10 @@ struct GameSceneSnapshot {
     std::array<uint16_t,16> model_palette{};
     uint8_t game_frame{},model_scale{};
     std::optional<uint16_t> colour_table_override;
+    // MHUD.MC first-person indicators: HUDROT (bit 15 enables, low byte is
+    // the roll angle), M_HUDCOLOUR and M_HUDFLAGS (bits 0/1: damaged wings).
+    uint16_t cockpit_hud_roll{};
+    uint8_t cockpit_hud_colour{},cockpit_hud_flags{};
 };
 
 #if defined(STARFOX_SCENE_TRACKED_HELPERS)
@@ -218,6 +224,7 @@ private:
     std::array<uint16_t,source_corridor_count> corridor_backgrounds_{};
     std::array<std::optional<SourceCorridorBounds>,source_corridor_count> corridor_bounds_{};
     std::array<uint32_t,3> dust_addresses_{};
+    std::array<uint32_t,3> cockpit_hud_addresses_{}; // HUDROT, M_HUDCOLOUR, M_HUDFLAGS (optional)
     std::shared_ptr<const GameSceneSnapshot> older_,previous_,current_;
     render::GridLineHistory grid_line_history_;
 };

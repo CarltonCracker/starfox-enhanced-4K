@@ -19,7 +19,7 @@ add_library(starfox_displayxr STATIC src/render/displayxr_runtime.cpp
     src/render/gpu_calibrated_motion_blur.cpp src/render/gpu_calibrated_fsr1.cpp src/render/gpu_calibrated_dlss.cpp
     src/vr/game_scene.cpp src/vr/source_models.cpp
     src/vr/scene_interpolation.cpp src/vr/source_span_model.cpp src/vr/openxr_swapchains.cpp
-    src/vr/openxr_session.cpp src/vr/eye_camera.cpp
+    src/vr/openxr_session.cpp src/vr/eye_camera.cpp src/vr/scene_camera.cpp
     src/vr/game_model_pose.cpp src/vr/draw_packet.cpp src/vr/shape_mesh.cpp
     src/vr/shape_bsp.cpp src/vr/shape_batch.cpp src/vr/scene_material.cpp
     src/vr/scene_packet_validation.cpp src/vr/background_tiles.cpp src/vr/source_sprites.cpp)
@@ -223,6 +223,9 @@ if(STARFOX_BUILD_TOOLS AND STARFOX_DXR_ENABLED)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         target_compile_options(starfox_reflection_source_owner_check PRIVATE -Wall -Wextra -Wconversion -Werror)
     endif()
+    # The SDK's DXIL-only DXC is sufficient for the player and ordinary
+    # diagnostics, but these experimental tools also compile SPIR-V.
+    if(STARFOX_ENABLE_EXPERIMENTAL_REFLECTION_INDEX)
     # Resident conservative old-feature index, diagnostic staging only. These
     # pipelines are not linked to a player or permission to reuse curved colour.
     set(visibility_index_headers)
@@ -563,6 +566,7 @@ if(STARFOX_BUILD_TOOLS AND STARFOX_DXR_ENABLED)
     if(MINGW)
         target_link_options(starfox_reflected_liquid_motion_check PRIVATE -static -static-libgcc -static-libstdc++)
     endif()
+    endif() # STARFOX_ENABLE_EXPERIMENTAL_REFLECTION_INDEX
     add_executable(starfox_displayxr_vulkan_creation_check tools/check_displayxr_vulkan_creation.cpp)
     target_link_libraries(starfox_displayxr_vulkan_creation_check PRIVATE starfox_displayxr SDL3::SDL3)
     target_include_directories(starfox_displayxr_vulkan_creation_check PRIVATE "${sdl3_SOURCE_DIR}/src/video/khronos")

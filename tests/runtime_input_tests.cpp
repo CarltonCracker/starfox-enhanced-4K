@@ -923,6 +923,19 @@ int main(int argc, char** argv) {
             && loaded_pregame == saved_pregame && loaded_pregame.stereo_output == 0,
             "pre-stereo settings did not default to OFF");
     }
+    for(const auto size:{std::pair{0U,0U},std::pair{256U,224U},std::pair{1280U,720U},std::pair{16384U,16384U}}) {
+        auto settings=saved_pregame;settings.window_width=std::uint16_t(size.first);settings.window_height=std::uint16_t(size.second);
+        require(starfox::app::save_pregame_settings(pregame_test_path,settings)
+            && starfox::app::load_pregame_settings(pregame_test_path,loaded_pregame)
+            && loaded_pregame==settings,"fixed window size did not round-trip");
+    }
+    for(const auto entry:{"WINDOW_WIDTH -1", "WINDOW_WIDTH 16385", "WINDOW_WIDTH 640", "WINDOW_HEIGHT 480"}) {
+        require(starfox::app::save_pregame_settings(pregame_test_path,saved_pregame),"window size fixture");
+        {std::ofstream bad{pregame_test_path,std::ios::app};bad<<entry<<'\n';}
+        auto unchanged=saved_pregame;
+        require(!starfox::app::load_pregame_settings(pregame_test_path,unchanged)
+            && unchanged==saved_pregame,"invalid/partial window size replaced settings");
+    }
     for(const auto separation:{1U,16U,128U,512U}) for(const auto convergence:{16U,1024U,65535U}) {
         auto settings=saved_pregame;
         settings.stereo_separation=static_cast<std::uint16_t>(separation);
@@ -1167,11 +1180,15 @@ int main(int argc, char** argv) {
         require(starfox::app::load_pregame_settings(pregame_test_path, loaded_pregame)
             && loaded_pregame.gpu_renderer == 0U && loaded_pregame.timing_mode == fast.timing_mode,
             "settings without GPU_RENDERER did not load as GPU ACCURATE");
-        std::ofstream{pregame_test_path, std::ios::app} << "GPU_RENDERER 2\n";
+        std::ofstream{pregame_test_path, std::ios::app} << "GPU_RENDERER 3\n";
         require(starfox::app::load_pregame_settings(pregame_test_path, loaded_pregame)
             && loaded_pregame.gpu_renderer == 0U,
             "unknown GPU_RENDERER value did not fall back to GPU ACCURATE");
-        auto invalid = saved_pregame;invalid.gpu_renderer = 2;
+        auto modern = saved_pregame;modern.gpu_renderer = 2;
+        require(starfox::app::save_pregame_settings(pregame_test_path, modern)
+            && starfox::app::load_pregame_settings(pregame_test_path, loaded_pregame)
+            && loaded_pregame == modern, "MODERN setting round trip failed");
+        auto invalid = saved_pregame;invalid.gpu_renderer = 3;
         require(!starfox::app::save_pregame_settings(pregame_test_path, invalid),
             "invalid GPU renderer setting was saved");
         // 5x-10x render scales belong to GPU FAST.
