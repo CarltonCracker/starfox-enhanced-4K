@@ -18,6 +18,7 @@ extern "C" void StarfoxPS5_HideSplashScreen(void);
 #endif
 #include "starfox/render/bloom.hpp"
 #include "starfox/render/object_snapshot.hpp"
+#include "starfox/render/source_sprite_material.hpp"
 #include "starfox/audio/msu1_audio.hpp"
 #include "starfox/audio/stem_mixer.hpp"
 #include "starfox/audio/msu1_pack.hpp"
@@ -9547,13 +9548,13 @@ int main(int argc, char** argv) {
         auto current_circle = previous_circle;
         auto previous_window_wipe = game.window_wipe_state();
         auto current_window_wipe = previous_window_wipe;
-        std::unordered_map<std::uint32_t, starfox::assets::Shape> shape_cache;
+        std::unordered_map<std::uint64_t, starfox::assets::Shape> shape_cache;
         // Geometry counts are decoded before simulation pacing, independently
         // of the presentation cache and its visibility/graphics settings.
         std::unordered_map<std::uint32_t, std::uint32_t> shape_face_counts;
         std::unordered_set<std::uint32_t> invalid_pace_shapes;
         game.set_shape_face_counts(&shape_face_counts);
-        std::unordered_set<std::uint32_t> invalid_shapes;
+        std::unordered_set<std::uint64_t> invalid_shapes;
         std::uint64_t presented_frames = 0;
         const auto complete_presentation=[&] {
 #if defined(STARFOX_PS5)
@@ -13190,14 +13191,15 @@ int main(int argc, char** argv) {
                 // whenever that placeholder was absent from the shape cache.
                 if ((object.strategy_flags[0] & 0x40U) != 0U) continue;
                 const auto colour_table = effective_colour_table(object);
-                const auto base_shape_key = (static_cast<std::uint32_t>(object.shape) << 16U)
-                    | colour_table;
+                const auto base_shape_key = starfox::render::source_shape_material_key(
+                    object.shape, colour_table, object);
                 if (object.shape == 0 || invalid_shapes.contains(base_shape_key)) continue;
                 auto base = shape_cache.find(base_shape_key);
                 if (base == shape_cache.end()) {
                     try {
                         base = shape_cache.emplace(base_shape_key,
-                            decoder.decode(object.shape, {}, colour_table)).first;
+                            decoder.decode(object.shape, {}, colour_table,
+                                starfox::render::source_sprite_colour_count(object))).first;
                     } catch (const std::exception&) {
                         invalid_shapes.insert(base_shape_key);
                         continue;
@@ -14174,22 +14176,20 @@ int main(int argc, char** argv) {
                     const auto& object = game.objects().at(item.handle);
                     if ((object.strategy_flags[0] & 0x0cU) == 0U) continue;
                     const auto colour_table = effective_colour_table(object);
-                    const auto base_shape_key =
-                        (static_cast<std::uint32_t>(object.shape) << 16U)
-                        | colour_table;
+                    const auto base_shape_key = starfox::render::source_shape_material_key(
+                        object.shape, colour_table, object);
                     const auto base = shape_cache.find(base_shape_key);
                     if (base == shape_cache.end()) continue;
                     const auto shadow_pointer = base->second.header.shadow_pointer;
-                    const auto shape_key =
-                        (static_cast<std::uint32_t>(shadow_pointer) << 16U)
-                        | colour_table;
+                    const auto shape_key = starfox::render::source_shape_material_key(
+                        shadow_pointer, colour_table, object);
                     if (invalid_shapes.contains(shape_key)) continue;
                     auto found = shape_cache.find(shape_key);
                     if (found == shape_cache.end()) {
                         try {
                             found = shape_cache.emplace(shape_key, decoder.decode_lod(
                                 base->second.header, shadow_pointer,
-                                colour_table)).first;
+                                colour_table, starfox::render::source_sprite_colour_count(object))).first;
                         } catch (const std::exception&) {
                             invalid_shapes.insert(shape_key);
                             continue;
@@ -14218,8 +14218,8 @@ int main(int argc, char** argv) {
                     continue;
                 }
                 const auto colour_table = effective_colour_table(object);
-                const auto base_shape_key = (static_cast<std::uint32_t>(object.shape) << 16U)
-                    | colour_table;
+                const auto base_shape_key = starfox::render::source_shape_material_key(
+                    object.shape, colour_table, object);
                 if (object.shape == 0 || invalid_shapes.contains(base_shape_key)) continue;
                 const auto base = shape_cache.find(base_shape_key);
                 if (base == shape_cache.end()) continue;
@@ -14237,13 +14237,14 @@ int main(int argc, char** argv) {
                 const auto base_header = base->second.header;
                 const auto selected_pointer = starfox::assets::ShapeDecoder::select_lod_pointer(
                     base_header, item.source_depth);
-                const auto shape_key = (static_cast<std::uint32_t>(selected_pointer) << 16U)
-                    | colour_table;
+                const auto shape_key = starfox::render::source_shape_material_key(
+                    selected_pointer, colour_table, object);
                 auto found = shape_cache.find(shape_key);
                 if (found == shape_cache.end()) {
                     try {
                         found = shape_cache.emplace(shape_key, decoder.decode_lod(
-                            base_header, selected_pointer, colour_table)).first;
+                            base_header, selected_pointer, colour_table,
+                            starfox::render::source_sprite_colour_count(object))).first;
                     } catch (const std::exception&) {
                         invalid_shapes.insert(shape_key);
                         continue;

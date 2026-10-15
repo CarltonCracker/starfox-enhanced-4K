@@ -2174,6 +2174,12 @@ if(STARFOX_BUILD_TESTS)
     target_link_libraries(starfox_level_clear_tests PRIVATE starfox_core)
     add_executable(starfox_stage_results_feedback_tests tests/stage_results_feedback_tests.cpp)
     target_link_libraries(starfox_stage_results_feedback_tests PRIVATE starfox_core)
+    add_executable(starfox_source_sprite_material_tests tests/source_sprite_material_tests.cpp)
+    target_link_libraries(starfox_source_sprite_material_tests PRIVATE starfox_core)
+    if(TARGET starfox_scene)
+        target_link_libraries(starfox_source_sprite_material_tests PRIVATE starfox_scene)
+        target_compile_definitions(starfox_source_sprite_material_tests PRIVATE STARFOX_TEST_SOURCE_SCENE)
+    endif()
     target_link_libraries(starfox_hitlist_tests PRIVATE starfox_core)
 
     if(STARFOX_BUILD_RUNTIME)
@@ -2434,6 +2440,8 @@ if(STARFOX_BUILD_TESTS)
             "${STARFOX_EX_ROM_FILE}" "${STARFOX_EX_SYMBOLS_FILE}")
         add_test(NAME starfox_ex_level_clear COMMAND starfox_level_clear_tests
             "${STARFOX_EX_ROM_FILE}" "${STARFOX_EX_SYMBOLS_FILE}")
+        add_test(NAME starfox_ex_source_sprite_material COMMAND starfox_source_sprite_material_tests
+            "${STARFOX_EX_ROM_FILE}" "${STARFOX_EX_SYMBOLS_FILE}")
         add_test(
             NAME starfox_ex_simulation_data
             COMMAND starfox_simulation_tests
@@ -2533,6 +2541,9 @@ if(STARFOX_BUILD_TESTS)
                     "${CMAKE_CURRENT_SOURCE_DIR}/upstream-ultrastarfox/SF.SFC"
                     "${CMAKE_CURRENT_SOURCE_DIR}/upstream-ultrastarfox/SYMBOLS.TXT")
         add_test(NAME starfox_upstream_stage_results_feedback COMMAND starfox_stage_results_feedback_tests
+            "${CMAKE_CURRENT_SOURCE_DIR}/upstream-ultrastarfox/SF.SFC"
+            "${CMAKE_CURRENT_SOURCE_DIR}/upstream-ultrastarfox/SYMBOLS.TXT")
+        add_test(NAME starfox_upstream_source_sprite_material COMMAND starfox_source_sprite_material_tests
             "${CMAKE_CURRENT_SOURCE_DIR}/upstream-ultrastarfox/SF.SFC"
             "${CMAKE_CURRENT_SOURCE_DIR}/upstream-ultrastarfox/SYMBOLS.TXT")
         if(TARGET starfox_gpu_model_batches_check)
