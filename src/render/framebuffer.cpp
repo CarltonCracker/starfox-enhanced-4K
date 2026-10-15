@@ -4,6 +4,7 @@
 #include <array>
 #include <fstream>
 #include <stdexcept>
+#include <type_traits>
 
 namespace starfox::render {
 namespace {
@@ -23,6 +24,25 @@ void write_u16(std::ofstream& output, std::uint16_t value) {
 void write_u32(std::ofstream& output, std::uint32_t value) {
     write_u16(output, static_cast<std::uint16_t>(value & 0xffffU));
     write_u16(output, static_cast<std::uint16_t>((value >> 16U) & 0xffffU));
+}
+
+// Select rather than branch on each transparent pixel. Keeping metadata
+// choices outside the loop lets both ARM64 and desktop compilers vectorize
+// the same portable code. Source and destination must not alias; material
+// pairs and in-place copies retain the general compositor below.
+template<bool Tags, bool SourceTags, bool Coverage>
+void composite_indexed_row(const std::uint8_t* source, std::uint8_t* destination,
+    const std::uint8_t* source_tags, std::uint8_t* destination_tags,
+    std::uint8_t* coverage, std::size_t count) noexcept {
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto mask = std::uint8_t(0U - unsigned(source[i] != 0));
+        destination[i] = (destination[i] & ~mask) | (source[i] & mask);
+        if constexpr (Tags) {
+            const auto tag = SourceTags ? source_tags[i] : std::uint8_t(PixelLayer::three_d);
+            destination_tags[i] = (destination_tags[i] & ~mask) | (tag & mask);
+        }
+        if constexpr (Coverage) coverage[i] = (coverage[i] & ~mask) | (1U & mask);
+    }
 }
 
 } // namespace
@@ -120,6 +140,35 @@ void composite_transparent_layer(const Framebuffer& source,
             && source_tags.size() == source_pixels.size();
         constexpr auto geometry_tag =
             static_cast<std::uint8_t>(PixelLayer::three_d);
+        if (!carry_pairs && destination.dither_pairs().empty() && &source != &destination) {
+            // Issue #13: adapt the row-wise composite idea from mtoensing's
+            // PortMaster patches, without assuming ARM NEON or bypassing the
+            // newer dither-material provenance contract.
+            const auto count = stored_source_right - stored_source_left;
+            const auto rows = [&](auto tags, auto tagged_source, auto coverage) {
+                for (auto y = stored_source_top; y < stored_source_bottom; ++y) {
+                    const auto si = y * source.stored_width() + stored_source_left;
+                    const auto di = std::size_t(std::int64_t(y) + stored_offset_y)
+                        * destination.stored_width()
+                        + std::size_t(std::int64_t(stored_source_left) + stored_offset_x);
+                    composite_indexed_row<decltype(tags)::value, decltype(tagged_source)::value,
+                        decltype(coverage)::value>(source_pixels.data() + si,
+                            destination_pixels.data() + di,
+                            source_tagged ? source_tags.data() + si : nullptr,
+                            transfer_tags ? destination_tags.data() + di : nullptr,
+                            destination.tracks_write_coverage()
+                                ? destination.write_coverage_data() + di : nullptr, count);
+                }
+            };
+            const auto with_coverage = [&](auto tags, auto tagged_source) {
+                if (destination.tracks_write_coverage()) rows(tags, tagged_source, std::true_type{});
+                else rows(tags, tagged_source, std::false_type{});
+            };
+            if (!transfer_tags) with_coverage(std::false_type{}, std::false_type{});
+            else if (source_tagged) with_coverage(std::true_type{}, std::true_type{});
+            else with_coverage(std::true_type{}, std::false_type{});
+            return;
+        }
         for (auto y = stored_source_top; y < stored_source_bottom; ++y) {
             auto source_index = y * source.stored_width()
                 + stored_source_left;
