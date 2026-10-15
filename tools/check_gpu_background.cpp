@@ -3,6 +3,7 @@
 #include "starfox/render/gpu_scene.hpp"
 #include "starfox/render/gpu_composite.hpp"
 #include "starfox/render/terrain_profile.hpp"
+#include "../tests/background_roll_cases.hpp"
 #include <SDL3/SDL.h>
 #include <cstring>
 #include <iostream>
@@ -45,6 +46,13 @@ int main(int argc,char** argv) {
         device=SDL_CreateGPUDeviceWithProperties(props);SDL_DestroyProperties(props);require(device,"GPU device");
         {
         GpuBackground gpu;BackgroundRenderer reference;
+        check_wrapped_background_roll([&](const auto& p,unsigned width) {
+            GpuBackgroundSettings settings;settings.layer=2;settings.scroll_x=3;
+            settings.horizontal_origin=int(width)/2-128;settings.extend_horizontal=true;
+            return run(device,gpu,p,width,192,1,settings);
+        });
+        std::cout<<"BG2 roll: equivalent continuous/wrapped atlas phases agree at native, wide and ultrawide widths\n";
+        if(std::getenv("STARFOX_TEST_BACKGROUND_ROLL_ONLY")) {gpu.release_device();SDL_DestroyGPUDevice(device);SDL_Quit();return 0;}
         {
             // Wide/portrait stored outputs cross 4096 without increasing the
             // pixel budget. Compare actual samples to the software decoder,

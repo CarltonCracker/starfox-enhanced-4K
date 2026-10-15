@@ -424,6 +424,9 @@ void BackgroundRenderer::draw_bg2(
         : 1;
     const auto expanded_mode2 = extend_horizontal && target.width() > 256U
         && ppu.background_mode == 2U && ppu.bg2_vertical_offsets_enabled;
+    // Tunnel cross-sections and generated star patches use the original
+    // unwrapped world phase; only ordinary landscape banks are periodic fits.
+    const bool landscape_roll = !ppu.tunnel_scene && !ending_star_extension && !game_over_star_extension;
     // The six cartridge roll tables are integer-quantised samples of one
     // straight horizon. Repeating those steps beyond x=0/255 makes the added
     // columns change angle at each join, and using one edge pair makes the
@@ -442,9 +445,15 @@ void BackgroundRenderer::draw_bg2(
     auto have_previous = false;
     for (std::size_t index = 0; index < vertical_offsets.size(); ++index) {
         if (!vertical_valid(index)) continue;
-        const auto raw = vertical_value(index);
+        // The source can fold each column at the atlas boundary, not just
+        // at the 13-bit register boundary. Unwrap in texture space before
+        // fitting: e.g. 255 -> 0 on a 256-row atlas is one pixel, not -255.
+        const auto period = landscape_roll ? height_pixels : 8192;
+        const auto raw = vertical_value(index) & (period - 1);
+        auto fit_difference = (raw - previous_raw) & (period - 1);
+        if (fit_difference > period / 2 - 1) fit_difference -= period;
         const auto unwrapped = have_previous
-            ? previous_unwrapped + signed_difference(raw, previous_raw)
+            ? previous_unwrapped + fit_difference
             : raw;
         const auto x = static_cast<double>(index + 1U);
         const auto y = static_cast<double>(unwrapped);
@@ -595,8 +604,16 @@ void BackgroundRenderer::draw_bg2(
                 // and the derivative change where they meet the native area.
                 const auto visible_column =
                     static_cast<double>(column_coordinate) / 8.0;
-                auto value = static_cast<std::int32_t>(std::lround(
-                    fitted_intercept + fitted_slope * visible_column));
+                // A periodic coordinate needs a translation-invariant tie
+                // rule: -0.5 and height-0.5 must select the same atlas row.
+                // Compare the fraction explicitly (as the GPU does), rather
+                // than rounding x+.5 and losing a bit at an integer boundary.
+                const auto fitted = fitted_intercept + fitted_slope * visible_column;
+                const auto magnitude = std::abs(fitted);
+                auto rounded = static_cast<std::int32_t>(magnitude);
+                const auto fraction = magnitude - rounded;
+                rounded += landscape_roll && fitted < 0 ? fraction > .5 : fraction >= .5;
+                auto value = fitted < 0 ? -rounded : rounded;
                 value %= 8'192;
                 if (value < 0) value += 8'192;
                 column_scroll_y[screen_x - first_x] = value;
