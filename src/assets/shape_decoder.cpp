@@ -178,7 +178,10 @@ ShapeHeader ShapeDecoder::decode_header(std::uint32_t address) const {
 Shape ShapeDecoder::decode(
     std::uint32_t header_address,
     std::string name,
-    std::uint16_t colour_pointer_override) const {
+    std::uint16_t colour_pointer_override,
+    std::uint16_t minimum_colour_count) const {
+    if (minimum_colour_count > 256U)
+        throw std::invalid_argument("Shape colour count exceeds byte index range");
     Shape shape;
     shape.name = std::move(name);
     if (null_shape_address_ != 0U && header_address == null_shape_address_) {
@@ -194,7 +197,7 @@ Shape ShapeDecoder::decode(
     }
     decode_points(shape);
     decode_faces(shape);
-    decode_colours(shape);
+    decode_colours(shape, minimum_colour_count);
     return shape;
 }
 
@@ -209,17 +212,18 @@ std::uint16_t ShapeDecoder::select_lod_pointer(
 Shape ShapeDecoder::decode_lod(
     const ShapeHeader& parent,
     std::uint16_t header_pointer,
-    std::uint16_t colour_pointer_override) const {
+    std::uint16_t colour_pointer_override,
+    std::uint16_t minimum_colour_count) const {
     const auto address = (parent.address & 0xff0000U) | header_pointer;
     if (address == parent.address) {
-        return decode(address, {}, colour_pointer_override);
+        return decode(address, {}, colour_pointer_override, minimum_colour_count);
     }
     // Resolve the inherited material before decoding. Compact headers do not
     // own a colour table; parsing an unrelated fallback first can fail even
     // when the parent/override table is valid.
     const auto colour_pointer = colour_pointer_override != 0U
         ? colour_pointer_override : parent.colour_pointer;
-    auto shape = decode(address, {}, colour_pointer);
+    auto shape = decode(address, {}, colour_pointer, minimum_colour_count);
     if (shape.header.compact) {
         // Compact headers contain only points, bank and faces.
         shape.header.sort_z = parent.sort_z;
@@ -546,19 +550,22 @@ void ShapeDecoder::decode_faces(Shape& shape) const {
     throw std::runtime_error{"face command stream did not terminate"};
 }
 
-void ShapeDecoder::decode_colours(Shape& shape) const {
+void ShapeDecoder::decode_colours(Shape& shape, std::uint16_t minimum_count) const {
     shape.diffuse_shade_tables = diffuse_shade_tables_;
     shape.has_diffuse_shade_tables = has_diffuse_shade_tables_;
-    if (shape.faces.empty()) {
+    if (shape.faces.empty() && minimum_count == 0U) {
         return;
     }
-    const auto maximum = std::max_element(shape.faces.begin(), shape.faces.end(), [](const Face& a, const Face& b) {
+    const auto face_count = shape.faces.empty() ? 0U : 1U + std::max_element(shape.faces.begin(), shape.faces.end(), [](const Face& a, const Face& b) {
         return a.colour_id < b.colour_id;
     })->colour_id;
-    shape.colour_words.reserve(static_cast<std::size_t>(maximum) + 1U);
+    // MSSPRITE selects AL_DEPTHOFFSET at runtime, independently of the
+    // polygon face colours (e.g. Dancing Insector's trailing flame is #1).
+    const auto count = std::max<unsigned>(face_count, minimum_count);
+    shape.colour_words.reserve(count);
     const auto base = (static_cast<std::uint32_t>(colour_table_bank_) << 16U)
         | shape.header.colour_pointer;
-    for (std::uint16_t index = 0; index <= maximum; ++index) {
+    for (std::uint16_t index = 0; index < count; ++index) {
         const auto word = rom_.read16(base + index * 2U);
         shape.colour_words.push_back(word);
         ColourMaterial material;

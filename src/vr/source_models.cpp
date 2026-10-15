@@ -4,6 +4,7 @@
 #include <bit>
 #include <cmath>
 #include "starfox/render/grid_projection.hpp"
+#include "starfox/render/source_sprite_material.hpp"
 #include "starfox/render/grid_line_sample.hpp"
 #include "starfox/vr/background_tiles.hpp"
 #include "starfox/vr/scene_types.hpp"
@@ -558,14 +559,17 @@ SourceModelPackets SourceModels::assemble_poses(const GameSceneSnapshot& scene,s
             && std::find(flight_shapes_.begin(),flight_shapes_.end(),object.shape)!=flight_shapes_.end();
         const uint32_t shape=pilot_hull?pilot_shape_:object.shape;
         try {
-            const uint64_t base_key=(uint64_t(shape)<<32U)|colour;
+            const uint64_t base_key=(uint64_t(render::source_sprite_colour(object))<<56U)
+                |(uint64_t(shape)<<32U)|colour;
             auto base=shapes_.find(base_key);
-            if(base==shapes_.end()) base=shapes_.emplace(base_key,decoder_.decode(shape,{},colour)).first;
+            if(base==shapes_.end()) base=shapes_.emplace(base_key,decoder_.decode(shape,{},colour,
+                render::source_sprite_colour_count(object))).first;
             const auto header=base->second.header;
             const auto selected=shadow?header.shadow_pointer:assets::ShapeDecoder::select_lod_pointer(header,item.source_pose.source_depth);
             const uint64_t lod_key=base_key|(uint64_t(selected)<<16U);
             auto lod=shapes_.find(lod_key);
-            if(lod==shapes_.end()) lod=shapes_.emplace(lod_key,decoder_.decode_lod(header,selected,colour)).first;
+            if(lod==shapes_.end()) lod=shapes_.emplace(lod_key,decoder_.decode_lod(header,selected,colour,
+                render::source_sprite_colour_count(object))).first;
             DrawPacket packet;std::string error;
             auto pose=shadow?shadows[i]:poses.empty()?item.source_pose:poses[i];
             // EX's aiming marks use their dedicated HUD palette entry, not
