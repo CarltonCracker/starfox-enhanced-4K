@@ -2990,6 +2990,19 @@ public:
         return false;
 #endif
     }
+    bool preparing_ray_pipelines() const noexcept {
+#if defined(__APPLE__)
+        // All native owners share a device-keyed preparation cache. Any
+        // initialized one can report pending mono/stereo/underlay work.
+        if(metal_hardware_rt_.preparing_pipelines() || motion_ground_metal_.preparing_pipelines()
+            || motion_reflections_metal_.preparing_pipelines()) return true;
+        for(unsigned eye=0;eye<2;++eye)
+            if(stereo_metal_hardware_rt_[eye].preparing_pipelines()
+                || stereo_motion_ground_metal_[eye].preparing_pipelines()
+                || stereo_motion_reflections_metal_[eye].preparing_pipelines()) return true;
+#endif
+        return false;
+    }
     bool vulkan_hardware_ray_tracing_available() const {
 #if defined(__linux__)
         return native_gpu_enabled() && vulkan_hardware_rt_.available(effect_device());
@@ -7780,8 +7793,8 @@ int main(int argc, char** argv) {
         DlssHost dlss{executable_directory};
         startup_trace->mark("initializing SDL");
         sdl.emplace();
-#if defined(_WIN32) && !defined(STARFOX_UWP)
-        // Driver shader compilation can take seconds on handheld GPUs. Pump
+#if defined(STARFOX_SDL_RESPONSIVE_RENDERER)
+        // Driver shader compilation can take seconds on handheld GPUs/Metal. Pump
         // OS/input events without consuming them while the joined compiler
         // worker runs; the normal loop still receives every queued event.
         starfox::render::PreparationEvents preparation_events{
@@ -9357,6 +9370,8 @@ int main(int argc, char** argv) {
         starfox::render::Framebuffer planet_text_overlay{
             snes_width, snes_height};
         starfox::render::Framebuffer live_fps_overlay{64U, 12U};
+        starfox::render::Framebuffer pipeline_preparation_overlay{224U,12U};
+        bool ray_preparation_was_pending=false;
         starfox::render::Framebuffer exit_confirmation_overlay{112U, 40U};
         starfox::render::Framebuffer mode2_background_cache{
             snes_width, snes_height};
@@ -11636,7 +11651,7 @@ int main(int argc, char** argv) {
                 window.present_plain_ui(setup_overlay,menu_palette,TouchControls::enabled && game.on_screen_controls());
                 if(!presented_frames) {
                     startup_trace->mark("first game/menu frame presented (plain UI; preview OFF)");
-#if defined(_WIN32) && !defined(STARFOX_UWP)
+#if defined(STARFOX_SDL_RESPONSIVE_RENDERER)
                     if(std::getenv("STARFOX_TRACE_GPU")) std::cerr<<"gpu-preparation: jobs="
                         <<preparation_events.jobs<<" event-pumps="<<preparation_events.pumps<<'\n';
 #endif
@@ -15630,6 +15645,20 @@ int main(int argc, char** argv) {
                         - live_fps_overlay.width() - 4U);
                 presentation_effects.host_overlay_y = 4;
             }
+            const bool ray_preparation_pending=window.preparing_ray_pipelines();
+            if(ray_preparation_pending!=ray_preparation_was_pending) {
+                startup_trace->mark(ray_preparation_pending
+                    ?"Metal ray pipelines: preparing in background (game/menu remain live)"
+                    :"Metal ray pipelines: background preparation finished");
+                ray_preparation_was_pending=ray_preparation_pending;
+            }
+            if(ray_preparation_pending) {
+                pipeline_preparation_overlay.clear();
+                text_renderer.draw_ascii("PREPARING GPU EFFECTS...",0,0,pipeline_preparation_overlay,1U,0U);
+                presentation_effects.host_overlay=&pipeline_preparation_overlay;
+                presentation_effects.host_overlay_x=(int(display_width)-int(pipeline_preparation_overlay.width()))/2;
+                presentation_effects.host_overlay_y=200;
+            }
             if (exit_confirmation || state_slot_window) {
                 presentation_effects.confirmation_overlay =
                     &exit_confirmation_overlay;
@@ -15792,7 +15821,7 @@ int main(int argc, char** argv) {
             if(presented_frames==0) {
                 startup_trace->mark("first game/menu frame presented");
                 if(menu_preview) startup_trace->mark("preview: rendered scene ready");
-#if defined(_WIN32) && !defined(STARFOX_UWP)
+#if defined(STARFOX_SDL_RESPONSIVE_RENDERER)
                 if(std::getenv("STARFOX_TRACE_GPU")) std::cerr<<"gpu-preparation: jobs="
                     <<preparation_events.jobs<<" event-pumps="<<preparation_events.pumps<<'\n';
 #endif

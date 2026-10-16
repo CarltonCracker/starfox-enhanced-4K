@@ -364,7 +364,7 @@ class MetalSourceAssemblyTests(unittest.TestCase):
             empty=(self.destination / f"empty_{name}.metal").read_text(encoding="utf-8")
             self.assertEqual(empty,"#define STARFOX_EMPTY_NATIVE_SCENE 1\n"+normal)
         code=self.implementation
-        empty=code.split("void ensure_empty_pipeline(",1)[1].split("void ensure_output(",1)[0]
+        empty=code.split("id<MTLComputePipelineState> compile_metal_rt_pipeline(",1)[1].split("} // namespace",1)[0]
         for check in ("stringWithUTF8String:kEmptyScenePrefix", "starfox_metal_water_shared",
                       "starfox_metal_native_material_shared", "kIndexedShader", "reflection?kReflectionShader:kShadowShader"):
             self.assertIn(check,empty)
@@ -432,8 +432,8 @@ class MetalSourceAssemblyTests(unittest.TestCase):
         shadow=code.split("bool MetalHardwareRt::render_shadows",1)[1].split("GpuShadowOutput MetalHardwareRt::shadow_output",1)[0]
         reflection=code.split("bool MetalHardwareRt::render_reflections",1)[1]
         self.assertIn("resident_geometry->vertex_count==0 && !empty_resident",shadow)
-        self.assertIn("if(no_models)impl_->ensure_empty_pipeline(false)",shadow)
-        self.assertIn("if(no_models)impl_->ensure_empty_pipeline(true)",reflection)
+        self.assertIn("if(no_models) {if(!impl_->ensure_empty_pipeline(false)) return false;}",shadow)
+        self.assertIn("if(no_models) {if(!impl_->ensure_empty_pipeline(true)) return false;}",reflection)
         self.assertIn("(geometry.vertex_count<3 && !no_models)",reflection)
         self.assertIn("if(no_models && !resident)vertices=target",shadow)
         self.assertIn("if(no_models)[encoder setBuffer:target offset:0 atIndex:0]",shadow)
@@ -455,10 +455,39 @@ class MetalSourceAssemblyTests(unittest.TestCase):
             self.assertIn(check,host)
         # The new host route uses exactly the existing complete optical
         # specialization: no shorter shader, altered water or fake geometry.
-        self.assertIn("if(no_models)impl_->ensure_empty_pipeline(true)",host)
+        self.assertIn("if(no_models) {if(!impl_->ensure_empty_pipeline(true)) return false;}",host)
         self.assertIn("if(!no_models) {",host)
         self.assertIn("slot.palette=[impl_->metal newBufferWithBytes:palette.data()",host)
 
+
+    def test_pipeline_compilation_is_separate_from_render_and_release(self):
+        code = self.implementation
+        compile_body = code.split("id<MTLComputePipelineState> compile_metal_rt_pipeline(", 1)[1].split("} // namespace", 1)[0]
+        self.assertEqual(code.count("newComputePipelineStateWithFunction:"), 1)
+        self.assertIn("newComputePipelineStateWithFunction:", compile_body)
+        initialize = code.split("void initialize(SDL_GPUDevice* next)", 1)[1].split("bool ensure_pipeline(", 1)[0]
+        self.assertNotIn("newLibrary", initialize)
+        self.assertNotIn("ensure_shadow_pipeline", initialize)
+        self.assertIn("pipelines=detail::metal_pipeline_preparation(metal)", initialize)
+        self.assertIn("pipelines->request(program,compile_metal_rt_pipeline)", code)
+        # ARC otherwise infers an autoreleasing out-reference, which cannot
+        # bind the renderer's strongly owned pipeline members.
+        self.assertIn("ensure_pipeline(id<MTLComputePipelineState> __strong& pipeline", code)
+        self.assertIn("pipelines.reset(); // No join", code)
+        for role in ("shadow", "reflection"):
+            body = code.split("bool MetalHardwareRt::render_" + role, 1)[1]
+            pending = body.index("else if(!impl_->ensure_" + role + "_pipeline()) return false;")
+            self.assertLess(pending, body.index("impl_->serial++"))
+            self.assertLess(pending, body.index("SDL_AcquireGPUCommandBuffer"))
+
+    def test_macos_opts_into_existing_responsive_preparation(self):
+        cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+        self.assertIn("((WIN32 AND NOT WINDOWS_STORE) OR (APPLE AND NOT IOS))", cmake)
+        self.assertIn("sdl3-responsive-${preparation_patch}.cmake", cmake)
+        app = (ROOT / "src/app/starfox_pc.cpp").read_text(encoding="utf-8")
+        self.assertIn("#if defined(STARFOX_SDL_RESPONSIVE_RENDERER)\n        // Driver shader compilation", app)
+        self.assertIn('"PREPARING GPU EFFECTS..."', app)
+        self.assertIn("window.preparing_ray_pipelines()", app)
 
 if __name__ == "__main__":
     unittest.main()

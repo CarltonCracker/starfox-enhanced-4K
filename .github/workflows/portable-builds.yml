@@ -20,7 +20,7 @@ on:
       source_check_os:
         description: Select source checks without rebuilding or releasing other platforms
         type: choice
-        options: [both, windows, linux, vita-package]
+        options: [both, windows, linux, macos, vita-package]
         default: both
   push:
     tags:
@@ -31,7 +31,7 @@ permissions:
 
 jobs:
   source-checks:
-    if: ${{ inputs.source_checks_only && inputs.source_check_os != 'vita-package' }}
+    if: ${{ inputs.source_checks_only && inputs.source_check_os != 'vita-package' && inputs.source_check_os != 'macos' }}
     name: Source checks (${{ matrix.os }})
     strategy:
       fail-fast: false
@@ -86,6 +86,55 @@ jobs:
           path: build/source-checks/Testing/Temporary/LastTest.log
           if-no-files-found: ignore
           retention-days: 7
+
+  macos-source-check:
+    if: ${{ inputs.source_checks_only && inputs.source_check_os == 'macos' }}
+    name: macOS source-only Metal preparation check
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check exact ARC and dispatch preparation before the full build
+        shell: bash
+        run: |
+          mkdir -p build/metal-preparation
+          xcrun clang++ -std=c++20 -fobjc-arc -Iinclude -Isrc/render \
+            tests/metal_pipeline_preparation_tests.mm -framework Metal -framework Foundation \
+            -o build/metal-preparation/check
+          build/metal-preparation/check
+      - name: Configure real universal Apple runtime without private assets
+        shell: bash
+        run: |
+          cmake -S . -B build/source-checks -G Xcode \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON \
+            '-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64' -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
+            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
+            -DSTARFOX_BUILD_TESTS=ON -DSTARFOX_BUILD_RUNTIME=ON -DSTARFOX_BUILD_VR=OFF \
+            -DSTARFOX_ENABLE_LEIASR=OFF -DSTARFOX_EMBED_RUNTIME_ASSETS=OFF \
+            -DSTARFOX_PACKAGE_MSU1_MUSIC=OFF -DSTARFOX_EMBED_MSU1_MUSIC=OFF \
+            -DSTARFOX_ROM_FILE=source-only-no-rom.sfc \
+            -DSTARFOX_EX_ROM_FILE=source-only-no-ex-rom.sfc \
+            -DSTARFOX_RETAIL_V12_FILE=source-only-no-retail.sfc
+      - name: Compile actual runtime and preparation regressions
+        run: >-
+          cmake --build build/source-checks --config Release --parallel 2 --target
+          starfox_pc starfox_metal_pipeline_preparation_tests
+          starfox_responsive_preparation_tests starfox_gpu_preparation_tests
+          starfox_sdl_gpu_preparation_check
+      - name: Test ARC lifetime, async publication and event preparation
+        run: |
+          ctest --test-dir build/source-checks -C Release --output-on-failure \
+            -R '^starfox_(metal_pipeline_preparation|responsive_preparation|gpu_preparation)_tests$'
+          python3 tests/test_metal_shader_sources.py
+      - name: Preserve compact results only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-metal-preparation-source-check-results
+          path: build/source-checks/Testing/Temporary/LastTest.log
+          if-no-files-found: ignore
+          retention-days: 7
+      # No ROM/BIN, executable/package artifact, release or 3DS job is published.
 
   vita-package-check:
     if: ${{ inputs.source_checks_only && inputs.source_check_os == 'vita-package' }}
