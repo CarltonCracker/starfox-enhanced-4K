@@ -470,6 +470,9 @@ class MetalSourceAssemblyTests(unittest.TestCase):
         self.assertNotIn("ensure_shadow_pipeline", initialize)
         self.assertIn("pipelines=detail::metal_pipeline_preparation(metal)", initialize)
         self.assertIn("pipelines->request(program,compile_metal_rt_pipeline)", code)
+        # ARC otherwise infers an autoreleasing out-reference, which cannot
+        # bind the renderer's strongly owned pipeline members.
+        self.assertIn("ensure_pipeline(id<MTLComputePipelineState> __strong& pipeline", code)
         self.assertIn("pipelines.reset(); // No join", code)
         for role in ("shadow", "reflection"):
             body = code.split("bool MetalHardwareRt::render_" + role, 1)[1]

@@ -1106,7 +1106,7 @@ struct MetalHardwareRt::Impl {
         device=next;
         status="Metal hardware acceleration structures and ray intersector";
     }
-    bool ensure_pipeline(id<MTLComputePipelineState>& pipeline,NativeMetalRtProgram program) {
+    bool ensure_pipeline(id<MTLComputePipelineState> __strong& pipeline,NativeMetalRtProgram program) {
         if(pipeline) return true;
         const auto prepared=pipelines->request(program,compile_metal_rt_pipeline);
         if(prepared.phase==detail::MetalPipelinePhase::failed)
