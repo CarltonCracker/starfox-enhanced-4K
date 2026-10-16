@@ -48,8 +48,8 @@ if(!$auditPath.StartsWith($allowedPath,[StringComparison]::OrdinalIgnoreCase) -o
     [IO.Path]::GetPathRoot($auditPath) -ine 'C:\') {
     throw 'Background captures must stay inside C: build/validation/active'
 }
-if($Compact -and ($Frames -ne 1 -or $Layers -or $PpuSnapshot -or $ModelLayers -or $FinalTarget -or $CaptureInterval)) {
-    throw 'Compact auditing accepts only one frame per sample, without additional layer/snapshot/sequence captures'
+if($Compact -and ($Layers -or $PpuSnapshot -or $ModelLayers -or $FinalTarget -or $CaptureInterval)) {
+    throw 'Compact auditing accepts one final image per sample, without additional layer/snapshot/sequence captures'
 }
 function Assert-AuditStorage {
     param([long]$PlannedBytes=4000000)
@@ -213,6 +213,13 @@ try {
                     # Only this invocation's newly generated bitmap, never a
                     # recursive cleanup or pre-existing screenshot/settings.
                     Remove-Item -LiteralPath $env:STARFOX_CAPTURE_PATH
+                    # A successful animated probe needs its final geometry,
+                    # not hundreds of repeated per-object diagnostic lines.
+                    # Failed runs retain the complete original error log.
+                    $trace=Get-Content -LiteralPath (Join-Path $auditPath "$stem.log")
+                    $receipt=@($trace | Where-Object {$_ -match '^(enhanced-backdrop-|render-state)'} | Select-Object -Last 6)
+                    $receipt+=@($trace | Where-Object {$_ -match '(?i)(warning|error|failed|fallback)'})
+                    $receipt | Select-Object -Unique | Set-Content -LiteralPath (Join-Path $auditPath "$stem.log")
                 }
                 Write-Output "Captured $stem"
             }

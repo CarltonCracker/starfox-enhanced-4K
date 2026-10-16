@@ -57,6 +57,15 @@ No ROM/BIN files or additional embedded game executables are copied.
    presentation radius to the logical canvas, including supersampled edge
    pixels. Simulation/save formats, ordinary bomb circles and native OBJ/HUD
    protection remain unchanged.
+5. Clamped photographic skies now prepare their narrow zenith edge, preventing
+   variable cloud/star pixels from extruding into columns above the image.
+   Artwork below the first eight source rows, including the horizon, is exact.
+6. A photographic panorama could repeat within an ultrawide or banked view.
+   One uniform, canvas-diagonal-based cover scale keeps a view within one
+   horizontal period without changing image proportions, source scroll phase
+   or the authored horizon. It is independent of the current bank, avoiding
+   camera-dependent zoom. Explicitly tiled space patterns and registered
+   celestial subjects retain their existing mappings.
 
 `starfox_enhanced_terrain_tests` exercises 81 packed-sky extent cases and 18
 orbital-continuation cases. `STARFOX_TEST_BACKDROP_PROJECTION_ONLY=1` selects

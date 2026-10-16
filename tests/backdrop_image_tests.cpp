@@ -13,6 +13,30 @@
 int main(int argc,char** argv) {
     using starfox::render::BackdropImage;
     const auto require=[](bool b,const char* message){if(!b) throw std::runtime_error(message);};
+    for(float mode:{0.f,1.f,6.f,7.f,8.f,10.f}) for(unsigned width:{256U,400U,853U}) for(float period:{256.f,512.f}) {
+        const std::array<float,4> original{1/period,1/160.f,.633f,mode};
+        auto projection=original;float scroll=511.75f;
+        const float zoom=BackdropImage::fit_canvas(projection,scroll,width,224);
+        require(std::abs(projection[0]/projection[1]-original[0]/original[1])<.000001f,
+            "Wide panorama fitting stretched the artwork");
+        require(std::abs(scroll*projection[0]-511.75f*original[0])<.000001f,
+            "Wide panorama fitting changed source scroll phase");
+        for(int degrees=-89;degrees<=89;++degrees) {
+            const float slope=std::tan(float(degrees)*.0174532925199433f);
+            const float span=(width+224*std::abs(slope))/std::sqrt(1+slope*slope);
+            require(span*projection[0]<=1.000001f,"A banked wide view repeated a photographic panorama");
+        }
+        if(width<=400 && period==512) require(zoom==1 && projection==original && scroll==511.75f,
+            "Ordinary native/wide panorama calibration changed unnecessarily");
+    }
+    for(float mode:{2.f,3.f,4.f,5.f,9.f}) {
+        std::array<float,4> projection{1/512.f,1/160.f,.633f,mode};const auto original=projection;float scroll=511.75f;
+        require(BackdropImage::fit_canvas(projection,scroll,853,224)==1 && projection==original && scroll==511.75f,
+            "Panorama fitting changed an explicitly tiled pattern or registered celestial object");
+    }
+    for(unsigned index:{0U,1U,2U,3U,4U,5U,6U,7U,8U,9U,10U,11U,12U,13U,14U,15U,16U,17U,18U,22U,27U,28U,31U,32U,34U,37U})
+        require(starfox::render::enhanced_backdrop_assets[index].prepare_zenith,
+            "A clamped sky can still extrude a varying top row");
     {
         BackdropImage panorama{32,16,std::vector<std::uint32_t>(512,0xff1e140a)};
         BackdropImage surface{16,16,std::vector<std::uint32_t>(256,0xff325064)};
@@ -412,14 +436,14 @@ int main(int argc,char** argv) {
                 "Backdrop file and resource identities diverged");
             return std::span<const std::uint8_t>(bitmap);
         };
-        const auto* first=&library.get(0,loader);const auto key=first->immutable_upload_key;
+        const auto* first=&library.get(23,loader);const auto key=first->immutable_upload_key;
         require(key && first->pixels==decoded.pixels,"Shared loader changed ordinary artwork");
-        require(&library.get(0,loader)==first && calls==1 && first->immutable_upload_key==key,
+        require(&library.get(23,loader)==first && calls==1 && first->immutable_upload_key==key,
             "Repeated backdrop access reloaded or invalidated immutable artwork");
         auto prepared=decoded;prepared.prepare_zenith();
         for(unsigned index:{6U,16U,18U})
             require(library.get(index,loader).pixels==prepared.pixels,"Shared zenith preparation changed");
-        require(library.index_of(first)==0 && !library.index_of(&decoded) && !library.index_of(nullptr),
+        require(library.index_of(first)==23 && !library.index_of(&decoded) && !library.index_of(nullptr),
             "Shared backdrop identity lookup misclassified an image");
         bool rejected=false;
         try {library.get(unsigned(starfox::render::enhanced_backdrop_assets.size()),loader);} catch(const std::out_of_range&) {rejected=true;}
@@ -427,7 +451,7 @@ int main(int argc,char** argv) {
         rejected=false;
         try {library.get(1,[](unsigned,std::string_view){return std::span<const std::uint8_t>{};});}
         catch(const std::runtime_error&) {rejected=true;}
-        require(rejected && library.get(1,loader).pixels==decoded.pixels && calls==5,
+        require(rejected && library.get(1,loader).pixels==prepared.pixels && calls==5,
             "Failed backdrop decode poisoned subsequent retries");
     }
     if(argc>1) {
@@ -438,6 +462,14 @@ int main(int argc,char** argv) {
         auto damaged=bytes;damaged.resize(bytes.size()/2);
         bool rejected=false;try {BackdropImage::decode(damaged);} catch(const std::runtime_error&) {rejected=true;}
         require(rejected,"truncated image accepted");
+        for(const auto& asset:starfox::render::enhanced_backdrop_assets) if(asset.prepare_zenith
+            && std::string_view(argv[1]).ends_with(asset.path.substr(asset.path.find_last_of('/')+1))) {
+            auto prepared=image;prepared.prepare_zenith();
+            for(float u:{-3.f,0.f,.23f,.8f,4.2f})
+                require(prepared.sample(u,-1)==prepared.sample(0,-1),"Real sky still extrudes top-edge columns");
+            require(std::equal(image.pixels.begin()+8*image.width,image.pixels.end(),prepared.pixels.begin()+8*image.width),
+                "Real sky preparation changed the interior or horizon");
+        }
         // Exercise each real artwork supplied by CTest, not just the small
         // synthetic texture. Native, wide and ultrawide extents, offscreen
         // horizons and both sides of horizontal/vertical seams are included.

@@ -16,6 +16,18 @@ namespace starfox::render {
 // BMP decoding keeps the embedded asset usable on every target without an
 // OS image decoder. Returned pixels are little-endian RGBA words.
 struct BackdropImage {
+    // Cover one view with photographic panoramas instead of showing another
+    // copy in a wide/banked corner. One uniform zoom preserves artwork shape;
+    // the canvas diagonal makes it independent of the current bank angle.
+    // Preserve scroll phase across source atlas wraps. Explicitly tileable
+    // space patterns and separately registered celestial sprites are exempt.
+    static float fit_canvas(std::array<float,4>& projection,float& scroll,unsigned width,unsigned height) {
+        const auto mode=projection[3];
+        if(mode!=0 && mode!=1 && mode!=6 && mode!=7 && mode!=8 && mode!=10) return 1;
+        const float factor=std::max(1.f,std::hypot(float(width),float(height))*projection[0]);
+        projection[0]/=factor;projection[1]/=factor;scroll*=factor;
+        return factor;
+    }
     static std::array<float,3> limb_colour(const std::array<float,3>& surface,
         const std::array<std::uint32_t,16>& ramp) {
         const float shade=1+14*(1-std::clamp(surface[0]/255.f,0.f,1.f));

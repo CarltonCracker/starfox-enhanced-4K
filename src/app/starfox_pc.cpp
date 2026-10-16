@@ -13902,13 +13902,18 @@ int main(int argc, char** argv) {
                         <<" alpha="<<interpolation_alpha<<" x="<<environment_effects.plane[2]
                         <<" horizon="<<environment_effects.motion[0]<<'\n';
             }
+            if(environment_effects.backdrop && environment_effects.modes[2])
+                starfox::render::BackdropImage::fit_canvas(environment_effects.backdrop_projection,
+                    environment_effects.plane[2],framebuffer.width(),framebuffer.height());
             if(test_frames && std::getenv("STARFOX_TRACE_RENDER_STATE")) {
                 const auto artwork_index=enhanced_backdrops.index_of(environment_effects.backdrop);
                 const int artwork=artwork_index?int(*artwork_index):-1;
                 std::cerr<<"enhanced-backdrop-selection: background="<<std::dec<<game.map().background()
                     <<" artwork="<<artwork<<" mode="<<environment_effects.backdrop_projection[3]
                     <<" ground="<<environment_effects.modes[0]<<" sky="<<environment_effects.modes[2]
-                    <<" exMenu="<<ex_native_menu<<'\n';
+                    <<" exMenu="<<ex_native_menu<<" horizon="<<environment_effects.motion[0]
+                    <<" slope="<<environment_effects.plane[0]<<" panoramaScale="
+                    <<environment_effects.backdrop_projection[0]<<','<<environment_effects.backdrop_projection[1]<<'\n';
                 if(environment_effects.backdrop) {
                     const auto& sky=environment_effects.backdrop_palette[0];
                     const auto& surface=environment_effects.backdrop_palette[1];
