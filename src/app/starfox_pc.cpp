@@ -7815,6 +7815,11 @@ int main(int argc, char** argv) {
 #endif
         startup_trace->mark("SDL ready; loading settings");
         starfox::app::set_portable_data_directory(executable_directory);
+        // Automation may exercise Apply without touching the player's real
+        // layouts, input bindings, settings or saves. Never active normally.
+        if(std::getenv("STARFOX_TEST_FRAMES"))
+            if(const auto* directory=std::getenv("STARFOX_TEST_DATA_DIRECTORY"))
+                starfox::app::set_portable_data_directory(std::filesystem::path{directory});
         if (std::getenv("STARFOX_TEST_FRAMES") == nullptr) {
             starfox::app::migrate_legacy_user_data();
         }
@@ -9282,9 +9287,17 @@ int main(int argc, char** argv) {
         bool exit_confirmation =
             std::getenv("STARFOX_TEST_EXIT_CONFIRMATION") != nullptr;
         bool exit_yes_selected{};
+        bool suppress_editor_input{};
         const auto save_hud_layout = [&] {
             static_cast<void>(starfox::app::save_hud_layout(
                 hud_layout_path, hud_layouts));
+        };
+        const auto trace_runtime_editor = [&](const char* kind,const char* action) {
+            if(std::getenv("STARFOX_TEST_FRAMES") && game.runtime_options_open())
+                std::cerr<<"runtime-layout-editor: "<<kind<<' '<<action
+                    <<" map="<<starfox::assets::crc32(game.map().save_state())
+                    <<" objects="<<starfox::assets::crc32(game.objects().save_state())
+                    <<" scene="<<game.scene_revision()<<'\n';
         };
         const auto close_hud_editor = [&](bool apply) {
             if(apply) save_hud_layout();
@@ -9294,11 +9307,15 @@ int main(int argc, char** argv) {
             hud_editor.dragging.reset();
             hud_editor.finger.reset();
             input.reset();
+            suppress_editor_input=true;
             if (hud_editor_preview) {
                 initial_map = "BOOT";
                 return_to_options_after_editor = 3U;
                 restart_runtime = true;
                 running = false;
+            } else if(game.runtime_options_open()) {
+                trace_runtime_editor("HUD",apply?"apply":"cancel");
+                game.return_to_pregame_options(3U);
             }
         };
         const auto close_touch_editor = [&](bool apply) {
@@ -9308,11 +9325,15 @@ int main(int argc, char** argv) {
             touch_editor.active=false;
             touch_editor.gesture.clear();
             input.reset();
+            suppress_editor_input=true;
             if(touch_editor_preview) {
                 initial_map="BOOT";
                 return_to_options_after_editor=13U;
                 restart_runtime=true;
                 running=false;
+            } else if(game.runtime_options_open()) {
+                trace_runtime_editor("TOUCH",apply?"apply":"cancel");
+                game.return_to_pregame_options(13U);
             }
         };
         PresentationPacer pacer;
@@ -10623,6 +10644,10 @@ int main(int argc, char** argv) {
                 sampled_buttons = static_cast<ButtonMask>(
                     sampled_buttons & ~starfox::input::start);
             }
+            if(suppress_editor_input) {
+                if(sampled_buttons==0) suppress_editor_input=false;
+                sampled_buttons=0;
+            }
             if (state_slot_window || suppress_state_input) {
                 if (!state_slot_window && sampled_buttons == 0) suppress_state_input = false;
                 sampled_buttons = 0;
@@ -10660,7 +10685,8 @@ int main(int argc, char** argv) {
                         : starfox::input::ButtonMask{});
             }
             remap_input.sample(
-                bindings.sample_fixed_menu_navigation(gamepad,true));
+                test_frames && (hud_editor.active || touch_editor.active)
+                    ?sampled_buttons:bindings.sample_fixed_menu_navigation(gamepad,true));
             const auto tab_fast_forward = keyboard_state[SDL_SCANCODE_TAB]
                 && !game.in_setup_menu()
                 && !(remap_menu.active && remap_menu.waiting_for_input);
@@ -10870,10 +10896,19 @@ int main(int argc, char** argv) {
                         clamp_hud_layout(editor_layout,
                             window.canvas_width(game.display_mode()),
                             game.experience());
-                        launch_hud_editor_preview = true;
-                        initial_map = "LEVEL1_1";
-                        restart_runtime = true;
-                        running = false;
+                        if(game.runtime_options_open()) {
+                            // F1 edits the paused live session. Only the real
+                            // pre-game menu needs a fresh Corneria reference.
+                            hud_editor.initial_layout=editor_layout;
+                            hud_editor.active=true;
+                            remap_input.reset(bindings.sample_fixed_menu_navigation(gamepad,true));
+                            trace_runtime_editor("HUD","open");
+                        } else {
+                            launch_hud_editor_preview = true;
+                            initial_map = "LEVEL1_1";
+                            restart_runtime = true;
+                            running = false;
+                        }
                         controls = {};
                         secondary_controls = {};
                     } else if (TouchControls::enabled && game.in_setup_menu()
@@ -10882,10 +10917,18 @@ int main(int argc, char** argv) {
                                && game.pregame_selection() == 13U
                                && (controls.pressed & starfox::input::a) != 0U) {
                         touch_controls.reset();
-                        launch_touch_editor_preview=true;
-                        initial_map="LEVEL1_1";
-                        restart_runtime=true;
-                        running=false;
+                        if(game.runtime_options_open()) {
+                            touch_editor.initial_layout=touch_layout_config;
+                            touch_editor.active=true;
+                            touch_editor.gesture.clear();
+                            remap_input.reset(bindings.sample_fixed_menu_navigation(gamepad,true));
+                            trace_runtime_editor("TOUCH","open");
+                        } else {
+                            launch_touch_editor_preview=true;
+                            initial_map="LEVEL1_1";
+                            restart_runtime=true;
+                            running=false;
+                        }
                         controls={};
                         secondary_controls={};
                     }
