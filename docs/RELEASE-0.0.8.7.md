@@ -72,6 +72,8 @@ paused, and no 3DS package is included.
 - Fixed PS5 display uncovering after preview-off and loading screens.
 - Added complete Vita launcher/LiveArea artwork and improved VPK metadata and
   package validation.
+- Fixed older Sniper runtime-library compatibility in the shared renderer used
+  by Steam Frame builds.
 - Retained proper unsigned iOS IPA packaging, existing Android/Quest release
   signing, and PS5 and Steam Frame release packages.
 - Updated application/package versions to 0.0.8.7, including increasing Android

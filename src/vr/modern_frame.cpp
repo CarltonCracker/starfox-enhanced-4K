@@ -1,6 +1,7 @@
 // MODERN's per-frame scene planning, shared by the SDL_GPU flat renderer and
 // the PCVR application (moved out of src/modern/sdl_frame.cpp).
 #include "starfox/vr/modern_frame.hpp"
+#include "starfox/compat/bit_cast.hpp"
 #include "starfox/vr/background_tiles.hpp"
 #include "starfox/vr/game_model_pose.hpp"
 #include "starfox/vr/presentation.hpp"
@@ -8,7 +9,6 @@
 #include "starfox/vr/source_sprites.hpp"
 #include "starfox/timing/fixed_step.hpp"
 #include <algorithm>
-#include <bit>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -396,8 +396,8 @@ void ModernFrame::prepare(const GameSceneSnapshot& previous,const GameSceneSnaps
             // Sky replacement mapping for this frame: horizon row and
             // centre column, 32x fixed point (camera.effects.z).
             const auto texels=packet.geometry.texel_view();
-            const float horizon=std::bit_cast<float>(texels[272+16384]);
-            const float centre=std::bit_cast<float>(texels[272+16384+1])+(sky_turn?float(sky_turn&0xffffU)/16.F:0.F);
+            const float horizon=starfox::bit_cast<float>(texels[272+16384]);
+            const float centre=starfox::bit_cast<float>(texels[272+16384+1])+(sky_turn?float(sky_turn&0xffffU)/16.F:0.F);
             texture_mapping=uint32_t(std::clamp(horizon*32.F,0.F,65535.F))
                 |(uint32_t(std::clamp(std::fmod(centre,1024.F)+1024.F,0.F,2047.F)*32.F)<<16);
             if(observe_landscape_ && texels.size()>=272+16384+6+112)
