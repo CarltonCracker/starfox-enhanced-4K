@@ -910,23 +910,10 @@ if(STARFOX_BUILD_RUNTIME)
         execute_process(COMMAND "${CMAKE_COMMAND}" "-DSOURCE_DIR=${sdl3_SOURCE_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/sdl3-d3d12-copy-ordering.cmake"
             COMMAND_ERROR_IS_FATAL ANY)
-        execute_process(COMMAND "${CMAKE_COMMAND}" "-DSOURCE_DIR=${sdl3_SOURCE_DIR}"
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/sdl3-responsive-renderer.cmake"
-            COMMAND_ERROR_IS_FATAL ANY)
-        execute_process(COMMAND "${CMAKE_COMMAND}" "-DSOURCE_DIR=${sdl3_SOURCE_DIR}"
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/sdl3-responsive-pipelines.cmake"
-            COMMAND_ERROR_IS_FATAL ANY)
         set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
             "cmake/sdl3-d3d12-descriptor-reservation.cmake" "include/starfox/render/d3d12_descriptor_capacity.h"
-            "cmake/sdl3-d3d12-copy-ordering.cmake"
-            "cmake/sdl3-responsive-renderer.cmake" "include/starfox/render/sdl_gpu_preparation.h"
-            "cmake/sdl3-responsive-pipelines.cmake" "include/starfox/render/sdl_gpu_pipeline_preparation.h")
-        get_target_property(STARFOX_SDL_NATIVE_TARGET SDL3::SDL3 ALIASED_TARGET)
-        target_include_directories(${STARFOX_SDL_NATIVE_TARGET} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
-        target_compile_definitions(starfox_core PUBLIC STARFOX_SDL_RESPONSIVE_RENDERER)
+            "cmake/sdl3-d3d12-copy-ordering.cmake")
         if(STARFOX_BUILD_TOOLS)
-            add_executable(starfox_sdl_gpu_preparation_check tools/check_sdl_gpu_preparation.cpp)
-            target_link_libraries(starfox_sdl_gpu_preparation_check PRIVATE starfox_core SDL3::SDL3)
             if(STARFOX_DXR_ENABLED)
                 add_executable(starfox_sdl_d3d12_descriptors_check tools/check_sdl_d3d12_descriptors.cpp)
                 target_link_libraries(starfox_sdl_d3d12_descriptors_check PRIVATE starfox_core SDL3::SDL3)
@@ -951,6 +938,26 @@ if(STARFOX_BUILD_RUNTIME)
                         "${sdl3_SOURCE_DIR}/src/video/directx")
                 endif()
             endif()
+        endif()
+    endif()
+
+    # Metal can spend minutes compiling first-use shaders, too. Opt both
+    # desktop platforms into the joined resource-only worker/event pump.
+    if(DEFINED sdl3_SOURCE_DIR AND ((WIN32 AND NOT WINDOWS_STORE) OR (APPLE AND NOT IOS)))
+        foreach(preparation_patch IN ITEMS renderer pipelines)
+            execute_process(COMMAND "${CMAKE_COMMAND}" "-DSOURCE_DIR=${sdl3_SOURCE_DIR}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/sdl3-responsive-${preparation_patch}.cmake"
+                COMMAND_ERROR_IS_FATAL ANY)
+        endforeach()
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+            "cmake/sdl3-responsive-renderer.cmake" "include/starfox/render/sdl_gpu_preparation.h"
+            "cmake/sdl3-responsive-pipelines.cmake" "include/starfox/render/sdl_gpu_pipeline_preparation.h")
+        get_target_property(STARFOX_SDL_NATIVE_TARGET SDL3::SDL3 ALIASED_TARGET)
+        target_include_directories(${STARFOX_SDL_NATIVE_TARGET} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+        target_compile_definitions(starfox_core PUBLIC STARFOX_SDL_RESPONSIVE_RENDERER)
+        if(STARFOX_BUILD_TOOLS)
+            add_executable(starfox_sdl_gpu_preparation_check tools/check_sdl_gpu_preparation.cpp)
+            target_link_libraries(starfox_sdl_gpu_preparation_check PRIVATE starfox_core SDL3::SDL3)
         endif()
     endif()
 
@@ -1234,6 +1241,15 @@ if(STARFOX_BUILD_RUNTIME)
     if(APPLE)
         enable_language(OBJCXX)
         include(cmake/NativeMetalMaterialSource.cmake)
+        if(STARFOX_BUILD_TESTS AND NOT IOS)
+            add_executable(starfox_metal_pipeline_preparation_tests tests/metal_pipeline_preparation_tests.mm)
+            target_include_directories(starfox_metal_pipeline_preparation_tests PRIVATE include src/render)
+            target_compile_features(starfox_metal_pipeline_preparation_tests PRIVATE cxx_std_20)
+            set_source_files_properties(tests/metal_pipeline_preparation_tests.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+            target_link_libraries(starfox_metal_pipeline_preparation_tests PRIVATE "-framework Metal" "-framework Foundation" Threads::Threads)
+            add_test(NAME starfox_metal_pipeline_preparation_tests COMMAND starfox_metal_pipeline_preparation_tests)
+            set_tests_properties(starfox_metal_pipeline_preparation_tests PROPERTIES TIMEOUT 30)
+        endif()
         if(STARFOX_BUILD_TOOLS AND NOT IOS)
             find_package(Python3 COMPONENTS Interpreter REQUIRED)
             set(STARFOX_NATIVE_METAL_SOURCE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/native-metal-check")

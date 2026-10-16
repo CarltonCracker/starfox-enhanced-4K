@@ -38,6 +38,8 @@ public:
     [[nodiscard]] GpuShadowOutput shadow_output() const noexcept;
     [[nodiscard]] GpuReflectionOutput reflection_output() const noexcept;
     [[nodiscard]] const std::string& status() const noexcept;
+    // Pure CPU status query; no wait, compilation or GPU submission.
+    [[nodiscard]] bool preparing_pipelines() const noexcept;
     // No wait/readback. Unfenced submissions acquire a later ordered marker;
     // a failed submission is never replayed. Consumers retain the SDL device.
     [[nodiscard]] bool native_work_complete() const noexcept;
