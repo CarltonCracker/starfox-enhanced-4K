@@ -558,12 +558,23 @@ void BackgroundRenderer::draw_bg2(
                     ? ink : wall_colour;
             };
             const auto margin=[&](unsigned first,unsigned last,int native_edge) {
+                const auto fallback=edge_colour(native_edge);
                 if(tunnel_margin_profile && tunnel_margin_profile->data[0]) {
+                    // Keep the existing bulk row writer at high render scales;
+                    // a fitted surface has only a few colour runs per margin.
+                    auto run_start=first;
+                    auto run_colour=fallback;
                     for(unsigned x=first;x<last;++x) {
                         const auto ink=tunnel_margin_profile->sample(int(x)-horizontal_origin,int(y),row_x,row_y);
-                        target.set(int(x),int(y),ink?*ink:edge_colour(native_edge));
+                        const auto colour=ink?*ink:fallback;
+                        if(x!=first && colour!=run_colour) {
+                            target.set_solid_indexed_row(int(run_start),int(y),x-run_start,run_colour);
+                            run_start=x;
+                        }
+                        run_colour=colour;
                     }
-                } else target.set_solid_indexed_row(int(first),int(y),last-first,edge_colour(native_edge));
+                    target.set_solid_indexed_row(int(run_start),int(y),last-run_start,run_colour);
+                } else target.set_solid_indexed_row(int(first),int(y),last-first,fallback);
             };
             if (priority != TilePriorityPass::high && native_first > first_x)
                 margin(first_x,native_first,0);
