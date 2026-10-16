@@ -4,6 +4,7 @@
 #include "starfox/render/gpu_composite.hpp"
 #include "starfox/render/terrain_profile.hpp"
 #include "../tests/background_roll_cases.hpp"
+#include "../tests/tunnel_margin_cases.hpp"
 #include <SDL3/SDL.h>
 #include <cstring>
 #include <iostream>
@@ -46,6 +47,12 @@ int main(int argc,char** argv) {
         device=SDL_CreateGPUDeviceWithProperties(props);SDL_DestroyProperties(props);require(device,"GPU device");
         {
         GpuBackground gpu;BackgroundRenderer reference;
+        check_tunnel_margins([&](const auto& p,unsigned width,unsigned scale,bool extend) {
+            GpuBackgroundSettings settings;settings.layer=2;
+            settings.horizontal_origin=int(width)/2-128;settings.extend_tunnel_diagonals=extend;
+            return run(device,gpu,p,width,224,scale,settings);
+        });
+        std::cout<<"Tunnel margins: source-fitted diagonal continuation at native/wide/ultrawide and 1x/2x, native viewport exact, asymmetric fallback passed\n";
         check_wrapped_background_roll([&](const auto& p,unsigned width) {
             GpuBackgroundSettings settings;settings.layer=2;settings.scroll_x=3;
             settings.horizontal_origin=int(width)/2-128;settings.extend_horizontal=true;
@@ -273,18 +280,19 @@ int main(int argc,char** argv) {
             s.ending_star_extension=variant%7==0;
             s.game_over_star_extension=variant%7==1;
             s.sky_source_min=variant%4==0?256U:variant%4==1?2048U:0U;
+            s.continue_ground=variant%2!=0;
             if(variant%5==0) s.unique_regions={{0,0,1024,1024,1,63,0},{0,0,1024,1024,64,127,3}};
             if(variant%5==1) s.unique_regions={{0,0,1024,1024,1,127,3,256}};
             if(variant%5==2) s.unique_regions={{0,0,1024,1024,1,127,3,-256}};
             if(variant%5==3) s.unique_regions={{0,0,1024,1024,1,127,3,BackgroundUniqueRegion::suppress_every_copy}};
             Framebuffer expected(w,h,scale);expected.enable_layer_tags(true);expected.begin_write_coverage();
             {ScopedLayer tag(expected,s.tag);reference.draw_bg2(*ppu,s.scroll_x,s.scroll_y,expected,s.priority,
-                s.horizontal_origin,s.extend_horizontal,s.wrap_horizontal,s.transparent_cgram_black,s.single_occurrence_top_rows,s.unique_regions,s.ending_star_extension,s.game_over_star_extension,s.sky_source_min);}
+                s.horizontal_origin,s.extend_horizontal,s.wrap_horizontal,s.transparent_cgram_black,s.single_occurrence_top_rows,s.unique_regions,s.ending_star_extension,s.game_over_star_extension,s.sky_source_min,s.continue_ground);}
             if(s.ending_star_extension || s.game_over_star_extension) {
                 Framebuffer native(w,h,scale);
                 reference.draw_bg2(*ppu,s.scroll_x,s.scroll_y,native,s.priority,
                     s.horizontal_origin,s.extend_horizontal,s.wrap_horizontal,s.transparent_cgram_black,
-                    s.single_occurrence_top_rows,s.unique_regions,false);
+                    s.single_occurrence_top_rows,s.unique_regions,false,false,s.sky_source_min,s.continue_ground);
                 for(unsigned y=0;y<h;++y) for(int x=std::max(0,s.horizontal_origin);
                     x<std::min(int(w),s.horizontal_origin+256);++x)
                     require(native.get(x,y)==expected.get(x,y),"ending extension changed native canvas");

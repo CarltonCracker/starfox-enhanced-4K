@@ -1,9 +1,12 @@
 #include "starfox/render/background_renderer.hpp"
+#include "starfox/render/tunnel_margin.hpp"
+#include "starfox/simulation/game_simulation.hpp"
 
 #include <array>
 #include <chrono>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <string_view>
 
@@ -111,6 +114,29 @@ void benchmark() {
 } // namespace
 int main(int argc, char** argv) try {
     if (argc == 2 && std::string_view{argv[1]} == "--benchmark") { benchmark(); return 0; }
+    if(argc==3) {
+        const auto rom=starfox::assets::RomImage::load(argv[1]);
+        const auto symbols=starfox::assets::SymbolMap::load(argv[2]);
+        auto game=std::make_unique<starfox::simulation::GameSimulation>(rom,symbols,"LEVEL1_3",std::span<const std::uint8_t>{},true);
+        game->set_god_mode(true);
+        for(unsigned tick=0;tick<1000;++tick) (void)game->tick({});
+        const auto& p=game->map().ppu_state();
+        const auto& profile=tunnel_margin(p);
+        if(!profile.data[0]) throw std::runtime_error("Actual Space Armada tunnel art failed the margin probe");
+        Framebuffer before(400,224),after(400,224);
+        const BackgroundRenderer renderer;
+        renderer.draw_bg2(p,p.bg2_scroll_x,p.bg2_scroll_y,before,TilePriorityPass::all,72);
+        renderer.draw_bg2(p,p.bg2_scroll_x,p.bg2_scroll_y,after,TilePriorityPass::all,72,
+            true,true,false,0,{},false,false,0,true,true);
+        unsigned changed=0;
+        for(unsigned y=0;y<224;++y) for(unsigned x=0;x<400;++x) if(before.get(x,y)!=after.get(x,y)) {
+            if(x>=72 && x<328) throw std::runtime_error("Actual tunnel native pixels changed");
+            ++changed;
+        }
+        if(changed<1000) throw std::runtime_error("Actual tunnel margins retained flat bars");
+        std::cout<<"Actual Space Armada source: fit mask="<<profile.data[0]<<", changed margin pixels="<<changed<<", native 256 columns exact\n";
+        return 0;
+    }
     const auto hash = trace();
 #ifndef STARFOX_TUNNEL_LEGACY_ORACLE
     // Pin this from the separate pre-optimization executable, not from the new path.

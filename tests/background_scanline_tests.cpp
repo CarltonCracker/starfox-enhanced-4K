@@ -1,4 +1,5 @@
 #include "starfox/render/background_renderer.hpp"
+#include "tunnel_margin_cases.hpp"
 
 #include <array>
 #include <chrono>
@@ -200,6 +201,46 @@ void native_row_contract() {
 int main(int argc, char** argv) try {
     if (argc == 2 && std::string_view(argv[1]) == "--benchmark") { benchmark(); return 0; }
     native_row_contract();
+    check_tunnel_margins([](const auto& p,unsigned width,unsigned scale,bool extend) {
+        Framebuffer f(width,224,scale);
+        BackgroundRenderer{}.draw_bg2(p,p.bg2_scroll_x,p.bg2_scroll_y,f,TilePriorityPass::all,int(width)/2-128,
+            true,true,false,0,{},false,false,0,true,extend);
+        return f.pixels();
+    });
+    {
+        // A bright orbital/star texel immediately before an atlas wrap is not
+        // a floor. The old wide continuation extruded it down to the HUD.
+        SnesPpuState ppu;
+        ppu.background_mode=2;ppu.main_screen=2;
+        ppu.bg2_screen_base=0x4000;ppu.bg2_character_base=0x1000;
+        ppu.bg2_vertical_offsets_enabled=true;
+        for(unsigned x=0;x<32;++x) {
+            word(ppu,0x2fa0+x,0x4000|100);
+            word(ppu,0x4000+31*32+x,1);
+        }
+        for(unsigned y=0;y<8;++y) {
+            ppu.vram[0x2000+32+y*2]=255;
+            ppu.vram[0x2000+32+y*2+16]=255;
+            ppu.vram[0x2000+32+y*2+17]=255; // Ink 13, vivid magenta.
+        }
+        ppu.cgram[13]=0x7c1f;
+        for(unsigned width:{256U,400U,853U}) {
+            Framebuffer floor(width,224),space(width,224);
+            const auto origin=int(width)/2-128;
+            BackgroundRenderer renderer;
+            renderer.draw_bg2(ppu,0,100,floor,TilePriorityPass::all,origin);
+            renderer.draw_bg2(ppu,0,100,space,TilePriorityPass::all,origin,
+                true,true,false,0,{},false,false,0,false);
+            for(unsigned x=0;x<width;++x) for(unsigned y=156;y<224;++y) {
+                if(space.get(x,y)!=0) throw std::runtime_error("Starfield texel extruded into a ground block");
+                if(width==256 && floor.get(x,y)!=space.get(x,y))
+                    throw std::runtime_error("No-ground continuation changed native-width pixels");
+            }
+            if(width>256 && floor.get(width/2,200)!=13)
+                throw std::runtime_error("Ground continuation control did not exercise the previous extrusion");
+        }
+        std::cout<<"Space background continuation: native/wide/ultrawide atlas-wrap blocks suppressed; real ground continuation retained\n";
+    }
     const auto digest = oracle_trace();
     // Filled from a separate executable built BEFORE changing the renderer:
     // background_renderer.cpp SHA256 450af058b47c38fd096b7416782f1b3ab

@@ -65,7 +65,10 @@ public:
         std::uint32_t single_occurrence_top_rows = 0U,
         std::span<const BackgroundUniqueRegion> unique_regions = {},
         bool ending_star_extension = false, bool game_over_star_extension = false,
-        std::uint32_t sky_source_min = 0) const noexcept;
+        std::uint32_t sky_source_min = 0,
+        // Starfields/orbital art have no local floor to continue after wrap.
+        bool continue_ground = true,
+        bool extend_tunnel_diagonals = false) const noexcept;
     void draw_bg3(
         const simulation::SnesPpuState& ppu,
         Framebuffer& target,

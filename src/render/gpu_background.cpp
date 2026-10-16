@@ -4,6 +4,7 @@
 #include "starfox/render/gpu_raster.hpp"
 #include "starfox/render/gpu_scene_counters.hpp"
 #include "starfox/render/temporal_jitter.hpp"
+#include "starfox/render/tunnel_margin.hpp"
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -48,9 +49,9 @@ struct GpuBackground::Impl {
         info.num_readonly_storage_buffers=info.num_readwrite_storage_buffers=info.num_uniform_buffers=1;
         info.threadcount_x=info.threadcount_y=8;info.threadcount_z=1;
         pipeline=create_gpu_compute_pipeline(device,&info);require(pipeline);
-        SDL_GPUBufferCreateInfo mem{SDL_GPU_BUFFERUSAGE_COMPUTE_STORAGE_READ,70400,0};
+        SDL_GPUBufferCreateInfo mem{SDL_GPU_BUFFERUSAGE_COMPUTE_STORAGE_READ,70400+TunnelMargin::words*4,0};
         memory=SDL_CreateGPUBuffer(device,&mem);require(memory);
-        SDL_GPUTransferBufferCreateInfo transfer{SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,70400,0};
+        SDL_GPUTransferBufferCreateInfo transfer{SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,70400+TunnelMargin::words*4,0};
         upload=SDL_CreateGPUTransferBuffer(device,&transfer);require(upload);
     }
     void initialize_bg2() {
@@ -104,6 +105,8 @@ GpuRasterOutput GpuBackground::enqueue(void* device,void* command,const simulati
         std::memcpy(mapped,ppu.vram.data(),ppu.vram.size());
         for(unsigned i=0;i<256;++i) {const std::uint32_t c=ppu.cgram[i];std::memcpy(mapped+65536+i*4,&c,4);}
         unsigned upload_bytes=66560;
+        const auto* margin=s.layer==2 && s.extend_tunnel_diagonals && ppu.tunnel_scene
+            && s.extend_horizontal && logical_width>256?&tunnel_margin(ppu):nullptr;
         if(s.layer==2) {
             for(unsigned i=0;i<224;++i) {
                 const std::int32_t x=ppu.bg2_horizontal_offsets[i],y=ppu.bg2_scanline_scroll_y[i];
@@ -115,6 +118,10 @@ GpuRasterOutput GpuBackground::enqueue(void* device,void* command,const simulati
                 std::memcpy(mapped+68352+i*32,values.data(),32);
             }
             upload_bytes=68352+unsigned(s.unique_regions.size())*32;
+            if(margin && margin->data[0]) {
+                std::memcpy(mapped+70400,margin->data.data(),TunnelMargin::words*4);
+                upload_bytes=70400+TunnelMargin::words*4;
+            }
         }
         SDL_UnmapGPUTransferBuffer(impl_->device,impl_->upload);
         auto* cmd=static_cast<SDL_GPUCommandBuffer*>(command);
@@ -130,7 +137,7 @@ GpuRasterOutput GpuBackground::enqueue(void* device,void* command,const simulati
                 |(s.ending_star_extension?128U:0U)|(s.game_over_star_extension?256U:0U)
                 |(std::any_of(s.unique_regions.begin(),s.unique_regions.end(),[](const auto& r) {
                     return r.replacement_x_offset>=0 && (r.replacement_x_offset&BackgroundUniqueRegion::suppress_every_copy)!=0;
-                })?512U:0U);
+                })?512U:0U)|(!s.continue_ground?1024U:0U)|(margin && margin->data[0]?2048U:0U);
             std::array<std::int32_t,32> data{int(width),int(height),int(scale),0,
                 ppu.bg2_screen_base,ppu.bg2_character_base,(ppu.bg2_screen_size&1)?64:32,(ppu.bg2_screen_size&2)?64:32,
                 s.scroll_x,s.scroll_y,s.horizontal_origin,s.extend_horizontal?0:std::max(s.horizontal_origin,0),
