@@ -91,14 +91,24 @@ jobs:
     if: ${{ inputs.source_checks_only && inputs.source_check_os == 'macos' }}
     name: macOS source-only Metal preparation check
     runs-on: macos-15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - name: Check exact ARC and dispatch preparation before the full build
+        shell: bash
+        run: |
+          mkdir -p build/metal-preparation
+          xcrun clang++ -std=c++20 -fobjc-arc -Iinclude -Isrc/render \
+            tests/metal_pipeline_preparation_tests.mm -framework Metal -framework Foundation \
+            -o build/metal-preparation/check
+          build/metal-preparation/check
       - name: Configure real universal Apple runtime without private assets
         shell: bash
         run: |
           cmake -S . -B build/source-checks -G Xcode \
             -DCMAKE_BUILD_TYPE=Release -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON \
             '-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64' -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
+            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
             -DSTARFOX_BUILD_TESTS=ON -DSTARFOX_BUILD_RUNTIME=ON -DSTARFOX_BUILD_VR=OFF \
             -DSTARFOX_ENABLE_LEIASR=OFF -DSTARFOX_EMBED_RUNTIME_ASSETS=OFF \
             -DSTARFOX_PACKAGE_MSU1_MUSIC=OFF -DSTARFOX_EMBED_MSU1_MUSIC=OFF \

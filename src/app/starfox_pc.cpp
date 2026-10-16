@@ -11651,7 +11651,7 @@ int main(int argc, char** argv) {
                 window.present_plain_ui(setup_overlay,menu_palette,TouchControls::enabled && game.on_screen_controls());
                 if(!presented_frames) {
                     startup_trace->mark("first game/menu frame presented (plain UI; preview OFF)");
-#if defined(_WIN32) && !defined(STARFOX_UWP)
+#if defined(STARFOX_SDL_RESPONSIVE_RENDERER)
                     if(std::getenv("STARFOX_TRACE_GPU")) std::cerr<<"gpu-preparation: jobs="
                         <<preparation_events.jobs<<" event-pumps="<<preparation_events.pumps<<'\n';
 #endif
@@ -15821,7 +15821,7 @@ int main(int argc, char** argv) {
             if(presented_frames==0) {
                 startup_trace->mark("first game/menu frame presented");
                 if(menu_preview) startup_trace->mark("preview: rendered scene ready");
-#if defined(_WIN32) && !defined(STARFOX_UWP)
+#if defined(STARFOX_SDL_RESPONSIVE_RENDERER)
                 if(std::getenv("STARFOX_TRACE_GPU")) std::cerr<<"gpu-preparation: jobs="
                     <<preparation_events.jobs<<" event-pumps="<<preparation_events.pumps<<'\n';
 #endif
