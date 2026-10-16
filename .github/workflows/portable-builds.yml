@@ -96,8 +96,7 @@ jobs:
       - name: Configure real universal Apple runtime without private assets
         shell: bash
         run: |
-          command -v ninja >/dev/null || brew install ninja
-          cmake -S . -B build/source-checks -G Ninja \
+          cmake -S . -B build/source-checks -G Xcode \
             -DCMAKE_BUILD_TYPE=Release -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON \
             '-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64' -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
             -DSTARFOX_BUILD_TESTS=ON -DSTARFOX_BUILD_RUNTIME=ON -DSTARFOX_BUILD_VR=OFF \
@@ -108,13 +107,13 @@ jobs:
             -DSTARFOX_RETAIL_V12_FILE=source-only-no-retail.sfc
       - name: Compile actual runtime and preparation regressions
         run: >-
-          cmake --build build/source-checks --parallel 2 --target
+          cmake --build build/source-checks --config Release --parallel 2 --target
           starfox_pc starfox_metal_pipeline_preparation_tests
           starfox_responsive_preparation_tests starfox_gpu_preparation_tests
           starfox_sdl_gpu_preparation_check
       - name: Test ARC lifetime, async publication and event preparation
         run: |
-          ctest --test-dir build/source-checks --output-on-failure \
+          ctest --test-dir build/source-checks -C Release --output-on-failure \
             -R '^starfox_(metal_pipeline_preparation|responsive_preparation|gpu_preparation)_tests$'
           python3 tests/test_metal_shader_sources.py
       - name: Preserve compact results only
