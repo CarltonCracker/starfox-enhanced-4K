@@ -10,20 +10,24 @@ def main():
     parser.add_argument('captures', type=Path)
     parser.add_argument('output', type=Path)
     parser.add_argument('--choices', type=int, nargs='+', default=list(range(37)) + [99])
+    parser.add_argument('--levels', action='store_true', help='Arrange compact per-level PNG captures instead of EX menu choices')
     args = parser.parse_args()
     frames = []
-    for choice in args.choices:
-        path = args.captures / f'choice-{choice}-final.bmp'
+    captures = ([(path.stem, path) for path in sorted(args.captures.glob('*.png'))] if args.levels else
+                [(f'BG {choice}', args.captures / f'choice-{choice}-final.bmp') for choice in args.choices])
+    if not captures:
+        parser.error('No captures found')
+    for label, path in captures:
         with Image.open(path) as source:
             frame = source.convert('RGB')
         frame.thumbnail((400, 224), Image.Resampling.LANCZOS)
-        frames.append((choice, frame))
+        frames.append((label, frame))
     cell_height = max(frame.height for _, frame in frames) + 24
     sheet = Image.new('RGB', (1600, math.ceil(len(frames) / 4) * cell_height), '#181818')
     labels = ImageDraw.Draw(sheet)
-    for index, (choice, frame) in enumerate(frames):
+    for index, (label, frame) in enumerate(frames):
         x, y = (index % 4) * 400, (index // 4) * cell_height
-        labels.text((x + 8, y + 5), f'BG {choice}', fill='white')
+        labels.text((x + 8, y + 5), label, fill='white')
         sheet.paste(frame, (x, y + 24))
     args.output.parent.mkdir(parents=True, exist_ok=True)
     sheet.save(args.output)

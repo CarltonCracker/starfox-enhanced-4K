@@ -6,11 +6,46 @@
 #include "environment_screen_reflection_cases.hpp"
 #include "background_roll_cases.hpp"
 #include "starfox/render/background_renderer.hpp"
+#include "starfox/render/screen_fill_circle.hpp"
+#include "backdrop_projection_cases.hpp"
 #include <iostream>
 #include <stdexcept>
 static void require(bool yes,const char* message){if(!yes) throw std::runtime_error(message);}
 int main() {
     using namespace starfox::render;
+    check_packed_backdrop_extents([](const auto& frame,auto pixels,const auto& effects) {
+        apply_environment(effects,frame,pixels);return pixels;
+    });
+    check_orbital_surface_extents([](const auto& frame,auto pixels,const auto& effects) {
+        apply_environment(effects,frame,pixels);return pixels;
+    });
+    {
+        // Program counters advance inside the bytecode; don't compare only
+        // with the REDFILLSCREEN entry or identify effects by their RGB.
+        for(const auto range: {std::array<unsigned,2>{0x83,0xcf},
+                              std::array<unsigned,2>{0xcd,0x119}}) {
+            for(unsigned width:{256U,298U,400U,534U,796U,853U})
+                for(unsigned height:{192U,224U,240U,256U})
+                    for(int offset:{-40,0,40}) {
+                starfox::simulation::CircleEffectState native{true,
+                    std::int16_t(int(width)/2+offset),std::int16_t(height/2),171,31,0,0,0x27};
+                const auto fitted=fit_screen_fill_circle(native,width,height,
+                    range[1]-1,range[0],range[1]);
+                if(width>256 || height>224) for(int x:{0,int(width)}) for(int y:{0,int(height)}) {
+                    const auto dx=std::int64_t(x)-fitted.centre_x,dy=std::int64_t(y)-fitted.centre_y;
+                    require(dx*dx+dy*dy<=std::int64_t(fitted.radius)*fitted.radius,
+                        "Screen-fill death circle misses an expanded corner");
+                }
+                else require(fitted.radius==native.radius,"Native screen-fill radius changed");
+                for(unsigned program:{0U,range[0]-1,range[1],range[1]+1})
+                    require(fit_screen_fill_circle(native,width,height,program,range[0],range[1]).radius==native.radius,
+                        "A non-screen-fill circle was enlarged");
+                require(fitted.centre_x==native.centre_x && fitted.centre_y==native.centre_y
+                    && fitted.affected_layers==native.affected_layers && fitted.red==native.red,
+                    "Screen-fill fitting changed colour, position or layer protection");
+            }
+        }
+    }
     check_wrapped_background_roll([](const auto& p,unsigned width) {
         Framebuffer frame(width,192);
         BackgroundRenderer renderer;

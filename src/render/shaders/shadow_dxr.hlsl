@@ -336,7 +336,7 @@ uint reflection_background_at(uint base,float sampleX,float sampleY) {
             if(backdropCovers(sampleX-128,sampleY,motion.x,plane.x,projection,keep0,keep1)) {
                 uint4 modes=coverage.Load4(environment+1024);
                 float2 uv=backdropMotion(backdropCoordinates(sampleX-128,sampleY,motion.x,plane.x,plane.z,projection,keep0,keep1),modes.w,motion.w);
-                bool moonAtlas=projection.w>=6 && projection.w<=8;
+                bool moonAtlas=(projection.w>=6 && projection.w<=8) || projection.w==10;
                 bool cloudLimb=projection.w==9 && uv.y>=320/512.f;
                 float4 response=cloudLimb || (moonAtlas && uv.y>=2)?float4(0,0,0,1):
                     asfloat(coverage.Load4(environment+(projection.w!=0 && projection.w!=6 && projection.w!=8 && sampleY>=motion.x+plane.x*(sampleX-128)?1152:1136)));

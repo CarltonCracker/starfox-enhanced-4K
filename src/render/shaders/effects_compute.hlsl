@@ -573,9 +573,9 @@ void main(uint3 id : SV_DispatchThreadID,uint3 group : SV_GroupID,uint lane : SV
                 || (kind==0 && y<environmentMotion.x+environmentPlane.x*screenX)));
             float4 coverageProjection=backdropProjection;
             if(backdropProjection.w==0 && kind==6) coverageProjection.w=1;
-            if(skyOwned && ((backdropProjection.w==6 && kind==6) || backdropCovers(x,y,environmentMotion.x,environmentPlane.x,
+            if(skyOwned && (((backdropProjection.w==6 || backdropProjection.w==8) && kind==6) || backdropCovers(x,y,environmentMotion.x,environmentPlane.x,
                     coverageProjection,backdropKeep0,backdropKeep1))) {
-                bool moonAtlas=backdropProjection.w>=6 && backdropProjection.w<=8;
+                bool moonAtlas=(backdropProjection.w>=6 && backdropProjection.w<=8) || backdropProjection.w==10;
                 bool cloudLimb=backdropProjection.w==9 && uv.y>=320/512.f;
                 float4 response=cloudLimb || (moonAtlas && uv.y>=2)?float4(0,0,0,1):
                     !landscape && y>=environmentMotion.x+environmentPlane.x*x?backdropPaletteSurface:backdropPaletteSky;

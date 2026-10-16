@@ -38,6 +38,8 @@ extern "C" void StarfoxPS5_HideSplashScreen(void);
 #include "starfox/render/volumetric_fog.hpp"
 #include "starfox/render/gpu_motion_blur.hpp"
 #include "starfox/render/enhanced_terrain.hpp"
+#include "starfox/render/screen_fill_circle.hpp"
+#include "starfox/render/orbital_backdrop_atlas.hpp"
 #include "starfox/render/enhanced_backdrop_library.hpp"
 #include "starfox/render/background_renderer.hpp"
 #include "starfox/render/pixel_filter.hpp"
@@ -8869,6 +8871,9 @@ int main(int argc, char** argv) {
         const auto camera_yaw_address = ram_symbol("VIEWROTYW");
         const auto camera_roll_address = ram_symbol("VIEWROTZW");
         const auto game_frame_address = ram_symbol("GAMEFRAME");
+        const auto circle_animation_address = ram_symbol("CIRCLEANIM");
+        const auto first_screen_fill = symbols.find("WHITEFILLSCREEN_CIRCLE").at(0);
+        const auto end_screen_fill = symbols.find("LASTSTAGE_CIRCLE").at(0);
         const auto background_x_address = ram_symbol("BG2XSCROLL");
         const auto background_y_address = ram_symbol("BG2SCROLL");
         const auto palette_upload_symbols=symbols.find("VRAM3ADDR");
@@ -8996,6 +9001,7 @@ int main(int argc, char** argv) {
         starfox::render::MoonLandscapeAtlas fortuna_moon_atlas;
         starfox::render::MoonLandscapeAtlas twin_planet_atlas;
         starfox::render::MoonLandscapeAtlas orbital_moon_atlas;
+        starfox::render::OrbitalBackdropAtlas orbital_surface_atlas;
         starfox::render::MoonLandscapeAtlas asteroid_moon_atlas;
         starfox::render::MoonLandscapeAtlas city_moon_atlas;
         const auto enhanced_backdrop=[&](unsigned index)->const starfox::render::BackdropImage* {
@@ -12227,6 +12233,10 @@ int main(int argc, char** argv) {
                 previous_circle, current_circle, interpolation_alpha);
             circle.centre_x = static_cast<std::int16_t>(
                 circle.centre_x + viewport_origin);
+            circle = starfox::render::fit_screen_fill_circle(circle,
+                framebuffer.width(),framebuffer.height(),
+                game.map().read_native_word(circle_animation_address),
+                first_screen_fill,end_screen_fill);
             auto planet_presentation = game.planet_presentation_state();
             framebuffer.end_write_coverage();
             framebuffer.clear(0U);
@@ -13245,10 +13255,8 @@ int main(int argc, char** argv) {
                     const std::string_view environment_name=i<environment_names.size()
                         ?environment_names[i]:"";
                     const unsigned origin=menu_landscape_origin?*menu_landscape_origin:
-                        starfox::render::gameplay_landscape_origin(environment_name,
-                            active_experience==starfox::simulation::Experience::starfox_ex).value_or(
-                            i==24?224:(i==19 || i==20 || i==22)?248:(i==17 || i==18 || i==21)?240:
-                            i==6?(active_experience==starfox::simulation::Experience::starfox_ex?16:272):232);
+                        starfox::render::resolved_landscape_origin(environment_name,
+                            active_experience==starfox::simulation::Experience::starfox_ex);
                     const auto cache_key=unsigned(game.map().background()) | ((ex_menu_choice+1U)<<16);
                     const auto horizon = ex_native_menu
                         ? starfox::render::ex_menu_landscape_horizon(ex_menu_choice).value_or(origin + 128U)
@@ -13854,6 +13862,15 @@ int main(int argc, char** argv) {
                 environment_effects.backdrop_ramp=starfox::render::venom_cloud_ramp(cloud_palette);
                 if(starfox::render::venom_lightning_visible(cloud_palette))
                     environment_effects.classes[91]=7;
+            }
+            if(environment_effects.backdrop && game.environment()[3]
+                && (landscape_backdrop_artwork==28 || orbital_entry || orbital_exit
+                    || (ex_native_menu && (ex_menu_choice==21 || ex_menu_choice==35)))) {
+                auto& e=environment_effects;
+                const bool moons=e.backdrop_projection[3]==7;
+                e.backdrop=&orbital_surface_atlas.image(*e.backdrop,
+                    *enhanced_backdrop(ex_native_menu && ex_menu_choice==35?36:35),moons);
+                e.backdrop_projection[3]=10;
             }
             if(ex_native_menu) {
                 // Keep photographic sampling fractional, not rounded to the
