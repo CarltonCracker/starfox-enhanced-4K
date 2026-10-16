@@ -340,7 +340,7 @@ uint reflection_background_at(uint base,float sampleX,float sampleY) {
                 bool cloudLimb=projection.w==9 && uv.y>=320/512.f;
                 float4 response=cloudLimb || (moonAtlas && uv.y>=2)?float4(0,0,0,1):
                     asfloat(coverage.Load4(environment+(projection.w!=0 && projection.w!=6 && projection.w!=8 && sampleY>=motion.x+plane.x*(sampleX-128)?1152:1136)));
-                float3 sky=backdropStyle(backdropSample(uv.x,uv.y,image.x,image.y,image.z,projection.w),uv,modes.z,modes.w!=0?motion.w:0.f);
+                float3 sky=backdropStyle(backdropSample(uv.x,uv.y,image.x,image.y,image.z,projection.w,backdropOrbitalParameters(projection,plane.z)),uv,modes.z,modes.w!=0?motion.w:0.f);
                 if(cloudLimb) {
                     uint4 ramp[4];
                     for(uint i=0;i<4;++i) ramp[i]=coverage.Load4(environment+1168+i*16);
@@ -371,7 +371,7 @@ uint reflection_background_at(uint base,float sampleX,float sampleY) {
                 float opacity=moonAtlas && projection.w!=8?backdropMoonOpacity(uv,keep1):1;
                 if(opacity<1) {
                     float2 backgroundUV=backdropMotion(backdropCoordinates(sampleX-128,sampleY,motion.x,plane.x,plane.z,projection),modes.w,motion.w);
-                    float3 behind=backdropStyle(backdropSample(backgroundUV.x,backgroundUV.y,image.x,image.y,image.z,6.f),backgroundUV,modes.z,modes.w!=0?motion.w:0.f);
+                    float3 behind=backdropStyle(backdropSample(backgroundUV.x,backgroundUV.y,image.x,image.y,image.z,projection.w==10?10.f:6.f,backdropOrbitalParameters(projection,plane.z)),backgroundUV,modes.z,modes.w!=0?motion.w:0.f);
                     float4 skyResponse=asfloat(coverage.Load4(environment+1136));
                     colour=lerp(behind*skyResponse.w+255.f*skyResponse.rgb,colour,opacity);
                 }

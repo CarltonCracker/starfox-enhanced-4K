@@ -163,15 +163,21 @@ float3 backdropSample(float u,float v,uint w,uint h,uint base,bool repeatVertica
     }
     return c;
 }
-float3 backdropSample(float u,float v,uint w,uint h,uint base,float mode) {
+float3 backdropOrbitalParameters(float4 projection,float scroll) {
+    return float3(scroll*projection.x,projection.y!=0?projection.x/projection.y:1.f,projection.z);
+}
+float3 backdropSample(float u,float v,uint w,uint h,uint base,float mode,float3 orbital) {
     if(mode==10) {
         uint rows=h/3;
         if(v>=2) return backdropBilinear(saturate(u)*float(w-1),saturate(v-2)*float(rows-1),w,rows,base+2*rows*w*4);
         float encoded=max(0.f,v-.8f),depth=encoded/max(.0001f,1-encoded);
         float3 colour=backdropSample(u,v<=.8f?v:.8f+depth,w,rows,base);
         if(depth==0) return colour;
-        float radius=.45f/(1+depth*.65f),angle=u*6.283185307179586f;
-        float2 surface=float2(.5f+radius*cos(angle),.5f+radius*sin(angle));
+        float x=(u-orbital.x)/orbital.y,y=.8f+depth-orbital.z;
+        float denominator=max(.001f,sqrt(1+x*x+y*y)+y);
+        float dx=x/denominator,dz=1/denominator;
+        float angle=frac(orbital.x)*6.283185307179586f,cosine=cos(angle),sine=sin(angle);
+        float2 surface=float2(.5f+.45f*(dx*cosine-dz*sine),.5f+.45f*(dx*sine+dz*cosine));
         float3 ground=backdropBilinear(saturate(surface.x)*float(w-1),saturate(surface.y)*float(rows-1),w,rows,base+rows*w*4);
         float blend=saturate(depth*4);blend=blend*blend*(3-2*blend);
         return lerp(colour,ground,blend);
@@ -182,4 +188,7 @@ float3 backdropSample(float u,float v,uint w,uint h,uint base,float mode) {
     }
     if(mode==3 || mode==4 || mode==5 || mode==9) return backdropBilinear(saturate(u)*float(w-1),saturate(v)*float(h-1),w,h,base);
     return backdropSample(u,v,w,h,base,mode==2);
+}
+float3 backdropSample(float u,float v,uint w,uint h,uint base,float mode) {
+    return backdropSample(u,v,w,h,base,mode,float3(0,.3125f,.54f));
 }

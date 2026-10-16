@@ -47,7 +47,8 @@ No ROM/BIN files or additional embedded game executables are copied.
 3. Downward orbital views (notably the shared jade-planet backgrounds) could
    clamp to the photograph's bottom row and extrude vertical columns. The
    orbital continuation uses the existing top-down surface master instead,
-   blending below the panorama into a polar disk toward the nadir. Its
+   blending below the panorama into the VR renderer's conformal stereographic
+   disk toward the nadir (not a radial texture fan). Its
    monotonic coordinate encoding reserves the moon tags without a lower
    panorama clamp. Sky, surface and moon occupy separate immutable atlas
    sections. It remains a distant planet, not newly generated local terrain.

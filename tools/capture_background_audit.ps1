@@ -31,7 +31,8 @@ param(
     [ValidateRange(0,30000)][int]$CaptureStart=0,
     [ValidateRange(0,30000)][int]$CaptureInterval=0,
     [switch]$IncludeSpecialRoutes,
-    [switch]$Compact
+    [switch]$Compact,
+    [string]$Background=''
 )
 $ErrorActionPreference='Stop'
 if($PresentationInterval -and !$FinalTarget) {throw 'PresentationInterval requires FinalTarget'}
@@ -66,7 +67,7 @@ New-Item -ItemType Directory -Force -Path $auditPath | Out-Null
 $rom=if($Experience -eq 'EX') {'tmp/runtime-inputs/starfox-ex/SFES.SFC'} else {'upstream-ultrastarfox/SF.SFC'}
 $symbols=if($Experience -eq 'EX') {'assets/symbols/starfox-ex.txt'} else {'upstream-ultrastarfox/SYMBOLS.TXT'}
 $availableLevels=@(Get-Content -LiteralPath $symbols | ForEach-Object {
-    if($_ -match '^(LEVEL(?:[1-7]_[1-9]|_BLACKHOLE|_SPECIAL|_COMET)|GAMEOVER|INTROMAP|TITLEMAP|CONTMAP)\s') {$Matches[1]}
+    if($_ -match '^(LEVEL(?:[1-7]_[1-9]|_BLACKHOLE|_SPECIAL|_COMET)|TRAININGMAP|GAMEOVER|INTROMAP|TITLEMAP|CONTMAP)\s') {$Matches[1]}
 } | Sort-Object -Unique)
 # GAMEOVER is an application-supported front-end entry, not a ROM symbol.
 $availableLevels+=@('GAMEOVER')
@@ -76,6 +77,22 @@ if(!$Levels.Count) {
 if(!$Levels.Count) {throw 'No level entry points found'}
 foreach($level in $Levels) {
     if($level -notin $availableLevels) {throw "Unknown background entry for ${Experience}: $level"}
+}
+$expectedBackground=$null
+if($Background) {
+    if($Background -cnotmatch '^BG_[A-Z0-9_]+$' -or $Levels.Count -ne 1) {
+        throw 'A forced background requires one level and a BG_ symbol'
+    }
+    $base=$null;$entry=$null
+    Get-Content -LiteralPath $symbols | ForEach-Object {
+        if($_ -match '^BGLISTS\s+\$([0-9a-fA-F]+)') {$base=[Convert]::ToUInt32($Matches[1],16)}
+        if($_ -match ('^'+[regex]::Escape($Background)+'\s+\$([0-9a-fA-F]+)')) {$entry=[Convert]::ToUInt32($Matches[1],16)}
+    }
+    if($null -eq $base -or $null -eq $entry -or ($entry -band 0xff0000) -ne ($base -band 0xff0000)) {
+        throw 'Unknown authored background variant'
+    }
+    $expectedBackground=$entry-$base
+    if($AudioPreroll) {throw 'Forced backgrounds must be loaded after preroll; omit AudioPreroll for this diagnostic'}
 }
 # Isolate this fixture from other diagnostic hooks in the invoking shell.
 $savedEnvironment=@{}
@@ -154,6 +171,7 @@ try {
     # Record the reached flow and background ID, not just the requested level.
     # A direct-entry sample can already be at its boss or another background.
     $env:STARFOX_TRACE_RENDER_STATE='1'
+    if($Background) {$env:STARFOX_TEST_BACKGROUND=$Background}
     if($TraceObjects) {$env:STARFOX_TRACE_OBJECTS='1'}
     foreach($level in $Levels) {
         foreach($tick in $Ticks) {
@@ -161,6 +179,7 @@ try {
             foreach($aspect in $Aspects) {
                 if($aspect -notin @('4_3','16_9','32_9')) {throw "Unsupported audit aspect: $aspect"}
                 $stem="$Experience-$level-$tick-$aspect"
+                if($Background) {$stem="$Experience-$level-$Background-$tick-$aspect"}
                 $samples=1
                 if($CaptureInterval) {$samples+=[Math]::Max(0,[Math]::Ceiling(($Frames-$CaptureStart)/$CaptureInterval))}
                 if($PresentationInterval) {$samples+=[Math]::Ceiling($Frames/$PresentationInterval)}
@@ -205,6 +224,12 @@ try {
                 }
                 if($process.ExitCode -ne 0 -or !(Test-Path -LiteralPath $env:STARFOX_CAPTURE_PATH)) {throw "Capture failed: $stem"}
                 if($FinalTarget -and !(Test-Path -LiteralPath $env:STARFOX_CAPTURE_PRESENTATION_PATH)) {throw "Final capture missing: $stem"}
+                if($Background) {
+                    $selected=Get-Content -LiteralPath (Join-Path $auditPath "$stem.log") | Where-Object {$_ -match '^enhanced-backdrop-selection:'} | Select-Object -Last 1
+                    if($selected -notmatch 'background=([0-9]+)' -or [int]$Matches[1] -ne $expectedBackground) {
+                        throw "Forced background was replaced before capture: $stem"
+                    }
+                }
                 if($Compact) {
                     Add-Type -AssemblyName System.Drawing
                     $bitmap=[System.Drawing.Image]::FromFile($env:STARFOX_CAPTURE_PATH)

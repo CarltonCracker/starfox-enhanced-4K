@@ -28,6 +28,9 @@ struct BackdropImage {
         projection[0]/=factor;projection[1]/=factor;scroll*=factor;
         return factor;
     }
+    static std::array<float,3> orbital_parameters(const std::array<float,4>& projection,float scroll) {
+        return {scroll*projection[0],projection[1]?projection[0]/projection[1]:1.f,projection[2]};
+    }
     static std::array<float,3> limb_colour(const std::array<float,3>& surface,
         const std::array<std::uint32_t,16>& ramp) {
         const float shade=1+14*(1-std::clamp(surface[0]/255.f,0.f,1.f));
@@ -217,7 +220,8 @@ struct BackdropImage {
         }
         return c;
     }
-    std::array<float,3> sample_projected(float u,float v,float mode) const {
+    std::array<float,3> sample_projected(float u,float v,float mode,
+        std::array<float,3> orbital={0,.3125f,.54f}) const {
         if(mode==10) {
             if(!height || height%3 || !std::isfinite(u) || !std::isfinite(v)) return {};
             const unsigned rows=height/3;
@@ -226,10 +230,14 @@ struct BackdropImage {
             const float depth=encoded/std::max(.0001f,1-encoded);
             auto colour=sample_region(u,v<=.8f?v:.8f+depth,rows);
             if(!depth) return colour;
-            // A polar disk continues toward the planet's nadir: longitude
-            // converges to one point, not infinitely long texture columns.
-            const float radius=.45f/(1+depth*.65f),angle=u*6.283185307179586f;
-            const float sx=.5f+radius*std::cos(angle),sy=.5f+radius*std::sin(angle);
+            // Match the VR renderer's conformal stereographic disk, not an
+            // unwrapped longitude/radius fan (which stretches radial detail).
+            const float x=(u-orbital[0])/orbital[1],y=.8f+depth-orbital[2];
+            const float denominator=std::max(.001f,std::sqrt(1+x*x+y*y)+y);
+            const float dx=x/denominator,dz=1/denominator;
+            const float angle=(orbital[0]-std::floor(orbital[0]))*6.283185307179586f;
+            const float cosine=std::cos(angle),sine=std::sin(angle);
+            const float sx=.5f+.45f*(dx*cosine-dz*sine),sy=.5f+.45f*(dx*sine+dz*cosine);
             const auto surface=sample_projected(sx,(float(rows)+sy*float(rows-1))/float(height-1),3);
             float blend=std::clamp(depth*4,0.f,1.f);blend=blend*blend*(3-2*blend);
             for(unsigned c=0;c<3;++c) colour[c]=std::lerp(colour[c],surface[c],blend);

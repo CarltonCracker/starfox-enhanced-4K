@@ -61,6 +61,7 @@ template<class Draw> void check_orbital_surface_extents(Draw draw) {
         effects.motion[0]=20;effects.plane={bank,0,scroll,1};effects.backdrop=&atlas;
         effects.backdrop_projection={1/512.f,1/160.f,.54f,10};
         effects.backdrop_keep[0]={-40,50,8,8};effects.backdrop_ramp[1]=effects.backdrop_ramp[2]=0xffffff;
+        BackdropImage::fit_canvas(effects.backdrop_projection,effects.plane[2],width,224);
         const auto output=draw(frame,input,effects);
         if(output[0]!=255 || output[1]!=255 || output[2]!=255)
             throw std::runtime_error("Orbital surface overwrote a protected native subject");
@@ -68,12 +69,17 @@ template<class Draw> void check_orbital_surface_extents(Draw draw) {
         unsigned difference=0;
         for(unsigned c=0;c<3;++c) difference+=unsigned(std::abs(int(output[a+c])-int(output[b+c])));
         if(difference<3) throw std::runtime_error("Downward orbital view still extrudes a single texture row");
+        if(bank==0) {
+            const auto left=(std::size_t(200)*width+width/2-100)*4,right=left+200*4;
+            if(int(output[right])-int(output[left])<3)
+                throw std::runtime_error("Orbital disk folded left/right detail into a radial texture fan");
+        }
         for(float y:{-10000.f,0.f,224.f,10000.f}) for(float x:{-853.f,0.f,853.f}) {
-            const auto uv=BackdropImage::coordinates(x,y,20,bank,scroll,effects.backdrop_projection,effects.backdrop_keep);
+            const auto uv=BackdropImage::coordinates(x,y,20,bank,effects.plane[2],effects.backdrop_projection,effects.backdrop_keep);
             if(!std::isfinite(uv[0]) || !std::isfinite(uv[1]) || uv[1]>=2)
                 throw std::runtime_error("Orbital continuation selected an offscreen moon tag");
         }
-        if(BackdropImage::coordinates(-40,50,20,bank,scroll,effects.backdrop_projection,effects.backdrop_keep)[1]!=2.5f)
+        if(BackdropImage::coordinates(-40,50,20,bank,effects.plane[2],effects.backdrop_projection,effects.backdrop_keep)[1]!=2.5f)
             throw std::runtime_error("Orbital continuation lost the unique moon footprint");
         ++cases;
     }
