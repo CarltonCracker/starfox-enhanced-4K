@@ -772,6 +772,7 @@ private:
     void calculate_meters();
     void draw_ex_transfer_overlay(GameTickResult& result);
     void service_audio_irq(std::vector<std::uint8_t>& commands);
+    void advance_msu_fade();
     void stop_music_on_player_death();
     void configure_route_for_map(const std::string& symbol);
     [[nodiscard]] std::uint32_t resolve_route_stage(std::uint16_t stage);
@@ -1175,6 +1176,8 @@ private:
     std::uint32_t credits_music_original_{};
     std::uint32_t credits_music_ex_{};
     std::uint32_t msu_play_{};
+    std::uint32_t msu_fade_flag_{};
+    std::uint32_t msu_volume_{};
     std::uint32_t previous_view_position_{};
     std::uint32_t view_position_{};
     std::uint32_t view_shake_{};

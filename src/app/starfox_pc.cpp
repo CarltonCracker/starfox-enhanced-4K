@@ -298,6 +298,7 @@ public:
     bool menu_scenery{};
     bool menu_text_outline{};
     unsigned sky_source_min{};
+    bool continue_ground{true};
     std::span<const starfox::render::BackgroundUniqueRegion> menu_unique_regions{};
     void draw_title_foreground(const starfox::simulation::SnesPpuState& ppu,int x,int y,
         starfox::render::Framebuffer& frame,int origin,bool include=true,bool extend=false) const {
@@ -339,11 +340,13 @@ public:
         s.ending_star_extension=ending_star_extension;
         s.game_over_star_extension=game_over_star_extension;
         s.sky_source_min=sky_source_min;
+        s.continue_ground=continue_ground;
+        s.extend_tunnel_diagonals=true;
         if(!record(frame,s)) {
             if(menu_scenery) {
                 starfox::render::ScopedLayer scenery(frame,starfox::render::PixelLayer::background);
-                BackgroundRenderer::draw_bg2(ppu,x,y,frame,priority,origin,extend,wrap,black,rows,regions,ending_star_extension,game_over_star_extension,sky_source_min);
-            } else BackgroundRenderer::draw_bg2(ppu,x,y,frame,priority,origin,extend,wrap,black,rows,regions,ending_star_extension,game_over_star_extension,sky_source_min);
+                BackgroundRenderer::draw_bg2(ppu,x,y,frame,priority,origin,extend,wrap,black,rows,regions,ending_star_extension,game_over_star_extension,sky_source_min,continue_ground,true);
+            } else BackgroundRenderer::draw_bg2(ppu,x,y,frame,priority,origin,extend,wrap,black,rows,regions,ending_star_extension,game_over_star_extension,sky_source_min,continue_ground,true);
         }
     }
     void draw_bg3(const starfox::simulation::SnesPpuState& ppu,starfox::render::Framebuffer& frame,
@@ -7096,34 +7099,6 @@ private:
     bool active_{};
 };
 
-class MsuFadeOutput {
-public:
-    explicit MsuFadeOutput(const starfox::assets::SymbolMap& symbols)
-        : flag_(address(symbols, "MSUFADEFLAG")),
-          volume_(address(symbols, "CURMSUVOLUME")) {}
-
-    [[nodiscard]] std::optional<starfox::simulation::MsuRegisterWrite>
-        advance(starfox::simulation::MapVm& map) const noexcept {
-        if (flag_ == 0U || volume_ == 0U
-            || map.read_native_byte(flag_) == 0U) return std::nullopt;
-        const auto current = map.read_native_byte(volume_);
-        if (current == 0U) return std::nullopt;
-        const auto next = static_cast<std::uint8_t>(
-            current > 3U ? current - 3U : 0U);
-        map.write_native_byte(volume_, next);
-        return starfox::simulation::MsuRegisterWrite{0x2006U, next, 0U};
-    }
-
-private:
-    static std::uint32_t address(
-        const starfox::assets::SymbolMap& symbols, const char* name) noexcept {
-        const auto found = symbols.find(name);
-        return found.empty() ? 0U : found.front();
-    }
-    std::uint32_t flag_{};
-    std::uint32_t volume_{};
-};
-
 class PresentationPacer {
 public:
     void wait_for_next_frame(
@@ -7815,6 +7790,11 @@ int main(int argc, char** argv) {
 #endif
         startup_trace->mark("SDL ready; loading settings");
         starfox::app::set_portable_data_directory(executable_directory);
+        // Automation may exercise Apply without touching the player's real
+        // layouts, input bindings, settings or saves. Never active normally.
+        if(std::getenv("STARFOX_TEST_FRAMES"))
+            if(const auto* directory=std::getenv("STARFOX_TEST_DATA_DIRECTORY"))
+                starfox::app::set_portable_data_directory(std::filesystem::path{directory});
         if (std::getenv("STARFOX_TEST_FRAMES") == nullptr) {
             starfox::app::migrate_legacy_user_data();
         }
@@ -9247,7 +9227,6 @@ int main(int argc, char** argv) {
 #endif
         SDL_Gamepad* gamepad = gamepads.empty() ? nullptr : gamepads.front();
         RumbleOutput rumble{symbols};
-        MsuFadeOutput msu_fade{symbols};
         const auto close_gamepads = [&] {
             rumble.stop(gamepad);
             for (auto* opened : gamepads) {
@@ -9282,9 +9261,17 @@ int main(int argc, char** argv) {
         bool exit_confirmation =
             std::getenv("STARFOX_TEST_EXIT_CONFIRMATION") != nullptr;
         bool exit_yes_selected{};
+        bool suppress_editor_input{};
         const auto save_hud_layout = [&] {
             static_cast<void>(starfox::app::save_hud_layout(
                 hud_layout_path, hud_layouts));
+        };
+        const auto trace_runtime_editor = [&](const char* kind,const char* action) {
+            if(std::getenv("STARFOX_TEST_FRAMES") && game.runtime_options_open())
+                std::cerr<<"runtime-layout-editor: "<<kind<<' '<<action
+                    <<" map="<<starfox::assets::crc32(game.map().save_state())
+                    <<" objects="<<starfox::assets::crc32(game.objects().save_state())
+                    <<" scene="<<game.scene_revision()<<'\n';
         };
         const auto close_hud_editor = [&](bool apply) {
             if(apply) save_hud_layout();
@@ -9294,11 +9281,15 @@ int main(int argc, char** argv) {
             hud_editor.dragging.reset();
             hud_editor.finger.reset();
             input.reset();
+            suppress_editor_input=true;
             if (hud_editor_preview) {
                 initial_map = "BOOT";
                 return_to_options_after_editor = 3U;
                 restart_runtime = true;
                 running = false;
+            } else if(game.runtime_options_open()) {
+                trace_runtime_editor("HUD",apply?"apply":"cancel");
+                game.return_to_pregame_options(3U);
             }
         };
         const auto close_touch_editor = [&](bool apply) {
@@ -9308,11 +9299,15 @@ int main(int argc, char** argv) {
             touch_editor.active=false;
             touch_editor.gesture.clear();
             input.reset();
+            suppress_editor_input=true;
             if(touch_editor_preview) {
                 initial_map="BOOT";
                 return_to_options_after_editor=13U;
                 restart_runtime=true;
                 running=false;
+            } else if(game.runtime_options_open()) {
+                trace_runtime_editor("TOUCH",apply?"apply":"cancel");
+                game.return_to_pregame_options(13U);
             }
         };
         PresentationPacer pacer;
@@ -10623,6 +10618,10 @@ int main(int argc, char** argv) {
                 sampled_buttons = static_cast<ButtonMask>(
                     sampled_buttons & ~starfox::input::start);
             }
+            if(suppress_editor_input) {
+                if(sampled_buttons==0) suppress_editor_input=false;
+                sampled_buttons=0;
+            }
             if (state_slot_window || suppress_state_input) {
                 if (!state_slot_window && sampled_buttons == 0) suppress_state_input = false;
                 sampled_buttons = 0;
@@ -10660,7 +10659,8 @@ int main(int argc, char** argv) {
                         : starfox::input::ButtonMask{});
             }
             remap_input.sample(
-                bindings.sample_fixed_menu_navigation(gamepad,true));
+                test_frames && (hud_editor.active || touch_editor.active)
+                    ?sampled_buttons:bindings.sample_fixed_menu_navigation(gamepad,true));
             const auto tab_fast_forward = keyboard_state[SDL_SCANCODE_TAB]
                 && !game.in_setup_menu()
                 && !(remap_menu.active && remap_menu.waiting_for_input);
@@ -10751,13 +10751,6 @@ int main(int argc, char** argv) {
                     game.rumble()
                     && active_experience
                         == starfox::simulation::Experience::original);
-                if (game.msu1_music()
-                    && active_experience
-                        == starfox::simulation::Experience::original) {
-                    if (const auto fade = msu_fade.advance(game.map())) {
-                        pending_msu_writes.push_back(*fade);
-                    }
-                }
                 if (game.logic_tick_ready()) {
                     auto controls = input.consume();
                     std::array<starfox::input::TickInput, 4>
@@ -10870,10 +10863,19 @@ int main(int argc, char** argv) {
                         clamp_hud_layout(editor_layout,
                             window.canvas_width(game.display_mode()),
                             game.experience());
-                        launch_hud_editor_preview = true;
-                        initial_map = "LEVEL1_1";
-                        restart_runtime = true;
-                        running = false;
+                        if(game.runtime_options_open()) {
+                            // F1 edits the paused live session. Only the real
+                            // pre-game menu needs a fresh Corneria reference.
+                            hud_editor.initial_layout=editor_layout;
+                            hud_editor.active=true;
+                            remap_input.reset(bindings.sample_fixed_menu_navigation(gamepad,true));
+                            trace_runtime_editor("HUD","open");
+                        } else {
+                            launch_hud_editor_preview = true;
+                            initial_map = "LEVEL1_1";
+                            restart_runtime = true;
+                            running = false;
+                        }
                         controls = {};
                         secondary_controls = {};
                     } else if (TouchControls::enabled && game.in_setup_menu()
@@ -10882,10 +10884,18 @@ int main(int argc, char** argv) {
                                && game.pregame_selection() == 13U
                                && (controls.pressed & starfox::input::a) != 0U) {
                         touch_controls.reset();
-                        launch_touch_editor_preview=true;
-                        initial_map="LEVEL1_1";
-                        restart_runtime=true;
-                        running=false;
+                        if(game.runtime_options_open()) {
+                            touch_editor.initial_layout=touch_layout_config;
+                            touch_editor.active=true;
+                            touch_editor.gesture.clear();
+                            remap_input.reset(bindings.sample_fixed_menu_navigation(gamepad,true));
+                            trace_runtime_editor("TOUCH","open");
+                        } else {
+                            launch_touch_editor_preview=true;
+                            initial_map="LEVEL1_1";
+                            restart_runtime=true;
+                            running=false;
+                        }
                         controls={};
                         secondary_controls={};
                     }
@@ -12102,6 +12112,9 @@ int main(int argc, char** argv) {
                 starfox::render::BackgroundUniqueRegion{416,200,432,216,0,255,1},
                 starfox::render::BackgroundUniqueRegion{496,104,512,120,0,255,1}};
             background_renderer.menu_unique_regions = {};
+            const bool distant_background=std::ranges::any_of(shadowless_space_ids,
+                [current=game.map().background()](std::uint16_t id) {return id!=0 && id==current;});
+            background_renderer.continue_ground=!distant_background;
             const auto& ex_face_planets=game.environment()[3]?enhanced_face_planets:native_face_planets;
             background_renderer.sky_source_min=!ex_native_menu
                 && active_experience==starfox::simulation::Experience::original
@@ -12609,6 +12622,8 @@ int main(int argc, char** argv) {
                         starfox::render::GpuBackgroundSettings settings;
                         settings.layer=2;settings.scroll_x=background_x;settings.scroll_y=background_y;
                         settings.sky_source_min=background_renderer.sky_source_min;
+                        settings.continue_ground=background_renderer.continue_ground;
+                        settings.extend_tunnel_diagonals=true;
                         settings.horizontal_origin=viewport_origin;settings.extend_horizontal=extend_cartridge_scene;
                         if(dlss.enabled()) {
                             settings.terrain_source_rows=starfox::render::authored_terrain_rows(ppu);
@@ -13243,8 +13258,7 @@ int main(int argc, char** argv) {
             std::erase_if(visible, [](const auto& item) { return item.handle == 0; });
             const auto shadows_enabled =
                 (game.map().read_native_byte(player_fly_mode_address) & 0x08U) != 0U;
-            const bool shadowless_space = std::ranges::any_of(shadowless_space_ids,
-                [current=game.map().background()](std::uint16_t id) {return id!=0 && id==current;});
+            const bool shadowless_space = distant_background;
             // The source fly-mode shadow bit normally identifies a physical
             // receiver. Training's buildings still need enhanced shadows,
             // but neither a starfield nor a distant planet is a floor. This
@@ -13259,7 +13273,11 @@ int main(int argc, char** argv) {
             starfox::render::SourceGroundRamp ground_ramp;
             std::optional<float> landscape_source_horizon;
             std::optional<unsigned> landscape_backdrop_artwork;
-            const bool enhanced_ground_active = game.environment()[0] && !ex_native_menu;
+            // A material override changes an existing local surface; it must
+            // not turn a distant planet/starfield into a floor (even manual
+            // lava/water/mirror). Enhanced orbital skies have their own path.
+            const bool enhanced_ground_active = game.environment()[0]
+                && !ex_native_menu && !shadowless_space;
             if((enhanced_ground_active || game.environment()[3]) && !ppu.tunnel_scene
                 && (ppu.background_mode==2 || (ex_native_menu && ppu.background_mode==1))) {
                 for(unsigned i=0;i<=environment_ids.size();++i) if(i==environment_ids.size()?bool(menu_landscape_origin):

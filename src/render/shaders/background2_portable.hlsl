@@ -123,7 +123,7 @@ void main(uint3 id:SV_DispatchThreadID) {
     if(!phase) {if(!id.x) prepare();return;}
     uint x=id.x;if(x>=logicalWidth) return;
     bool extend=(flags&1u)!=0,wrapX=(flags&2u)!=0,tunnel=(flags&32u)!=0;
-    bool expanded=extend && logicalWidth>256 && (flags&4u),ground=expanded && logicalHeight>192;
+    bool expanded=extend && logicalWidth>256 && (flags&4u),ground=expanded && logicalHeight>192 && !(flags&1024u);
     int logicalX=int(x)-originX,sampleX=mosaicAt(tunnel && extend && priority!=2u?clamp(logicalX,0,255):logicalX);
     bool outside=logicalX<0 || logicalX>=256;
     uint mapWidth=tilesWide*tileEdge,mapHeight=tilesHigh*tileEdge;
@@ -136,6 +136,17 @@ void main(uint3 id:SV_DispatchThreadID) {
         int sampleY=mosaicAt(int(y));
         int rowX=(flags&8u) && sampleY>=0 && sampleY<224?asint(memory[16640u+uint(sampleY)]):scrollX;
         int rowY=(flags&16u)?asint(memory[16864u+uint(clamp(sampleY,0,223))]):scrollY;
+        if((flags&2048u) && outside && priority!=2u && sampleY>=0 && sampleY<224
+            && ((rowY&511)==24 || (rowY&511)==280)) {
+            uint page=(rowY&511)==280?1u:0u,part=page*2u+(sampleY>=112?1u:0u),base=17600u;
+            if(memory[base]&(1u<<part)) {
+                uint colour=memory[base+40u+page*224u+uint(sampleY)];
+                float dx=abs(float(logicalX+rowX)-255.5),dy=abs(float(sampleY)+.5-(sampleY<112?112.5:111.5));
+                for(uint z=0;z<memory[base+1u+part];++z)
+                    if(dx>=asfloat(memory[base+8u+part*8u+z*2u])*dy) colour=memory[base+9u+part*8u+z*2u];
+                put(x,y,colour,true);continue;
+            }
+        }
         uint sourceY=uint(sampleY+(columnY!=-2147483647?columnY:rowY))&(mapHeight-1);
         if(expanded && y<144 && outside && skySourceMin<mapHeight) sourceY=max(sourceY,skySourceMin);
         if(ground) {

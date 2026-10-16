@@ -110,3 +110,41 @@ These checks cannot certify every possible camera trajectory or hardware
 backend. New stage/angle regressions should retain the actual background ID,
 PPU layout, scroll/roll state, renderer and a selected witness. Nintendo 3DS
 development remains paused and is not part of this audit.
+
+## Native-background follow-up
+
+Material overrides now leave classified orbital/starfield backgrounds alone.
+The application regression `tools/check_space_ground_override.ps1` compares
+manual lava off/on in Original Venom, Original/EX orbital stages and EX 6-6.
+The three distant scenes must be pixel-identical; the real lava floor must
+still change. Enhanced skies remain independently selectable.
+
+Native Mode 2 floor continuation is likewise disabled for these distant
+backgrounds. Otherwise the final opaque star/planet texel before an atlas wrap
+could be extruded downwards as a solid block. CPU wrap fixtures retain native
+pixels and physical-ground continuation; the portable GPU comparison exercises
+both policies.
+
+For symmetric scanline tunnels, added widescreen columns now continue the
+source art's ceiling/floor diagonals using the existing VR corridor zone fit,
+instead of stretching each native edge texel into a horizontal bar. The 256
+native columns, source palette and per-row camera offsets are unchanged.
+Asymmetric/decorated art and active Mode 2 vertical offsets retain their
+previous sampling rather than receiving guessed symmetric geometry.
+
+`starfox_tunnel_scanline_tests` retains the 630-raster/18-command legacy oracle.
+`starfox_background_scanline_tests` and `starfox_gpu_background_check` test the
+new margin policy at 256/400/853 columns, 1x/2x and three camera offsets, plus
+asymmetric-art and Mode 1/2 offset-latch fallbacks. The optional cartridge test
+`starfox_upstream_tunnel_margins` reaches the actual Space Armada corridor and
+checks that only its margins change. Vulkan and D3D12 comparisons pass with
+183,997,440 exact pixel/coverage samples per backend, in addition to the new
+margin cases. A selected software gameplay capture confirms diagonal
+continuation in that corridor.
+
+This is not acceptance of every tunnel or boss entrance. In particular, the
+Mode 2/non-scanline boss-room background, Andross model stretching, all native
+planet camera extremes, unspecified EX ground bars and intermittent white
+fades remain separate reproduction targets. Selected EX ending captures at
+2,000/3,000/4,000 source ticks show the expected model dossier/credits in the
+current software build, but do not establish every route or animation is fixed.

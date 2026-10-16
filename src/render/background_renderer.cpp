@@ -1,5 +1,6 @@
 #include "starfox/render/background_renderer.hpp"
 #include "tilemap_coordinates.hpp"
+#include "starfox/render/tunnel_margin.hpp"
 
 #include <algorithm>
 #include <array>
@@ -365,7 +366,7 @@ void BackgroundRenderer::draw_bg2(
     std::uint32_t single_occurrence_top_rows,
     std::span<const BackgroundUniqueRegion> unique_regions,
     bool ending_star_extension, bool game_over_star_extension,
-    std::uint32_t sky_source_min) const noexcept {
+    std::uint32_t sky_source_min, bool continue_ground, bool extend_tunnel_diagonals) const noexcept {
     if ((ppu.main_screen & 0x02U) == 0U) return;
     const auto width_tiles = (ppu.bg2_screen_size & 1U) != 0U ? 64U : 32U;
     const auto height_tiles = (ppu.bg2_screen_size & 2U) != 0U ? 64U : 32U;
@@ -515,13 +516,15 @@ void BackgroundRenderer::draw_bg2(
         return fallback;
     };
 
-    const auto extend_ground_down = expanded_mode2 && target.height() > 192U;
+    const auto extend_ground_down = continue_ground && expanded_mode2 && target.height() > 192U;
     const auto first_x = extend_horizontal ? 0U
         : static_cast<std::uint32_t>(std::max<std::int32_t>(horizontal_origin, 0));
     const auto final_x = extend_horizontal ? target.width()
         : std::min(target.width(), static_cast<std::uint32_t>(
             std::max<std::int32_t>(horizontal_origin + 256, 0)));
     if (first_x >= final_x) return;
+    const auto* tunnel_margin_profile=extend_tunnel_diagonals && ppu.tunnel_scene
+        && extend_horizontal && target.width()>256?&tunnel_margin(ppu):nullptr;
     if (ppu.tunnel_scene && extend_horizontal && wrap_horizontal
         && !target.command_buffer() && (ppu.mosaic & 2U) == 0U
         && !(ppu.background_mode == 2U && ppu.bg2_vertical_offsets_enabled)
@@ -554,15 +557,34 @@ void BackgroundRenderer::draw_bg2(
                 return ink && !(transparent_cgram_black && (ppu.cgram[ink] & 32767U) == 0U)
                     ? ink : wall_colour;
             };
+            const auto margin=[&](unsigned first,unsigned last,int native_edge) {
+                const auto fallback=edge_colour(native_edge);
+                if(tunnel_margin_profile && tunnel_margin_profile->data[0]) {
+                    // Keep the existing bulk row writer at high render scales;
+                    // a fitted surface has only a few colour runs per margin.
+                    auto run_start=first;
+                    auto run_colour=fallback;
+                    for(unsigned x=first;x<last;++x) {
+                        const auto ink=tunnel_margin_profile->sample(int(x)-horizontal_origin,int(y),row_x,row_y);
+                        const auto colour=ink?*ink:fallback;
+                        if(x!=first && colour!=run_colour) {
+                            target.set_solid_indexed_row(int(run_start),int(y),x-run_start,run_colour);
+                            run_start=x;
+                        }
+                        run_colour=colour;
+                    }
+                    target.set_solid_indexed_row(int(run_start),int(y),last-run_start,run_colour);
+                } else target.set_solid_indexed_row(int(first),int(y),last-first,fallback);
+            };
             if (priority != TilePriorityPass::high && native_first > first_x)
-                target.set_solid_indexed_row(int(first_x), int(y), native_first - first_x, edge_colour(0));
+                margin(first_x,native_first,0);
             draw_tile_scanline<4>(ppu, target,
                 priority == TilePriorityPass::low ? TilePriorityPass::all : priority,
                 ppu.bg2_screen_base, ppu.bg2_character_base, pages_wide, ppu.bg2_tile_size_16,
                 width_pixels, source_y, row_x, horizontal_origin,
                 native_first, native_last, y, transparent_cgram_black);
             if (priority != TilePriorityPass::high && native_last < final_x)
-                target.set_solid_indexed_row(int(native_last), int(y), final_x - native_last, edge_colour(255));
+                margin(native_last,final_x,255);
         }
         return;
     }
@@ -703,6 +725,14 @@ void BackgroundRenderer::draw_bg2(
             for (auto screen_x = first_x; screen_x < final_x; ++screen_x) {
                 const auto logical_x = static_cast<std::int32_t>(screen_x)
                     - horizontal_origin;
+                if(tunnel_margin_profile && priority!=TilePriorityPass::high
+                    && (logical_x<0 || logical_x>=256)) {
+                    const int row_y=ppu.bg2_scanline_scroll_enabled
+                        ?ppu.bg2_scanline_scroll_y[std::clamp(sample_y,0,223)]:scroll_y;
+                    if(const auto ink=tunnel_margin_profile->sample(logical_x,sample_y,row_scroll_x,row_y)) {
+                        write(screen_x,*ink);continue;
+                    }
+                }
                 if (ppu.tunnel_scene && extend_horizontal
                     && priority == TilePriorityPass::high
                     && (logical_x < 0 || logical_x >= 256)) {

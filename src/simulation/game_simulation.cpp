@@ -499,6 +499,8 @@ GameSimulation::GameSimulation(
     credits_music_original_ = find_optional_rom("DO_BGM_STAFF");
     credits_music_ex_ = find_optional_rom("DO_BGM_SP0RCH");
     msu_play_ = find_optional_rom("MSUPLAY_L");
+    msu_fade_flag_ = find_optional_ram("MSUFADEFLAG");
+    msu_volume_ = find_optional_ram("CURMSUVOLUME");
     find_window_priority_ = find_optional_rom("FIND_WINDOW_PRI_L");
     window_pointer_ = find_optional_ram("WINDOWPTR");
     window_array_ = find_optional_ram("WINDOWARRAY");
@@ -2471,6 +2473,12 @@ void GameSimulation::service_audio_irq(std::vector<std::uint8_t>& commands) {
             if (music == 0xf0U) {
                 map_.write_native_byte(0x002006U, 0U);
                 map_.write_native_byte(0x002007U, 0U);
+                if(msu_fade_flag_) map_.write_native_byte(msu_fade_flag_,0U);
+            } else if(music==0xf1U && !starfox_ex_cartridge_ && msu_fade_flag_) {
+                // Several source boss/clear strategies request SPC fade-out
+                // without an explicit MSU fade. Mirror the command instead of
+                // leaving the replacement encounter track looping forever.
+                map_.write_native_byte(msu_fade_flag_,1U);
             }
             map_.write_native_byte(background_music_count_, 1U);
             background_music_start_pending_ = false;
@@ -4421,6 +4429,21 @@ void GameSimulation::begin_planet_selection_sequence() {
     pepper_brightness_ = 0U;
 }
 
+void GameSimulation::advance_msu_fade() {
+    if(starfox_ex_cartridge_ || !msu_fade_flag_ || !msu_volume_
+        || !map_.read_native_byte(msu_fade_flag_)) return;
+    // NMI.ASM's source fade is 3 volume units per 60 Hz video phase. This
+    // belongs to simulation, not a desktop-only/presentation-rate host shim.
+    const auto current=map_.read_native_byte(msu_volume_);
+    const auto next=static_cast<std::uint8_t>(current>3U?current-3U:0U);
+    map_.write_native_byte(msu_volume_,next);
+    map_.write_native_byte(0x002006U,next);
+    if(!next) {
+        map_.write_native_byte(0x002007U,0U);
+        map_.write_native_byte(msu_fade_flag_,0U);
+    }
+}
+
 void GameSimulation::present_frame() {
     if (!runtime_options_open_ && briefing_voice_frames_ != 0U) --briefing_voice_frames_;
     if (menu_preview_) {
@@ -4437,6 +4460,7 @@ void GameSimulation::present_frame() {
             request_msu_music(track, repeat);
         }
     }
+    advance_msu_fade();
     if (video_phases_since_tick_ != 0xffU) ++video_phases_since_tick_;
     if (flow_state_ == GameFlowState::game_over
         && frontend_phase_ == FrontendPhase::none

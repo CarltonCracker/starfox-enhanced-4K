@@ -2162,6 +2162,8 @@ if(STARFOX_BUILD_TESTS)
 
     add_executable(starfox_ending_tests tests/ending_tests.cpp)
     target_link_libraries(starfox_ending_tests PRIVATE starfox_core)
+    add_executable(starfox_msu_fade_tests tests/msu_fade_tests.cpp)
+    target_link_libraries(starfox_msu_fade_tests PRIVATE starfox_core)
     add_executable(starfox_intro_pacing_tests tests/intro_pacing_tests.cpp)
     add_executable(starfox_geometry_pacing_tests tests/geometry_pacing_tests.cpp)
     target_link_libraries(starfox_geometry_pacing_tests PRIVATE starfox_core)
@@ -2309,6 +2311,13 @@ if(STARFOX_BUILD_TESTS)
                     "${CMAKE_CURRENT_SOURCE_DIR}/upstream-ultrastarfox/SYMBOLS.TXT"
         )
         add_test(NAME starfox_upstream_ending COMMAND starfox_ending_tests
+            "${CMAKE_CURRENT_SOURCE_DIR}/upstream-ultrastarfox/SF.SFC"
+            "${CMAKE_CURRENT_SOURCE_DIR}/upstream-ultrastarfox/SYMBOLS.TXT")
+        add_test(NAME starfox_upstream_msu_fade COMMAND starfox_msu_fade_tests
+            "${CMAKE_CURRENT_SOURCE_DIR}/upstream-ultrastarfox/SF.SFC"
+            "${CMAKE_CURRENT_SOURCE_DIR}/upstream-ultrastarfox/SYMBOLS.TXT"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/msu-tone-320.flac")
+        add_test(NAME starfox_upstream_tunnel_margins COMMAND starfox_tunnel_scanline_tests
             "${CMAKE_CURRENT_SOURCE_DIR}/upstream-ultrastarfox/SF.SFC"
             "${CMAKE_CURRENT_SOURCE_DIR}/upstream-ultrastarfox/SYMBOLS.TXT")
         add_test(NAME starfox_upstream_intro_pacing COMMAND starfox_intro_pacing_tests
