@@ -36,7 +36,8 @@ class MetalPipelinePreparation : public std::enable_shared_from_this<MetalPipeli
         // across mono/stereo/motion owners instead of spawning compilers for
         // each eye or compiling all of them at once.
         static dispatch_queue_t queue=dispatch_queue_create(
-            "com.starfox.enhanced.metal-pipelines",DISPATCH_QUEUE_SERIAL);
+            "com.starfox.enhanced.metal-pipelines",
+            dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL,QOS_CLASS_UTILITY,0));
         return queue;
     }
 public:
