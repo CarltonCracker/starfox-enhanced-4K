@@ -140,6 +140,16 @@ inline std::optional<unsigned> gameplay_landscape_origin(std::string_view name,b
     if(ex && (name=="BG_6_7B" || name=="BG_6_7C")) return 0;
     return std::nullopt;
 }
+// Name-based defaults shared by the presenter and route audit. Positional
+// indexes in the application's background list must not change calibration.
+inline unsigned resolved_landscape_origin(std::string_view name,bool ex) noexcept {
+    unsigned fallback=232;
+    if(name=="BG_1_7B") fallback=224;
+    else if(name=="BG_5_5" || name=="BG_7_5" || name=="BG_5_2") fallback=248;
+    else if(name=="BG_6_2" || name=="BG_6_4" || name=="BG_6_6") fallback=240;
+    else if(name=="BG_3_5") fallback=ex?16:272;
+    return gameplay_landscape_origin(name,ex).value_or(fallback);
+}
 // The cloud/fire atlases place sky and terrain in distinct palette banks,
 // but distribute small highlights too sparsely for the generic tile-count
 // classifier. Explicit ownership also lets their live palette fades tint the
@@ -713,6 +723,7 @@ inline void apply_environment(const EnvironmentEffects& e,const Framebuffer& fra
     }
     const bool smooth_ground=e.modes[0] && (e.modes[0]<=5 || e.modes[0]==9);
     if(water_grid_ms) *water_grid_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-grid_start).count();
+    const auto backdrop_parameters=BackdropImage::orbital_parameters(e.backdrop_projection,e.plane[2]);
     const auto rows = [&](unsigned first, unsigned last) {
     for(std::size_t i=std::size_t(first)*width;i<std::size_t(last)*width;++i) {
         const unsigned source_kind=e.classes[frame.pixels()[i]];
@@ -731,16 +742,16 @@ inline void apply_environment(const EnvironmentEffects& e,const Framebuffer& fra
             const bool sky_owned=city_moon || (source_kind!=7 && (!landscape
                 || source_kind==6 || (source_kind==0
                     && y<e.motion[0]+e.plane[0]*screen_x)));
-            if(sky_owned && ((e.backdrop_projection[3]==6 && source_kind==6) || BackdropImage::covers(x,y,e.motion[0],e.plane[0],
+            if(sky_owned && (((e.backdrop_projection[3]==6 || e.backdrop_projection[3]==8) && source_kind==6) || BackdropImage::covers(x,y,e.motion[0],e.plane[0],
                     e.backdrop_projection[3]==0 && source_kind==6
                         ?std::array<float,4>{e.backdrop_projection[0],e.backdrop_projection[1],
                             e.backdrop_projection[2],1.f}:e.backdrop_projection,
                     e.backdrop_keep))) {
                 const auto uv=backdrop_motion(BackdropImage::coordinates(x,y,e.motion[0],e.plane[0],e.plane[2],e.backdrop_projection,e.backdrop_keep),e.modes[3],e.motion[3]);
-                auto sky=backdrop_ramp_colour(backdrop_style(e.backdrop->sample_projected(uv[0],uv[1],e.backdrop_projection[3]),uv,e.modes[2],e.modes[3]?e.motion[3]:0.f),e.backdrop_ramp);
+                auto sky=backdrop_ramp_colour(backdrop_style(e.backdrop->sample_projected(uv[0],uv[1],e.backdrop_projection[3],backdrop_parameters),uv,e.modes[2],e.modes[3]?e.motion[3]:0.f),e.backdrop_ramp);
                 const bool cloud_limb=e.backdrop_projection[3]==9 && uv[1]>=320/512.f;
                 if(cloud_limb) sky=BackdropImage::limb_colour(sky,e.backdrop_ramp);
-                const bool moon_atlas=e.backdrop_projection[3]>=6 && e.backdrop_projection[3]<=8;
+                const bool moon_atlas=(e.backdrop_projection[3]>=6 && e.backdrop_projection[3]<=8) || e.backdrop_projection[3]==10;
                 if(moon_atlas && uv[1]>=2) {
                     if(e.backdrop_projection[3]!=8) sky=BackdropImage::moon_surface(sky,uv,e.backdrop_keep[1]);
                     sky=BackdropImage::moon_colour(sky,uv,e.backdrop_ramp);
@@ -755,7 +766,7 @@ inline void apply_environment(const EnvironmentEffects& e,const Framebuffer& fra
                 std::array<float,3> behind{};
                 if(opacity<1) {
                     const auto background_uv=backdrop_motion(BackdropImage::coordinates(x,y,e.motion[0],e.plane[0],e.plane[2],e.backdrop_projection,{}),e.modes[3],e.motion[3]);
-                    behind=backdrop_style(e.backdrop->sample_projected(background_uv[0],background_uv[1],6),background_uv,e.modes[2],e.modes[3]?e.motion[3]:0.f);
+                    behind=backdrop_style(e.backdrop->sample_projected(background_uv[0],background_uv[1],e.backdrop_projection[3]==10?10:6,backdrop_parameters),background_uv,e.modes[2],e.modes[3]?e.motion[3]:0.f);
                     for(unsigned k=0;k<3;++k) behind[k]=behind[k]*e.backdrop_palette[0][3]+255.f*e.backdrop_palette[0][k];
                 }
                 for(unsigned k=0;k<3;++k) {

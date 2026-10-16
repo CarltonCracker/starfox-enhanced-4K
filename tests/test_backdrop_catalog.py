@@ -26,6 +26,16 @@ class BackdropCatalogTests(unittest.TestCase):
         self.assertEqual(len(pairs), len(self.paths))
         self.assertEqual({int(key): path for key, path in pairs}, self.expected)
 
+    def test_every_shipped_artwork_has_sampling_test(self):
+        source = (ROOT / 'CMakeLists.txt').read_text()
+        # Both explicit asset tests and the named artwork loop invoke the
+        # projection/sampling sweep. Surface masters count too, not just skies.
+        explicit = set(re.findall(r'\$\{CMAKE_CURRENT_SOURCE_DIR\}/(assets/enhanced-backdrops/[^$"\s]+\.bmp)', source))
+        loop = re.search(r'foreach\(backdrop IN ITEMS ([^)]+)\)', source).group(1).split()
+        covered = explicit | {f'assets/enhanced-backdrops/{name}.bmp' for name in loop}
+        self.assertFalse(set(self.paths) - covered,
+                         f'Artwork missing from sampling sweep: {set(self.paths) - covered}')
+
     def test_portable_resources_match(self):
         source = (ROOT / 'CMakeLists.txt').read_text()
         # Portable dispatch arguments and split translation units must come

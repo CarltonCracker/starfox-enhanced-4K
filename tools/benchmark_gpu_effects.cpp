@@ -30,6 +30,8 @@
 #include <cstdlib>
 #include <stdexcept>
 #include "../tests/environment_screen_reflection_cases.hpp"
+#include "../tests/backdrop_projection_cases.hpp"
+#include "starfox/render/screen_fill_circle.hpp"
 #if defined(STARFOX_TEST_PORTABLE_GPU)
 #include "check_dedither.inc"
 #include "check_environment_reflection.inc"
@@ -52,7 +54,48 @@ int main() {
     try {check_environment_overlays(gpu,device.Get());}
     catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 118;}
     if(std::getenv("STARFOX_TEST_ENVIRONMENT_OVERLAYS_ONLY")) return 0;
+    if(std::getenv("STARFOX_TEST_BACKDROP_PROJECTION_ONLY")) {
+        try {
+            check_packed_backdrop_extents([&](const auto& frame,auto pixels,const auto& effects) {
+                auto expected=pixels;apply_environment(effects,frame,expected);
+                GpuEffectSettings settings;settings.environment=effects;
+                if(!gpu.apply(device.Get(),frame,pixels,settings)) throw std::runtime_error(gpu.status());
+                if(pixels!=expected) throw std::runtime_error("CPU/GPU banked backdrop mismatch");
+                return pixels;
+            });
+            check_orbital_surface_extents([&](const auto& frame,auto pixels,const auto& effects) {
+                auto expected=pixels;apply_environment(effects,frame,expected);
+                GpuEffectSettings settings;settings.environment=effects;
+                if(!gpu.apply(device.Get(),frame,pixels,settings)) throw std::runtime_error(gpu.status());
+                for(std::size_t i=0;i<pixels.size();++i) if(std::abs(int(pixels[i])-int(expected[i]))>1)
+                    throw std::runtime_error("CPU/GPU orbital surface mismatch");
+                return pixels;
+            });
+            return 0;
+        } catch(const std::exception& error) {std::cerr<<error.what()<<'\n';return 119;}
+    }
 #if defined(_WIN32)
+    if(std::getenv("STARFOX_TEST_D3D11_BACKDROP_PROJECTION_ONLY")) {
+        try {
+            Microsoft::WRL::ComPtr<ID3D11Device> native;
+            const auto result=D3D11CreateDevice(nullptr,D3D_DRIVER_TYPE_HARDWARE,nullptr,0,nullptr,0,
+                D3D11_SDK_VERSION,native.GetAddressOf(),nullptr,nullptr);
+            if(FAILED(result)) throw std::runtime_error("D3D11 backdrop fixture device creation failed");
+            // Native D3D11 deliberately declines circle/fade effects for the
+            // CPU presenter. Exercise its supported photographic path here.
+            GpuEffects legacy;
+            const auto draw=[&](const auto& frame,auto pixels,const auto& effects) {
+                auto expected=pixels;apply_environment(effects,frame,expected);
+                GpuEffectSettings settings;settings.environment=effects;
+                if(!legacy.apply(native.Get(),frame,pixels,settings)) throw std::runtime_error(legacy.status());
+                for(std::size_t i=0;i<pixels.size();++i) if(std::abs(int(pixels[i])-int(expected[i]))>1)
+                    throw std::runtime_error("CPU/D3D11 backdrop mismatch");
+                return pixels;
+            };
+            check_packed_backdrop_extents(draw);check_orbital_surface_extents(draw);
+            std::cout<<"Native D3D11 background/effect cases passed\n";return 0;
+        } catch(const std::exception& error) {std::cerr<<error.what()<<'\n';return 120;}
+    }
     if(std::getenv("STARFOX_TEST_D3D11_SCREEN_REFLECTION_ONLY")) {
         try {
             Microsoft::WRL::ComPtr<ID3D11Device> native;

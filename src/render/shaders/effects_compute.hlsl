@@ -573,14 +573,14 @@ void main(uint3 id : SV_DispatchThreadID,uint3 group : SV_GroupID,uint lane : SV
                 || (kind==0 && y<environmentMotion.x+environmentPlane.x*screenX)));
             float4 coverageProjection=backdropProjection;
             if(backdropProjection.w==0 && kind==6) coverageProjection.w=1;
-            if(skyOwned && ((backdropProjection.w==6 && kind==6) || backdropCovers(x,y,environmentMotion.x,environmentPlane.x,
+            if(skyOwned && (((backdropProjection.w==6 || backdropProjection.w==8) && kind==6) || backdropCovers(x,y,environmentMotion.x,environmentPlane.x,
                     coverageProjection,backdropKeep0,backdropKeep1))) {
-                bool moonAtlas=backdropProjection.w>=6 && backdropProjection.w<=8;
+                bool moonAtlas=(backdropProjection.w>=6 && backdropProjection.w<=8) || backdropProjection.w==10;
                 bool cloudLimb=backdropProjection.w==9 && uv.y>=320/512.f;
                 float4 response=cloudLimb || (moonAtlas && uv.y>=2)?float4(0,0,0,1):
                     !landscape && y>=environmentMotion.x+environmentPlane.x*x?backdropPaletteSurface:backdropPaletteSky;
                 float3 sky=backdropStyle(backdropSample(uv.x,uv.y,
-                    surfaceWidth,surfaceHeight,uint(surfaceX),backdropProjection.w),uv,environmentModes.z,environmentModes.w!=0?environmentMotion.w:0.f);
+                    surfaceWidth,surfaceHeight,uint(surfaceX),backdropProjection.w,backdropOrbitalParameters(backdropProjection,environmentPlane.z)),uv,environmentModes.z,environmentModes.w!=0?environmentMotion.w:0.f);
                 if(cloudLimb) sky=backdropLimbColour(sky,backdropRamp);
                 if(moonAtlas && uv.y>=2 && (backdropRamp[1].z==1 || backdropRamp[1].z==2)) sky=backdropRampMoonColour(sky,uv,backdropRamp);
                 else if(moonAtlas && uv.y>=2) sky=backdropMoonColour(backdropMoonSurface(sky,uv,backdropKeep1),uv,
@@ -599,7 +599,7 @@ void main(uint3 id : SV_DispatchThreadID,uint3 group : SV_GroupID,uint lane : SV
                 float opacity=moonAtlas && backdropProjection.w!=8?backdropMoonOpacity(uv,backdropKeep1):1;
                 if(opacity<1) {
                     float2 backgroundUV=backdropMotion(backdropCoordinates(x,y,environmentMotion.x,environmentPlane.x,environmentPlane.z,backdropProjection),environmentModes.w,environmentMotion.w);
-                    float3 behind=backdropStyle(backdropSample(backgroundUV.x,backgroundUV.y,surfaceWidth,surfaceHeight,uint(surfaceX),6.f),backgroundUV,environmentModes.z,environmentModes.w!=0?environmentMotion.w:0.f);
+                    float3 behind=backdropStyle(backdropSample(backgroundUV.x,backgroundUV.y,surfaceWidth,surfaceHeight,uint(surfaceX),backdropProjection.w==10?10.f:6.f,backdropOrbitalParameters(backdropProjection,environmentPlane.z)),backgroundUV,environmentModes.z,environmentModes.w!=0?environmentMotion.w:0.f);
                     colour=lerp(behind*backdropPaletteSky.w+255.f*backdropPaletteSky.rgb,colour,opacity);
                 }
                 result.rgb=uint3(clamp(colour*environmentPlane.w,0.f,255.f)+.5);
