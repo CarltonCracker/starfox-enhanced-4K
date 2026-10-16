@@ -11,10 +11,22 @@ def main():
     parser.add_argument('output', type=Path)
     parser.add_argument('--choices', type=int, nargs='+', default=list(range(37)) + [99])
     parser.add_argument('--levels', action='store_true', help='Arrange compact per-level PNG captures instead of EX menu choices')
+    parser.add_argument('--overrides', type=Path, action='append', default=[],
+                        help='Use newer whole-frame captures with matching names, without copying or altering the originals')
     args = parser.parse_args()
     frames = []
-    captures = ([(path.stem, path) for path in sorted(args.captures.glob('*.png'))] if args.levels else
-                [(f'BG {choice}', args.captures / f'choice-{choice}-final.bmp') for choice in args.choices])
+    if args.overrides and not args.levels:
+        parser.error('--overrides requires --levels')
+    if args.levels:
+        sources = {path.name: path for path in args.captures.glob('*.png')}
+        for directory in args.overrides:
+            updates = {path.name: path for path in directory.glob('*.png')}
+            if not updates or updates.keys() - sources.keys():
+                parser.error('Override directory must contain matching existing capture names')
+            sources.update(updates)
+        captures = [(name.removesuffix('.png'), path) for name, path in sorted(sources.items())]
+    else:
+        captures = [(f'BG {choice}', args.captures / f'choice-{choice}-final.bmp') for choice in args.choices]
     if not captures:
         parser.error('No captures found')
     for label, path in captures:

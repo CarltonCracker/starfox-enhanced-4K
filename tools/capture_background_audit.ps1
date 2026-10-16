@@ -222,7 +222,11 @@ try {
                     }
                     Write-Output "Capture running: $stem, PID $($process.Id)"
                 }
-                if($process.ExitCode -ne 0 -or !(Test-Path -LiteralPath $env:STARFOX_CAPTURE_PATH)) {throw "Capture failed: $stem"}
+                # The timed wait can return before redirected output drains.
+                $process.WaitForExit()
+                $exitCode=$process.ExitCode
+                $process.Dispose()
+                if($exitCode -ne 0 -or !(Test-Path -LiteralPath $env:STARFOX_CAPTURE_PATH)) {throw "Capture failed: $stem"}
                 if($FinalTarget -and !(Test-Path -LiteralPath $env:STARFOX_CAPTURE_PRESENTATION_PATH)) {throw "Final capture missing: $stem"}
                 if($Background) {
                     $selected=Get-Content -LiteralPath (Join-Path $auditPath "$stem.log") | Where-Object {$_ -match '^enhanced-backdrop-selection:'} | Select-Object -Last 1
@@ -242,9 +246,13 @@ try {
                     # not hundreds of repeated per-object diagnostic lines.
                     # Failed runs retain the complete original error log.
                     $trace=Get-Content -LiteralPath (Join-Path $auditPath "$stem.log")
-                    $receipt=@($trace | Where-Object {$_ -match '^(enhanced-backdrop-|render-state)'} | Select-Object -Last 6)
+                    $receipt=@($trace | Select-Object -First 20)
+                    $receipt+=@($trace | Where-Object {$_ -match '^(enhanced-backdrop-|render-state)'} | Select-Object -Last 6)
                     $receipt+=@($trace | Where-Object {$_ -match '(?i)(warning|error|failed|fallback)'})
-                    $receipt | Select-Object -Unique | Set-Content -LiteralPath (Join-Path $auditPath "$stem.log")
+                    $receipt | Select-Object -Unique | Set-Content -LiteralPath (Join-Path $auditPath "$stem.receipt.txt")
+                    # A redirector/AV may briefly retain the raw log's handle.
+                    # Keep it if locked, never overwrite/truncate a live file.
+                    Remove-Item -LiteralPath (Join-Path $auditPath "$stem.log") -ErrorAction SilentlyContinue
                 }
                 Write-Output "Captured $stem"
             }
