@@ -50,9 +50,20 @@ int main(int argc,char** argv) {
         check_tunnel_margins([&](const auto& p,unsigned width,unsigned scale,bool extend) {
             GpuBackgroundSettings settings;settings.layer=2;
             settings.horizontal_origin=int(width)/2-128;settings.extend_tunnel_diagonals=extend;
-            return run(device,gpu,p,width,224,scale,settings);
+            const auto actual=run(device,gpu,p,width,224,scale,settings);
+            Framebuffer expected(width,224,scale);
+            expected.enable_layer_tags(true);expected.set_layer_override(settings.tag);
+            expected.begin_write_coverage();
+            reference.draw_bg2(p,0,0,expected,settings.priority,settings.horizontal_origin,
+                true,true,false,0,{},false,false,0,true,extend);
+            for(std::size_t i=0;i<actual.size();++i) {
+                const auto packed=expected.write_coverage()[i]
+                    ?expected.pixels()[i]|(unsigned(expected.layer_tags()[i])<<8)|0x04000000U:0U;
+                if(actual[i]!=packed) throw std::runtime_error("Tunnel margin CPU/GPU pixel/coverage mismatch at "+std::to_string(i));
+            }
+            return actual;
         });
-        std::cout<<"Tunnel margins: source-fitted diagonal continuation at native/wide/ultrawide and 1x/2x, native viewport exact, asymmetric fallback passed\n";
+        std::cout<<"Tunnel margins: source-fitted diagonal continuation at native/wide/ultrawide and 1x/2x matches CPU pixels/coverage; native viewport exact, asymmetric fallback passed\n";
         check_wrapped_background_roll([&](const auto& p,unsigned width) {
             GpuBackgroundSettings settings;settings.layer=2;settings.scroll_x=3;
             settings.horizontal_origin=int(width)/2-128;settings.extend_horizontal=true;
