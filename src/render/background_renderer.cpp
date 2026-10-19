@@ -611,15 +611,26 @@ void BackgroundRenderer::draw_bg2(
         }
         return;
     }
-    std::vector<std::int32_t> column_scroll_y;
+    // A Mode 2 offset-per-tile column is one BG2 tile as it lies on the
+    // screen, so its edges follow the fine horizontal scroll of the line
+    // being drawn. BG2 scrolls per scanline (HDMA), so those edges move from
+    // line to line; aligning every line to one frame-wide phase split tiles
+    // between two offsets, a one-line step every 8 pixels that shows as
+    // vertical seams in the clouds while steering. Columns are therefore
+    // resolved per fine-scroll phase, each phase on first use.
     constexpr auto no_column_scroll = std::numeric_limits<std::int32_t>::min();
-    if (ppu.background_mode == 2U && ppu.bg2_vertical_offsets_enabled) {
+    const bool column_offsets = ppu.background_mode == 2U && ppu.bg2_vertical_offsets_enabled;
+    std::array<std::vector<std::int32_t>, 8> column_scroll_y_by_phase;
+    const auto column_scroll_y_for = [&](std::int32_t row_scroll_x)
+        -> const std::vector<std::int32_t>& {
+        const auto phase = row_scroll_x & 7;
+        auto& column_scroll_y = column_scroll_y_by_phase[static_cast<std::size_t>(phase)];
+        if (!column_offsets || !column_scroll_y.empty()) return column_scroll_y;
         column_scroll_y.resize(final_x - first_x, no_column_scroll);
         for (auto screen_x = first_x; screen_x < final_x; ++screen_x) {
             const auto logical_x = static_cast<std::int32_t>(screen_x)
                 - horizontal_origin;
-            const auto column_coordinate = logical_x
-                + (static_cast<std::int32_t>(scroll_x) & 7);
+            const auto column_coordinate = logical_x + phase;
             if (expanded_mode2 && fitted_samples != 0U) {
                 // Evaluate at pixel precision across the complete wide view.
                 // That removes both the 8-pixel staircase in the extensions
@@ -647,7 +658,8 @@ void BackgroundRenderer::draw_bg2(
                     visible_column, no_column_scroll);
             }
         }
-    }
+        return column_scroll_y;
+    };
     std::vector<std::uint8_t> last_opaque_ground;
     std::vector<std::int32_t> previous_ground_source_y;
     std::vector<std::uint8_t> ground_source_wrapped;
@@ -722,6 +734,7 @@ void BackgroundRenderer::draw_bg2(
                 : scroll_x;
             const auto unique_scroll_x = unique_regions.empty() ? 0
                 : wrap_tilemap_coordinate(row_scroll_x + width_pixels / 2, width_pixels) - width_pixels / 2;
+            const auto& column_scroll_y = column_scroll_y_for(row_scroll_x);
             for (auto screen_x = first_x; screen_x < final_x; ++screen_x) {
                 const auto logical_x = static_cast<std::int32_t>(screen_x)
                     - horizontal_origin;

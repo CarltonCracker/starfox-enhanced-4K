@@ -241,13 +241,42 @@ int main(int argc, char** argv) try {
         }
         std::cout<<"Space background continuation: native/wide/ultrawide atlas-wrap blocks suppressed; real ground continuation retained\n";
     }
+    {
+        // Mode 2 offset-per-tile columns follow BG2's tiles as fetched, i.e.
+        // the fine scroll of each scanline (HDMA), not one frame-wide phase.
+        // Each tile row is one solid colour and the columns alternate by a
+        // whole tile row, so every colour change must lie on a tile edge of
+        // that line. A frame-wide phase split tiles: vertical seams.
+        SnesPpuState ppu;
+        ppu.background_mode=2;ppu.main_screen=2;
+        ppu.bg2_screen_base=0x4000;ppu.bg2_character_base=0x1000;
+        ppu.bg2_vertical_offsets_enabled=true;ppu.bg2_horizontal_offsets_enabled=true;
+        for(unsigned ink=1;ink<=3;++ink) {
+            for(unsigned y=0;y<8;++y) {
+                const unsigned row=0x2000+ink*32+y*2;
+                ppu.vram[row]=(ink&1U)?255:0;ppu.vram[row+1]=(ink&2U)?255:0;
+            }
+            ppu.cgram[ink]=std::uint16_t(ink*0x1234U&32767U);
+        }
+        for(unsigned ty=0;ty<32;++ty) for(unsigned tx=0;tx<32;++tx) word(ppu,0x4000+ty*32+tx,1+ty%3);
+        for(unsigned x=0;x<32;++x) word(ppu,0x2fa0+x,std::uint16_t(0x4000|(x%2?8:0)));
+        for(unsigned y=0;y<224;++y) ppu.bg2_horizontal_offsets[y]=std::int16_t(3+8*(y%5));
+        Framebuffer frame(256,224);
+        BackgroundRenderer{}.draw_bg2(ppu,0,0,frame,TilePriorityPass::all,0);
+        for(unsigned y=0;y<224;++y) for(unsigned x=1;x<256;++x)
+            if(frame.get(x,y)!=frame.get(x-1,y) && (x+3)%8!=0)
+                throw std::runtime_error("Mode 2 offset-per-tile column split a BG2 tile (per-scanline fine scroll)");
+        std::cout<<"Mode 2 offset-per-tile: columns follow each scanline's fine scroll\n";
+    }
     const auto digest = oracle_trace();
     // Filled from a separate executable built BEFORE changing the renderer:
     // background_renderer.cpp SHA256 450af058b47c38fd096b7416782f1b3ab
     // dcdd428b847388391a68958e7d587d0, GNU 13.2 / -O2 / c++20.
     // This is not a comparison between two wrappers of the optimized routine.
 #ifndef STARFOX_BACKGROUND_LEGACY_ORACLE
-    constexpr std::uint64_t expected = 0xe6f02e2ec125cb39ULL;
+    // Updated for Mode 2 offset-per-tile columns that follow each scanline's
+    // fine scroll (the varied rasters with per-scanline BG2 HOFS changed).
+    constexpr std::uint64_t expected = 0xc18cad0e9a7ec6c8ULL;
     if (digest != expected) throw std::runtime_error("background scanline pixels/coverage/tags/commands changed");
 #endif
     std::cout << "Background source trace: 192 varied rasters + 12 ordered command streams, digest "
