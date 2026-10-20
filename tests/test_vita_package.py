@@ -29,7 +29,7 @@ def native_self(load_bytes=256):
 
 
 def sfo(**changes):
-    fields = {"TITLE": "Star Fox Enhanced", "TITLE_ID": "SFXE00001", "CATEGORY": "gd", "APP_VER": "00.08"}
+    fields = {"TITLE": "Star Fox Enhanced", "TITLE_ID": "SFXE00001", "CATEGORY": "gd", "APP_VER": "00.88"}
     fields.update(changes)
     keys, values, records = bytearray(), bytearray(), bytearray()
     for key, value in fields.items():
@@ -68,7 +68,7 @@ class VitaPackageTest(unittest.TestCase):
         return path
 
     def test_complete_package(self):
-        self.assertEqual(checker.check(self.package())["APP_VER"], "00.08")
+        self.assertEqual(checker.check(self.package())["APP_VER"], "00.88")
 
     def test_required_files(self):
         for name in self.entries:
