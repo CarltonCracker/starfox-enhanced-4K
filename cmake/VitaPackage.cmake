@@ -16,7 +16,7 @@ function(starfox_add_vita_package runtime_target)
     # Preserve room for vita-elf-create's SCE metadata before read-only data.
     target_link_options(${runtime_target} PRIVATE "-Wl,--defsym=__sce_headroom=0x10000")
     target_sources(${runtime_target} PRIVATE
-        "${STARFOX_VITA_PACKAGE_SOURCE_ROOT}/platform/vita/runtime_memory.c")
+        "${STARFOX_VITA_PACKAGE_SOURCE_ROOT}/platform/vita/runtime_memory.cpp")
     vita_create_self(eboot.bin ${runtime_target})
 
     set(root "${STARFOX_VITA_PACKAGE_SOURCE_ROOT}")

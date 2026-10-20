@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(starfox_vita_package_fixture LANGUAGES C)
+project(starfox_vita_package_fixture LANGUAGES C CXX)
 get_filename_component(STARFOX_SOURCE_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE)
 include("${STARFOX_SOURCE_ROOT}/cmake/VitaPackage.cmake")
 add_executable(vita_package_fixture main.c)
