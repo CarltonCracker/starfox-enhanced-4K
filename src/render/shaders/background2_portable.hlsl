@@ -90,10 +90,14 @@ void prepare() {
     prepared[7]=asuint(first>=0 && last!=first?difference(lastRaw,firstRaw):0);
     prepared[8]=uint(first>=0 && last!=first?last-first:1);
 }
-int columnScroll(int screenX,bool expanded) {
+// A Mode 2 offset-per-tile column is one BG2 tile as it lies on the screen:
+// its edges follow the fine scroll of the row being drawn (phase), which HDMA
+// changes per scanline. A frame-wide phase split tiles between two offsets,
+// a one-line step every 8 pixels (vertical seams in the clouds while steering).
+int columnScroll(int screenX,bool expanded,int phase) {
     if(!(flags&4u)) return -2147483647;
     int sampleX=clamp(mosaicAt(screenX-originX)+originX,clipLeft,clipRight-1);
-    int coordinate=sampleX-originX+(scrollX&7);
+    int coordinate=sampleX-originX+phase;
     if(expanded && prepared[4]) {
         Sf64 at=sf_div(number(coordinate),number(8));
         return roundNumber(sf_add(sf_make(prepared[0],prepared[1]),sf_mul(sf_make(prepared[2],prepared[3]),at)))&8191;
@@ -127,7 +131,7 @@ void main(uint3 id:SV_DispatchThreadID) {
     int logicalX=int(x)-originX,sampleX=mosaicAt(tunnel && extend && priority!=2u?clamp(logicalX,0,255):logicalX);
     bool outside=logicalX<0 || logicalX>=256;
     uint mapWidth=tilesWide*tileEdge,mapHeight=tilesHigh*tileEdge;
-    int columnY=columnScroll(tunnel && extend?sampleX+originX:int(x),expanded),previous=-1;uint lastGround=0;bool wrapped=false,lastTerrain=false;
+    int columnX=tunnel && extend?sampleX+originX:int(x),columnY=-2147483647,columnPhase=-1,previous=-1;uint lastGround=0;bool wrapped=false,lastTerrain=false;
     for(uint y=0;y<logicalHeight;++y) {
         put(x,y,0,false);
         if(!enabled || int(x)<clipLeft || int(x)>=clipRight) continue;
@@ -136,6 +140,7 @@ void main(uint3 id:SV_DispatchThreadID) {
         int sampleY=mosaicAt(int(y));
         int rowX=(flags&8u) && sampleY>=0 && sampleY<224?asint(memory[16640u+uint(sampleY)]):scrollX;
         int rowY=(flags&16u)?asint(memory[16864u+uint(clamp(sampleY,0,223))]):scrollY;
+        if((rowX&7)!=columnPhase) {columnPhase=rowX&7;columnY=columnScroll(columnX,expanded,columnPhase);}
         if((flags&2048u) && outside && priority!=2u && sampleY>=0 && sampleY<224
             && ((rowY&511)==24 || (rowY&511)==280)) {
             uint page=(rowY&511)==280?1u:0u,part=page*2u+(sampleY>=112?1u:0u),base=17600u;
@@ -162,7 +167,7 @@ void main(uint3 id:SV_DispatchThreadID) {
             unwrappedX+=shift;
             // Banked BG2 uses per-column vertical offsets. Sample the shifted
             // column too, otherwise each eye acquires vertical disparity.
-            int skyColumnY=columnScroll(int(x)+shift,expanded);
+            int skyColumnY=columnScroll(int(x)+shift,expanded,rowX&7);
             uint shiftedY=uint(sampleY+(skyColumnY!=-2147483647?skyColumnY:rowY))&(mapHeight-1);
             // Do not pull ground ink across the unchanged authored horizon.
             if(terrainLast>terrainFirst && shiftedY>=terrainFirst && shiftedY<terrainLast)

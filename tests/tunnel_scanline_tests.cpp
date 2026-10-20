@@ -142,7 +142,9 @@ int main(int argc, char** argv) try {
     // Pin this from the separate pre-optimization executable, not from the new path.
     // Baseline background_renderer.cpp SHA256 D0D8963026E2F5EE01C6F2E4689D9443
     // 09FB1D35F53598D1E44777364810DD16, compiled before changing the renderer.
-    constexpr std::uint64_t expected = 0x4085b5e1f2bcb833ULL;
+    // Updated for Mode 2 offset-per-tile columns that follow each scanline's
+    // fine scroll (the rasters with column offsets and per-scanline HOFS).
+    constexpr std::uint64_t expected = 0xef652e2851ccf4a1ULL;
     if (hash != expected) throw std::runtime_error{"tunnel pixels/coverage/tags/dither/commands changed"};
 #endif
     std::cout << "PASS 630 tunnel rasters + 18 ordered command streams: " << std::hex << hash << '\n';
