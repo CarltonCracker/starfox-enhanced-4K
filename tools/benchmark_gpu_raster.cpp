@@ -1,4 +1,5 @@
 #include "starfox/render/gpu_raster.hpp"
+#include "starfox/render/scaled_text_renderer.hpp"
 #include "starfox/localization/bitmap_font.hpp"
 #if !defined(STARFOX_TEST_RASTER_CPU)
 #include <SDL3/SDL.h>
@@ -161,6 +162,50 @@ int main(int argc,char** argv) {
         ++portrait_cases;
     }
     std::cout<<portrait_cases<<" packed portrait cases match independent forward expansion.\n";
+    // Exercise the actual portrait producer too, without cartridge assets.
+    // A portrait-only 7:6 stretch duplicated irregular columns in widescreen
+    // comms, unlike results portraits. Every source column must occupy S pixels.
+    std::vector<std::uint8_t> face_rom(32768);
+    for(unsigned alternate=0;alternate<2;++alternate) for(unsigned face=0;face<3;++face)
+        for(unsigned y=0;y<40;++y) for(unsigned x=0;x<32;++x) {
+            const auto ink=(x+3*y+5*face+7*alternate)&15U;
+            const auto at=4096+alternate*8192+face*640+((x/8)*5+y/8)*32+(y%8)*2;
+            for(unsigned plane=0;plane<4;++plane)
+                face_rom[at+(plane/2)*16+plane%2]|=((ink>>plane)&1U)<<(7-x%8);
+        }
+    const starfox::assets::RomImage face_image(std::move(face_rom));
+    const auto face_symbols=starfox::assets::SymbolMap::parse(
+        "MSCALECHARS $008000\nMARIOMSGS $008000\nFONT0WID $008000\n"
+        "FONT0FON $008000\nFONT0TRN $008000\nFACEDATA $009000\nFACEDATA2 $00B000\n");
+    const ScaledTextRenderer portrait_renderer(face_image,face_symbols);
+    unsigned uniform_faces=0;
+    for(unsigned width:{256U,360U,400U,520U,800U}) for(unsigned scale:{1U,2U,3U,6U})
+        for(unsigned alternate=0;alternate<2;++alternate) {
+            Framebuffer expected(width,56,scale),immediate(width,56,scale),recorded(width,56,scale);
+            expected.enable_layer_tags(true);immediate.enable_layer_tags(true);recorded.enable_layer_tags(true);
+            RasterCommands batch;batch.reset(recorded.stored_width(),recorded.stored_height());
+            recorded.record_to(&batch);
+            for(unsigned face=0;face<3;++face) {
+                const int origin=10+face*48;
+                portrait_renderer.draw_face(face,origin,5,immediate,112,alternate!=0);
+                portrait_renderer.draw_face(face,origin,5,recorded,112,alternate!=0);
+                for(unsigned y=0;y<40*scale;++y) for(unsigned x=0;x<32*scale;++x)
+                    expected.set_stored(origin*scale+x,5*scale+y,
+                        112+((x/scale+3*(y/scale)+5*face+7*alternate)&15U),PixelLayer::two_d);
+            }
+            recorded.record_to(nullptr);
+            replay_raster_commands(batch,recorded,nullptr);
+            if(immediate.pixels()!=expected.pixels() || recorded.pixels()!=expected.pixels()
+                || immediate.layer_tags()!=expected.layer_tags() || recorded.layer_tags()!=expected.layer_tags())
+                throw std::runtime_error("Comms/result portrait source pixels are not uniformly scaled");
+#if !defined(STARFOX_TEST_RASTER_CPU)
+            if(!gpu.render(batch,recorded,nullptr) || recorded.pixels()!=expected.pixels()
+                || recorded.layer_tags()!=expected.layer_tags())
+                throw std::runtime_error("Uniform portrait GPU mismatch: "+gpu.status());
+#endif
+            uniform_faces+=3;
+        }
+    std::cout<<uniform_faces<<" original/alternate portraits retain uniform pixels across 4:3 and wide canvases.\n";
     starfox::assets::Shape shape;
     shape.vertices={{-90,-60,0},{-80,60,25},{90,65,0},{80,-65,-20}};
     shape.colour_words={0x0009,0x006c,0x4000};

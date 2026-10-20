@@ -14733,7 +14733,7 @@ int main(int argc, char** argv) {
             if (dialogue.active && !suppress_configurable_hud) {
                 text_renderer.draw_face(
                     dialogue.portrait_frame, 48, 152, comms_hud,
-                    7U * 16U, dialogue.alternate_portraits, display_width>snes_width);
+                    7U * 16U, dialogue.alternate_portraits);
                 if (dialogue.text_visible) {
                     auto text_y = dialogue.three_lines ? 153 : 169;
                     const auto translated_lines=text_renderer.translated_game_text_lines(

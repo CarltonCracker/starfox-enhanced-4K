@@ -14,6 +14,7 @@
 #include "starfox/render/framebuffer.hpp"
 #include "starfox/render/dust_renderer.hpp"
 #include "starfox/render/scaled_text_renderer.hpp"
+#include "starfox/render/gpu_raster.hpp"
 #include "starfox/render/software_renderer.hpp"
 #include "starfox/render/sprite_renderer.hpp"
 #include "starfox/assets/shape_decoder.hpp"
@@ -8275,34 +8276,40 @@ int main(int argc, char** argv) {
         require(!starfox_message.empty(), "MSG_STARFOX symbol is missing");
         starfox::render::ScaledTextRenderer text_renderer{
             upstream_rom, upstream_symbols};
-        for(unsigned scale:{1U,2U,4U,10U}) {
+        for(unsigned scale:{1U,2U,3U,4U,6U,10U})
+            for(bool alternate:{false,true}) for(unsigned face:{0U,7U,17U}) {
             starfox::render::Framebuffer source_face{32,40};
-            text_renderer.draw_face(7,0,0,source_face);
+            text_renderer.draw_face(face,0,0,source_face,112,alternate);
             starfox::render::Framebuffer corrected_face{64,50,scale};
             corrected_face.enable_layer_tags(true);
-            text_renderer.draw_face(7,10,5,corrected_face,112,false,true);
-            const auto edge=[scale](unsigned x) {return (x*scale*7+3)/6;};
-            const auto left=42*scale-edge(32);
+            text_renderer.draw_face(face,10,5,corrected_face,112,alternate);
+            const auto left=10*scale;
             for(unsigned sy=0;sy<50*scale;++sy) for(unsigned sx=0;sx<64*scale;++sx) {
                 unsigned expected=0;
                 if(sy>=5*scale && sy<45*scale && sx>=left && sx<42*scale) {
-                    unsigned source_x=0;
-                    while(source_x<31 && left+edge(source_x+1)<=sx) ++source_x;
-                    expected=source_face.get(source_x,sy/scale-5);
+                    expected=source_face.get(sx/scale-10,sy/scale-5);
                 }
                 require(corrected_face.get_stored(sx,sy)==expected,
-                    "widescreen portrait aspect correction changed source pixels, height or right edge");
+                    "comms portrait does not retain uniform source pixels like the results portrait");
                 if(expected) require(corrected_face.layer_stored(sx,sy)==starfox::render::PixelLayer::two_d,
-                    "aspect-corrected comms portrait is incorrectly tagged as a model");
+                    "comms portrait is incorrectly tagged as a model");
             }
             starfox::render::RasterCommands portrait_commands;
             portrait_commands.reset(corrected_face.stored_width(),corrected_face.stored_height());
             corrected_face.record_to(&portrait_commands);
-            text_renderer.draw_face(7,10,5,corrected_face,112,false,true);
+            text_renderer.draw_face(face,10,5,corrected_face,112,alternate);
             corrected_face.record_to(nullptr);
             require(!portrait_commands.commands.empty(),"portrait GPU fixture recorded nothing");
             for(const auto& command:portrait_commands.commands)
-                require(command.tag==unsigned(starfox::render::PixelLayer::two_d),"recorded portrait is effect-eligible");
+                require(command.tag==unsigned(starfox::render::PixelLayer::two_d)
+                        && command.dv==0 && command.right-command.left==32*int(scale),
+                    "recorded comms portrait stretches source columns or is effect-eligible");
+            starfox::render::Framebuffer replay_face{64,50,scale};
+            replay_face.enable_layer_tags(true);
+            starfox::render::replay_raster_commands(portrait_commands,replay_face,nullptr);
+            require(replay_face.pixels()==corrected_face.pixels()
+                    && replay_face.layer_tags()==corrected_face.layer_tags(),
+                "recorded comms portrait differs from uniform results portrait scaling");
         }
         starfox::render::Framebuffer compact_text{256, 224};
         text_renderer.draw_ascii(":",10,10,compact_text);
