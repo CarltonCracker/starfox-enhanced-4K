@@ -1401,6 +1401,13 @@ if(STARFOX_BUILD_RUNTIME)
         include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/EnhancedBackdropAssets.cmake")
         starfox_enhanced_backdrop_resources(
             STARFOX_EMBED_BACKDROP_ARGS STARFOX_EMBED_BACKDROP_FILES)
+        if(VITA)
+            # The Vita loader maps the whole SELF into RAM. Photographic BMPs
+            # made that mapping ~177 MiB before newlib reserved its heap.
+            # Keep the same artwork inside the VPK, loaded from app0: on demand.
+            set(STARFOX_EMBED_BACKDROP_ARGS)
+            set(STARFOX_EMBED_BACKDROP_FILES)
+        endif()
         list(LENGTH STARFOX_EMBED_BACKDROP_FILES STARFOX_EMBED_BACKDROP_COUNT)
         math(EXPR STARFOX_EMBED_BACKDROP_LAST_ID "199 + ${STARFOX_EMBED_BACKDROP_COUNT}")
         set(STARFOX_EMBED_CHUNK_ARGS)

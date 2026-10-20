@@ -14,6 +14,50 @@ IMAGES = {
     "sce_sys/livearea/contents/startup.png": (280, 158),
 }
 TEMPLATE = "sce_sys/livearea/contents/template.xml"
+MAX_LOAD_BYTES = 64 * 1024 * 1024  # project budget; heap/GXM are separate
+
+
+def check_self(executable, file_size):
+    """Inspect actual load reservations, not just the four-byte SELF magic."""
+    header = executable.read(0x1000)
+    if len(header) < 128 or header[:4] != b"SCE\0":
+        raise ValueError("Missing native SELF header")
+    fields = struct.unpack_from("<IIHHI14Q", header)
+    version, kind, header_size, self_size = fields[1], fields[3], fields[5], fields[7]
+    elf, phdrs, segments = fields[11], fields[12], fields[14]
+    if version != 3 or kind != 1 or self_size != file_size or not 128 <= header_size <= file_size:
+        raise ValueError("Invalid SELF header size/version")
+    if elf > len(header) - 52 or header[elf:elf + 7] != b"\x7fELF\x01\x01\x01":
+        raise ValueError("Missing little-endian ARM ELF header")
+    if struct.unpack_from("<H", header, elf + 18)[0] != 40:
+        raise ValueError("SELF is not an ARM executable")
+    entry_size, count = struct.unpack_from("<HH", header, elf + 42)
+    if entry_size != 32 or not 1 <= count <= 64 or max(phdrs, segments) > min(header_size, len(header)) - count * 32:
+        raise ValueError("Invalid SELF program/segment table")
+    reservations = []
+    for index in range(count):
+        kind, _, address, _, stored, memory, _, alignment = struct.unpack_from("<8I", header, phdrs + index * 32)
+        offset, length, compression, encryption = struct.unpack_from("<4Q", header, segments + index * 32)
+        if offset < header_size or offset > file_size or length > file_size - offset or compression not in (1, 2) or encryption != 2:
+            raise ValueError("Invalid SELF payload segment")
+        if compression == 1 and length != stored:
+            raise ValueError("Incorrect uncompressed SELF segment size")
+        if kind == 1:
+            if stored > memory or address + memory > 2**32 or not alignment or alignment & (alignment - 1):
+                raise ValueError("Invalid SELF load reservation")
+            reservations.append((address, address + memory))
+    reservations.sort()
+    if not reservations or any(left[1] > right[0] for left, right in zip(reservations, reservations[1:])):
+        raise ValueError("Missing/overlapping SELF load reservations")
+    load_bytes = sum(end - start for start, end in reservations)
+    if load_bytes > MAX_LOAD_BYTES:
+        raise ValueError(f"SELF maps {load_bytes} bytes: exceeds 64 MiB executable budget; package artwork as files")
+    return load_bytes
+
+
+def backdrop_paths():
+    catalogue = Path(__file__).resolve().parents[1] / "include/starfox/render/enhanced_backdrop_library.hpp"
+    return re.findall(r'EnhancedBackdropAsset\{"(assets/enhanced-backdrops/[a-z0-9-]+\.bmp)"', catalogue.read_text())
 
 
 def check_png(data, size):
@@ -115,7 +159,7 @@ def read_sfo(data):
     return result
 
 
-def check(path, title_id="SFXE00001"):
+def check(path, title_id="SFXE00001", require_backdrops=False):
     with zipfile.ZipFile(path) as package:
         entries = package.infolist()
         names = [item.filename for item in entries]
@@ -136,8 +180,14 @@ def check(path, title_id="SFXE00001"):
         if required - set(names):
             raise ValueError("Missing VPK files: " + ", ".join(sorted(required - set(names))))
         with package.open("eboot.bin") as executable:
-            if package.getinfo("eboot.bin").file_size < 0x100 or executable.read(4) != b"SCE\0":
-                raise ValueError("Missing native SELF header")
+            check_self(executable, package.getinfo("eboot.bin").file_size)
+        if require_backdrops:
+            for name in backdrop_paths():
+                if name not in names or package.getinfo(name).file_size < 54:
+                    raise ValueError("Missing packaged Vita backdrop: " + name)
+                with package.open(name) as image:
+                    if image.read(2) != b"BM":
+                        raise ValueError("Invalid packaged Vita backdrop: " + name)
         def small(name):
             if package.getinfo(name).file_size > 2 * 1024 * 1024:
                 raise ValueError("Oversized VPK metadata/artwork")
@@ -163,9 +213,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("vpk", type=Path)
     parser.add_argument("--title-id", default="SFXE00001")
+    parser.add_argument("--require-backdrops", action="store_true")
     args = parser.parse_args()
     try:
-        result = check(args.vpk, args.title_id)
+        result = check(args.vpk, args.title_id, args.require_backdrops)
     except (ValueError, OSError, KeyError, zipfile.BadZipFile, ET.ParseError, zlib.error) as error:
         parser.exit(1, f"Vita package rejected: {error}\n")
     print(f"Vita package metadata/artwork verified: {result['TITLE_ID']} {result['APP_VER']}; console boot not tested")

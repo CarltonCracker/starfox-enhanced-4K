@@ -155,7 +155,23 @@ jobs:
           cmake --build "build/validation/active/vita fixture" --target StarFoxEnhanced.vpk-vpk
           "$VITASDK/bin/arm-vita-eabi-readelf" -h "build/validation/active/vita fixture/vita_package_fixture" | grep -q 'Machine:.*ARM'
           python3 tools/check_vita_package.py "build/validation/active/vita fixture/StarFoxEnhanced.vpk"
-      # No game runtime, ROM/BIN, executable artifacts, or release is uploaded.
+      - name: Cross-compile actual Vita runtime and inspect its reservations
+        shell: bash
+        run: |
+          cmake -S . -B build/vita-source-checks -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$VITASDK/share/vita.toolchain.cmake" \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS=-fstack-usage \
+            -DSTARFOX_BUILD_TESTS=OFF -DSTARFOX_BUILD_TOOLS=OFF \
+            -DSTARFOX_PACKAGE_MSU1_MUSIC=OFF \
+            -DSTARFOX_ROM_FILE=source-only-no-rom.sfc \
+            -DSTARFOX_EX_ROM_FILE=source-only-no-ex-rom.sfc \
+            -DSTARFOX_RETAIL_V12_FILE=source-only-no-retail.sfc
+          cmake --build build/vita-source-checks --parallel 2 --target StarFoxEnhanced.vpk-vpk
+          "$VITASDK/bin/arm-vita-eabi-size" build/vita-source-checks/starfox_pc
+          "$VITASDK/bin/arm-vita-eabi-nm" build/vita-source-checks/starfox_pc | grep -E '(_newlib_heap_size_user|sceUserMainThreadStackSize)$'
+          find build/vita-source-checks -name '*.su' -exec grep -H -E '(main\(|SDL_main)' {} + || true
+          python3 tools/check_vita_package.py build/vita-source-checks/StarFoxEnhanced.vpk --require-backdrops
+      # Only public source/resources: no ROM/BIN, executable artifacts or release is uploaded.
 
   windows-x64:
     if: ${{ !inputs.quest_only && !inputs.source_checks_only }}

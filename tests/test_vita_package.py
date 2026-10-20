@@ -1,5 +1,6 @@
 """Asset-free Vita packaging fixtures; never imply a console boot test."""
 from pathlib import Path
+import io
 import struct
 import sys
 import tempfile
@@ -11,6 +12,20 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 import check_vita_package as checker
 import generate_vita_assets as generator
+
+
+def native_self(load_bytes=256):
+    data = bytearray(0x1100)
+    # One real ARM load reservation and its plain SELF segment descriptor.
+    struct.pack_into("<IIHHI14Q", data, 0, 0x454353, 3, 0xC0, 1, 0x600,
+        0x1000, 0x1100, len(data), 0, 4, 0x80, 0xA0, 0xE0, 0, 0x100, 0, 0, 0, 0)
+    data[0xA0:0xA7] = b"\x7fELF\x01\x01\x01"
+    struct.pack_into("<H", data, 0xA0 + 18, 40)
+    struct.pack_into("<HH", data, 0xA0 + 42, 32, 1)
+    struct.pack_into("<8I", data, 0xE0, 1, 0x1000, 0x81000000, 0x81000000,
+        256, load_bytes, 5, 0x1000)
+    struct.pack_into("<4Q", data, 0x100, 0x1000, 256, 1, 2)
+    return data
 
 
 def sfo(**changes):
@@ -34,7 +49,7 @@ class VitaPackageTest(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.directory = Path(self.temporary.name)
         self.entries = {name: generator.png(*size) for name, size in generator.ASSETS.items()}
-        self.entries.update({"eboot.bin": b"SCE\0" + bytes(256), "sce_sys/param.sfo": sfo(),
+        self.entries.update({"eboot.bin": native_self(), "sce_sys/param.sfo": sfo(),
             checker.TEMPLATE: (ROOT / "platform/vita" / checker.TEMPLATE).read_bytes()})
 
     def package(self, omit=None, extra=None, duplicate=False):
@@ -74,9 +89,32 @@ class VitaPackageTest(unittest.TestCase):
         with self.assertRaises(ValueError): checker.check(self.package(duplicate=True))
 
     def test_self_header(self):
-        for payload in (b"", b"\x7fELF" + bytes(256), b"SCE\0"):
+        for payload in (b"", b"\x7fELF" + bytes(256), b"SCE\0", b"SCE\0" + bytes(256)):
             self.entries["eboot.bin"] = payload
             with self.assertRaises(ValueError): checker.check(self.package())
+
+    def test_self_memory_budget(self):
+        self.assertEqual(checker.check_self(io.BytesIO(native_self()), 0x1100), 256)
+        # Reproduce the released executable's 177 MiB load reservation without
+        # allocating/copying a large test binary onto the owner's drive.
+        with self.assertRaisesRegex(ValueError, "exceeds 64 MiB"):
+            checker.check_self(io.BytesIO(native_self(185745024)), 0x1100)
+        for offset, value in ((0xA0 + 18, 62), (0xA0 + 42, 0), (0xA0 + 44, 65)):
+            broken = native_self()
+            struct.pack_into("<H", broken, offset, value)
+            with self.assertRaises(ValueError): checker.check_self(io.BytesIO(broken), len(broken))
+        broken = native_self()
+        struct.pack_into("<Q", broken, 0x100, 0x1100)
+        with self.assertRaises(ValueError): checker.check_self(io.BytesIO(broken), len(broken))
+
+    def test_packaged_backdrops(self):
+        with self.assertRaisesRegex(ValueError, "Missing packaged Vita backdrop"):
+            checker.check(self.package(), require_backdrops=True)
+        for name in checker.backdrop_paths(): self.entries[name] = b"BM" + bytes(52)
+        checker.check(self.package(), require_backdrops=True)
+        self.entries[checker.backdrop_paths()[-1]] = b"bad" + bytes(52)
+        with self.assertRaisesRegex(ValueError, "Invalid packaged Vita backdrop"):
+            checker.check(self.package(), require_backdrops=True)
 
     def test_png_validation(self):
         original = self.entries["sce_sys/icon0.png"]
