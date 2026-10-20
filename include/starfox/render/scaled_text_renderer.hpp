@@ -57,15 +57,16 @@ public:
         std::int32_t right_clip = 224,
         std::size_t max_characters = 256U) const;
 
-    // Draw one of FACEDATA's original 32x40, 4-bpp portrait frames.
+    // Draw one of FACEDATA's original 32x40, 4-bpp portrait frames. Retain
+    // uniform source pixels like the results portraits and other HUD artwork;
+    // display aspect correction belongs to presentation, not individual faces.
     void draw_face(
         std::uint8_t frame,
         std::int32_t x,
         std::int32_t y,
         Framebuffer& target,
         std::uint8_t colour_index_base = 7U * 16U,
-        bool alternate_portraits = false,
-        bool correct_pixel_aspect = false) const;
+        bool alternate_portraits = false) const;
 
     void draw_ascii(
         std::string_view text,

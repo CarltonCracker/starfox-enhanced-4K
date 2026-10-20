@@ -8999,7 +8999,10 @@ int main(int argc, char** argv) {
         starfox::render::MoonLandscapeAtlas city_moon_atlas;
         const auto enhanced_backdrop=[&](unsigned index)->const starfox::render::BackdropImage* {
             return &enhanced_backdrops.get(index,[&](unsigned resource,std::string_view path) {
-#if defined(STARFOX_HAS_EMBEDDED_ASSETS)
+#if defined(SDL_PLATFORM_VITA)
+                (void)resource;
+                return read_binary_file(std::filesystem::path{"app0:"} / path);
+#elif defined(STARFOX_HAS_EMBEDDED_ASSETS)
                 (void)path;return embedded_resource(resource);
 #else
                 (void)resource;return read_binary_file(std::filesystem::path(path));
@@ -14730,7 +14733,7 @@ int main(int argc, char** argv) {
             if (dialogue.active && !suppress_configurable_hud) {
                 text_renderer.draw_face(
                     dialogue.portrait_frame, 48, 152, comms_hud,
-                    7U * 16U, dialogue.alternate_portraits, display_width>snes_width);
+                    7U * 16U, dialogue.alternate_portraits);
                 if (dialogue.text_visible) {
                     auto text_y = dialogue.three_lines ? 153 : 169;
                     const auto translated_lines=text_renderer.translated_game_text_lines(

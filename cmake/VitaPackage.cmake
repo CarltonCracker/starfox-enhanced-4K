@@ -15,9 +15,18 @@ function(starfox_add_vita_package runtime_target)
     endif()
     # Preserve room for vita-elf-create's SCE metadata before read-only data.
     target_link_options(${runtime_target} PRIVATE "-Wl,--defsym=__sce_headroom=0x10000")
+    target_sources(${runtime_target} PRIVATE
+        "${STARFOX_VITA_PACKAGE_SOURCE_ROOT}/platform/vita/runtime_memory.cpp")
     vita_create_self(eboot.bin ${runtime_target})
 
     set(root "${STARFOX_VITA_PACKAGE_SOURCE_ROOT}")
+    include("${root}/cmake/EnhancedBackdropAssets.cmake")
+    starfox_enhanced_backdrop_resources(backdrop_arguments backdrop_files)
+    set(backdrop_mappings)
+    foreach(backdrop IN LISTS backdrop_files)
+        file(RELATIVE_PATH packaged_path "${root}" "${backdrop}")
+        list(APPEND backdrop_mappings -a "${backdrop}=${packaged_path}")
+    endforeach()
     set(art "${CMAKE_CURRENT_BINARY_DIR}/generated/vita")
     set(icon "${art}/sce_sys/icon0.png")
     set(bg "${art}/sce_sys/livearea/contents/bg.png")
@@ -43,11 +52,13 @@ function(starfox_add_vita_package runtime_target)
             -a "${icon}=sce_sys/icon0.png"
             -a "${bg}=sce_sys/livearea/contents/bg.png"
             -a "${startup}=sce_sys/livearea/contents/startup.png"
-            -a "${template}=sce_sys/livearea/contents/template.xml" "${vpk}"
+            -a "${template}=sce_sys/livearea/contents/template.xml"
+            ${backdrop_mappings} "${vpk}"
         COMMAND "${Python3_EXECUTABLE}" "${root}/tools/check_vita_package.py" "${vpk}"
-            --title-id "${STARFOX_VITA_TITLE_ID}"
+            --title-id "${STARFOX_VITA_TITLE_ID}" --require-backdrops
         DEPENDS "${sfo}" "${CMAKE_CURRENT_BINARY_DIR}/eboot.bin"
-            "${icon}" "${bg}" "${startup}" "${template}" "${root}/tools/check_vita_package.py"
+            "${icon}" "${bg}" "${startup}" "${template}" ${backdrop_files}
+            "${root}/tools/check_vita_package.py"
         VERBATIM)
     add_custom_target(StarFoxEnhanced.vpk-vpk ALL DEPENDS "${vpk}")
     add_dependencies(StarFoxEnhanced.vpk-vpk eboot.bin-self)
