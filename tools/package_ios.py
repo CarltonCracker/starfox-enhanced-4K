@@ -9,6 +9,57 @@ import stat
 import struct
 import tempfile
 import zipfile
+import zlib
+
+ICON_SIZES = {'AppIcon60@2x.png': 120, 'AppIcon60@3x.png': 180,
+              'AppIcon76.png': 76, 'AppIcon76@2x.png': 152, 'AppIcon83.5@2x.png': 167}
+
+
+def verify_icons(archive, app, info):
+    for key, expected in (('CFBundleIcons', {'AppIcon60'}),
+                          ('CFBundleIcons~ipad', {'AppIcon60', 'AppIcon76', 'AppIcon83.5'})):
+        declared = info.get(key, {}).get('CFBundlePrimaryIcon', {}).get('CFBundleIconFiles', [])
+        if not expected.issubset(declared):
+            raise ValueError(f'Missing iOS icon declaration: {key}')
+    for name, size in ICON_SIZES.items():
+        entry = archive.getinfo(app + '/' + name)
+        if entry.file_size > 256 * 1024:
+            raise ValueError('Oversized iOS icon')
+        data = archive.read(entry)
+        if data[:8] != b'\x89PNG\r\n\x1a\n':
+            raise ValueError('Invalid iOS icon PNG')
+        offset, kinds, compressed = 8, [], bytearray()
+        while offset < len(data):
+            if offset + 12 > len(data):
+                raise ValueError('Truncated iOS icon PNG')
+            length, = struct.unpack_from('>I', data, offset)
+            end = offset + length + 12
+            if end > len(data):
+                raise ValueError('Truncated iOS icon PNG')
+            kind, payload = data[offset + 4:offset + 8], data[offset + 8:end - 4]
+            if zlib.crc32(kind + payload) & 0xffffffff != struct.unpack_from('>I', data, end - 4)[0]:
+                raise ValueError('Damaged iOS icon PNG')
+            if not kinds and kind != b'IHDR':
+                raise ValueError('Missing iOS icon PNG header')
+            if kind == b'IHDR':
+                if kinds or payload != struct.pack('>IIBBBBB', size, size, 8, 2, 0, 0, 0):
+                    raise ValueError('iOS icon must be correctly sized opaque RGB PNG')
+            elif kind == b'IDAT':
+                compressed.extend(payload)
+            elif kind == b'IEND':
+                if payload or end != len(data):
+                    raise ValueError('Invalid iOS icon PNG end')
+            elif not kind[0] & 32:
+                raise ValueError('Unexpected iOS icon PNG chunk')
+            kinds.append(kind)
+            offset = end
+        expected = (size * 3 + 1) * size
+        inflater = zlib.decompressobj()
+        raster = inflater.decompress(compressed, expected + 1)
+        if (not kinds or kinds[-1] != b'IEND' or len(raster) != expected
+                or not inflater.eof or inflater.unused_data or inflater.unconsumed_tail
+                or any(raster[y * (size * 3 + 1)] > 4 for y in range(size))):
+            raise ValueError('Invalid iOS icon raster')
 
 
 def safe_name(name):
@@ -40,6 +91,7 @@ def verify(path):
             raise ValueError('Application is not an iOS device bundle')
         if not info.get('CFBundleIdentifier'):
             raise ValueError('Application bundle identifier missing')
+        verify_icons(archive, app, info)
         binary = archive.read(app + '/' + executable)
         if len(binary) < 32 or struct.unpack_from('<II', binary) != (0xfeedfacf, 0x100000c):
             raise ValueError('Application executable is not a 64-bit arm64 Mach-O')
@@ -130,7 +182,7 @@ def main():
         parser.error('--output required when packaging')
     try:
         result = verify(args.verify) if args.verify else package(args.output, source=args.source, app=args.app)
-    except (ValueError, OSError, KeyError, zipfile.BadZipFile, plistlib.InvalidFileException) as error:
+    except (ValueError, OSError, KeyError, zlib.error, zipfile.BadZipFile, plistlib.InvalidFileException) as error:
         parser.exit(1, f'Invalid iOS package: {error}\n')
     print(json.dumps(result, indent=2))
 

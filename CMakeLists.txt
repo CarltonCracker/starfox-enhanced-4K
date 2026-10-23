@@ -1308,6 +1308,8 @@ if(STARFOX_BUILD_RUNTIME)
                 "${CMAKE_CURRENT_SOURCE_DIR}/platform/apple/Info.plist.in")
     endif()
     if(IOS)
+        include(cmake/IosIcons.cmake)
+        starfox_add_ios_icons(starfox_pc)
         set_target_properties(starfox_pc PROPERTIES
             XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "1,2")
     endif()
@@ -2537,6 +2539,8 @@ if(STARFOX_BUILD_TESTS)
 
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
+        add_test(NAME starfox_ios_package_tests
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ios_package.py")
         add_test(NAME starfox_vita_package_tests
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_vita_package.py")
         add_test(NAME starfox_ps5_splash_routes
