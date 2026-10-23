@@ -19,7 +19,11 @@ function(starfox_add_ios_icons target)
     set_source_files_properties(${icons} PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
     # Keep standard PNG bytes: the IPA verifier validates their raster/CRC;
     # Xcode's optional CgBI conversion is unnecessary for these tiny icons.
-    set_target_properties(${target} PROPERTIES XCODE_ATTRIBUTE_COMPRESS_PNG_FILES NO)
+    # Do not combine @2x/@3x PNGs into desktop multi-resolution TIFFs either:
+    # iOS's CFBundleIconFiles entries must resolve to the original PNG files.
+    set_target_properties(${target} PROPERTIES
+        XCODE_ATTRIBUTE_COMPRESS_PNG_FILES NO
+        XCODE_ATTRIBUTE_COMBINE_HIDPI_IMAGES NO)
     set(STARFOX_APPLE_ICON_PLIST "
   <key>CFBundleIcons</key>
   <dict><key>CFBundlePrimaryIcon</key><dict>
