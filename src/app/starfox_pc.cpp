@@ -4788,7 +4788,7 @@ public:
         const bool early_on_gpu=apply_gpu_effects(framebuffer,early_gpu);
         if (!early_on_gpu) {
             if (rtx_lighting_ && !light_before_overlays) apply_rtx_lighting(framebuffer,effects);
-            starfox::render::apply_hdr_effect(framebuffer,rgba_,effects.hdr_effect);
+            starfox::render::apply_hdr_effect(framebuffer,rgba_,effects.hdr_effect,&presentation_workers_);
             starfox::render::apply_chromatic_aberration(framebuffer, rgba_,
                 chromatic_scratch_, effects.chromatic_aberration);
         }

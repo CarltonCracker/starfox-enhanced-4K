@@ -129,6 +129,12 @@ Decoder caches are private to each participant. Ordinary passes use row bands;
 wide ground uses column strips to preserve its top-to-bottom history. Ordered
 GPU command recording remains serial.
 
+The software brightness/contrast pass also shares this pool for larger stored
+images. Native-size frames and single-worker callers keep the established
+scalar path; HUD colours, alpha and tone-curve rounding remain unchanged.
+The optional `starfox_hdr_benchmark` target compares this pass alone, not
+whole-game FPS, against the scalar path with byte-exact output checks.
+
 Set `STARFOX_RENDER_THREADS=1` for the serial reference, or `2` through `8` to
 limit the shared pool. This takes precedence over `STARFOX_PRESENT_WORKERS`;
 without either override the existing hardware-derived default is used. This

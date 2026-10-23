@@ -7,6 +7,9 @@ param(
     [string]$Executable='build/current/starfox_pc.exe',
     [ValidateSet('GPU','SOFTWARE')][string]$Renderer='GPU',
     [ValidateRange(0,8)][int]$RenderThreads=0,
+    # Up to 2x keeps a single widest stored bitmap inside the 4 MB reserve.
+    [ValidateRange(1,2)][int]$RenderScale=1,
+    [ValidateRange(0,3)][int]$Contrast=0,
     [switch]$LegacyD3D11,
     [switch]$DisableGpuEffects,
     [switch]$TraceGpu,
@@ -125,7 +128,7 @@ try {
     if($LegacyD3D11) {$env:STARFOX_TEST_D3D11_GPU='1'}
     if($DisableGpuEffects) {$env:STARFOX_DISABLE_GPU_EFFECTS='1'}
     if($TraceGpu) {$env:STARFOX_TRACE_GPU='1'}
-    $env:STARFOX_TEST_RENDER_SCALE='1'
+    $env:STARFOX_TEST_RENDER_SCALE=[string]$RenderScale
     $env:STARFOX_TEST_ANTI_ALIASING='0'
     $env:STARFOX_TEST_SEPARATED_MODELS='0'
     $env:STARFOX_TEST_PRESENTATION_FPS=[string]$PresentationFps
@@ -166,7 +169,7 @@ try {
     if($EnhancedGround){$env:STARFOX_TEST_ENVIRONMENT_0='1'}
     if($UnbatchedTerrain){$env:STARFOX_TEST_UNBATCHED_TERRAIN='1'}
     $env:STARFOX_TEST_MODEL_SMOOTHING='0'
-    $env:STARFOX_TEST_HDR_EFFECT='0'
+    $env:STARFOX_TEST_HDR_EFFECT=[string]$Contrast
     $env:STARFOX_TEST_CHROMATIC_ABERRATION='0'
     $env:STARFOX_TEST_MSU1=if($Msu1){'1'}else{'0'}
     if($Msu1) {$env:STARFOX_TRACE_MSU1='1'}

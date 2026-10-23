@@ -729,6 +729,56 @@ int main(int argc, char** argv) {
         require(output[128*4]==ramp[128*4],"HDR effect changed HUD text");
     }
     {
+        // The cached/pooled pass must preserve every layer's ownership and
+        // alpha, including odd row tails and a shortened final worker slice.
+        starfox::render::RowWorkers workers;
+        unsigned cases{};
+        for (const auto layout:std::array<std::array<unsigned,3>,4>{{
+                 {257,33,1},{399,224,2},{853,32,1},{403,113,4}}}) {
+            starfox::render::Framebuffer frame{layout[0],layout[1],layout[2]};
+            frame.enable_layer_tags(true);
+            for (unsigned pattern=0;pattern<3;++pattern) {
+                for (unsigned y=0;y<frame.stored_height();++y)
+                    for (unsigned x=0;x<frame.stored_width();++x)
+                        frame.set_stored(x,y,std::uint8_t(x+y),static_cast<starfox::render::PixelLayer>(
+                            pattern==0?0:pattern==1?1:(x+7*y)%6));
+                const auto pixels=frame.pixels();
+                const std::vector<std::uint8_t> tags{frame.layer_tags().begin(),frame.layer_tags().end()};
+                std::vector<std::uint8_t> original(pixels.size()*4U);
+                for (std::size_t i=0;i<original.size();++i) original[i]=std::uint8_t(i*73U+i/257U);
+                for (std::uint8_t level=0;level<=4;++level) {
+                    auto expected=original;
+                    starfox::render::apply_hdr_effect(frame,expected,level);
+                    for (const unsigned count:{1U,2U,4U,8U}) {
+                        workers.set_worker_count(count);
+                        auto actual=original;
+                        starfox::render::apply_hdr_effect(frame,actual,level,&workers);
+                        require(actual==expected,"Pooled brightness/contrast differs from serial pixels");
+                        ++cases;
+                    }
+                    for (std::size_t i=0;i<pixels.size();++i) {
+                        require(expected[i*4+3]==original[i*4+3],"Tone curve modified alpha");
+                        if (tags[i]==1 || level==0 || level==4)
+                            for (unsigned c=0;c<3;++c)
+                                require(expected[i*4+c]==original[i*4+c],"Tone curve changed HUD/disabled input");
+                    }
+                }
+                require(frame.pixels()==pixels && std::equal(tags.begin(),tags.end(),frame.layer_tags().begin()),
+                    "Tone curve changed indexed pixels or layer ownership");
+            }
+        }
+        starfox::render::Framebuffer untagged{513,512};
+        std::vector<std::uint8_t> rgba(untagged.pixels().size()*4U,73);
+        const auto original=rgba;
+        starfox::render::apply_hdr_effect(untagged,rgba,3,&workers);
+        require(rgba==original,"Tone curve changed an untagged framebuffer");
+        untagged.enable_layer_tags(true);rgba.pop_back();
+        const auto invalid=rgba;
+        starfox::render::apply_hdr_effect(untagged,rgba,3,&workers);
+        require(rgba==invalid,"Tone curve accepted a truncated RGBA buffer");
+        std::cout<<"Brightness/contrast: "<<cases<<" pooled/serial ownership, alpha and rounding cases passed\n";
+    }
+    {
         starfox::render::Framebuffer frame{64,8};
         frame.enable_layer_tags(true);
         std::vector<std::uint8_t> original(64*8*4,255), scratch;
