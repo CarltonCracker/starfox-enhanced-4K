@@ -9,6 +9,17 @@
 #include <vector>
 
 namespace starfox::render {
+// XHDMA_BG2VOFS starts with ten zero-offset guard rasters. INIDISP hides
+// those lines in the cartridge, but our full-height presentation shows them.
+// Continue the first visible ceiling page into this guard without changing
+// source PPU state, shifting the scene, or affecting ordinary water/sky HDMA.
+inline int tunnel_ceiling_guard_page(const simulation::SnesPpuState& p) noexcept {
+    if(!p.tunnel_scene || !p.bg2_scanline_scroll_enabled || !(p.main_screen&2)
+        || (p.background_mode!=1 && p.background_mode!=2)) return 0;
+    for(unsigned y=0;y<10;++y) if(p.bg2_scanline_scroll_y[y]!=0) return 0;
+    const int page=p.bg2_scanline_scroll_y[10];
+    return page==24 || page==280?page:0;
+}
 // The same source-art zone fitting used by the VR corridor: continue the
 // authored diagonals, rather than stretching the x=0/255 texel into a bar.
 // This supplies only added flat-view columns; native pixels are never moved.

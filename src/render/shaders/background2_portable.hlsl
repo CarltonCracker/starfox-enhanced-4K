@@ -141,6 +141,7 @@ void main(uint3 id:SV_DispatchThreadID) {
         int sampleY=mosaicAt(int(y));
         int rowX=(flags&8u) && sampleY>=0 && sampleY<224?asint(memory[16640u+uint(sampleY)]):scrollX;
         int rowY=(flags&16u)?asint(memory[16864u+uint(clamp(sampleY,0,223))]):scrollY;
+        if((flags&8192u) && sampleY>=0 && sampleY<10) rowY=asint(memory[16864u+10u]);
         if((rowX&7)!=columnPhase) {columnPhase=rowX&7;columnY=columnScroll(columnX,expanded,columnPhase);}
         if((flags&2048u) && outside && priority!=2u && sampleY>=0 && sampleY<224
             && ((rowY&511)==24 || (rowY&511)==280)) {

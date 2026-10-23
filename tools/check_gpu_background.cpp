@@ -64,7 +64,7 @@ int main(int argc,char** argv) {
             }
             return actual;
         });
-        std::cout<<"Tunnel margins: source-fitted diagonal continuation at native/wide/ultrawide and 1x/2x matches CPU pixels/coverage; native viewport exact, asymmetric fallback passed\n";
+        std::cout<<"Tunnel margins: native/wide/ultrawide at 1x/2x matches CPU pixels/coverage; hidden top guard continued, visible native scene exact, asymmetric fallback passed\n";
         check_wrapped_background_roll([&](const auto& p,unsigned width) {
             GpuBackgroundSettings settings;settings.layer=2;settings.scroll_x=3;
             settings.horizontal_origin=int(width)/2-128;settings.extend_horizontal=true;

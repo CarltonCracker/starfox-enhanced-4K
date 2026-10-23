@@ -2,6 +2,7 @@
 #include "starfox/render/tunnel_margin.hpp"
 #include "starfox/simulation/game_simulation.hpp"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <iostream>
@@ -155,13 +156,23 @@ int main(int argc, char** argv) try {
         renderer.draw_bg2(p,p.bg2_scroll_x,p.bg2_scroll_y,before,TilePriorityPass::all,72);
         renderer.draw_bg2(p,p.bg2_scroll_x,p.bg2_scroll_y,after,TilePriorityPass::all,72,
             true,true,false,0,{},false,false,0,true,true);
+        const auto guard=tunnel_ceiling_guard_page(p);
+        if(guard) {
+            auto continued=p;
+            std::fill_n(continued.bg2_scanline_scroll_y.begin(),10,std::int16_t(guard));
+            Framebuffer expected(400,224);
+            renderer.draw_bg2(continued,p.bg2_scroll_x,p.bg2_scroll_y,expected,TilePriorityPass::all,72,
+                true,true,false,0,{},false,false,0,true,true);
+            if(expected.pixels()!=after.pixels()) throw std::runtime_error("Source tunnel ceiling guard did not continue its visible page");
+        }
         unsigned changed=0;
         for(unsigned y=0;y<224;++y) for(unsigned x=0;x<400;++x) if(before.get(x,y)!=after.get(x,y)) {
-            if(x>=72 && x<328) throw std::runtime_error("Actual tunnel native pixels changed");
+            if(x>=72 && x<328 && !(guard && y<10)) throw std::runtime_error("Actual tunnel native scene pixels changed below its hidden top guard");
             ++changed;
         }
         if(changed<1000) throw std::runtime_error("Actual tunnel margins retained flat bars");
-        std::cout<<"Actual corridor source: fit mask="<<profile.data[0]<<", changed margin pixels="<<changed<<", native 256 columns exact\n";
+        std::cout<<"Actual corridor source: fit mask="<<profile.data[0]<<", changed presentation pixels="<<changed
+            <<", native 256 columns exact below top guard="<<(guard?10:0)<<'\n';
         return 0;
     }
     const auto hash = trace();

@@ -368,6 +368,12 @@ void BackgroundRenderer::draw_bg2(
     bool ending_star_extension, bool game_over_star_extension,
     std::uint32_t sky_source_min, bool continue_ground, bool extend_tunnel_diagonals) const noexcept {
     if ((ppu.main_screen & 0x02U) == 0U) return;
+    const int ceiling_guard=extend_tunnel_diagonals?tunnel_ceiling_guard_page(ppu):0;
+    const auto row_scroll_y=[&](int y) {
+        if(ceiling_guard && y>=0 && y<10) return ceiling_guard;
+        return ppu.bg2_scanline_scroll_enabled
+            ?int(ppu.bg2_scanline_scroll_y[std::clamp(y,0,223)]):scroll_y;
+    };
     const auto width_tiles = (ppu.bg2_screen_size & 1U) != 0U ? 64U : 32U;
     const auto height_tiles = (ppu.bg2_screen_size & 2U) != 0U ? 64U : 32U;
     const auto pages_wide = width_tiles / 32U;
@@ -550,8 +556,7 @@ void BackgroundRenderer::draw_bg2(
         for (unsigned y = 0; y < target.height(); ++y) {
             const int row_x = ppu.bg2_horizontal_offsets_enabled && y < ppu.bg2_horizontal_offsets.size()
                 ? ppu.bg2_horizontal_offsets[y] : scroll_x;
-            const int row_y = ppu.bg2_scanline_scroll_enabled
-                ? ppu.bg2_scanline_scroll_y[std::min(y, 223U)] : scroll_y;
+            const int row_y = row_scroll_y(int(y));
             const auto source_y = wrap_tilemap_coordinate(int(y) + row_y, height_pixels);
             const auto edge_colour = [&](int logical_x) {
                 const auto source_x = wrap_tilemap_coordinate(logical_x + row_x, width_pixels);
@@ -606,8 +611,7 @@ void BackgroundRenderer::draw_bg2(
         for (unsigned y = 0; y < target.height(); ++y) {
             const int row_x = ppu.bg2_horizontal_offsets_enabled && y < ppu.bg2_horizontal_offsets.size()
                 ? ppu.bg2_horizontal_offsets[y] : scroll_x;
-            const int row_y = ppu.bg2_scanline_scroll_enabled
-                ? ppu.bg2_scanline_scroll_y[std::min(y, 223U)] : scroll_y;
+            const int row_y = row_scroll_y(int(y));
             auto first = first_x, final = final_x;
             if (!wrap_horizontal) {
                 first = unsigned(std::clamp<std::int64_t>(std::int64_t(horizontal_origin) - row_x, first, final));
@@ -749,8 +753,7 @@ void BackgroundRenderer::draw_bg2(
                     - horizontal_origin;
                 if(tunnel_margin_profile && priority!=TilePriorityPass::high
                     && (logical_x<0 || logical_x>=256)) {
-                    const int row_y=ppu.bg2_scanline_scroll_enabled
-                        ?ppu.bg2_scanline_scroll_y[std::clamp(sample_y,0,223)]:scroll_y;
+                    const int row_y=row_scroll_y(sample_y);
                     if(const auto ink=tunnel_margin_profile->sample(logical_x,sample_y,row_scroll_x,row_y)) {
                         write(screen_x,*ink);continue;
                     }
@@ -778,9 +781,7 @@ void BackgroundRenderer::draw_bg2(
                     sample_x + horizontal_origin,
                     static_cast<std::int32_t>(first_x),
                     static_cast<std::int32_t>(final_x - 1U));
-                const auto register_scroll_y = ppu.bg2_scanline_scroll_enabled
-                    ? ppu.bg2_scanline_scroll_y[std::clamp<std::int32_t>(sample_y, 0, 223)]
-                    : scroll_y;
+                const auto register_scroll_y = row_scroll_y(sample_y);
                 const auto tile_scroll_y = column_scroll_y.empty() ? no_column_scroll
                     : column_scroll_y[static_cast<std::size_t>(sampled_screen_x) - first_x];
                 // A valid Mode 2 per-tile offset replaces BG2VOFS, including

@@ -68,6 +68,8 @@ public:
         std::uint32_t sky_source_min = 0,
         // Starfields/orbital art have no local floor to continue after wrap.
         bool continue_ground = true,
+        // Full-height tunnel presentation also fills the source's hidden
+        // ten-line top guard; native scene pixels below it remain unchanged.
         bool extend_tunnel_diagonals = false) const noexcept;
     void draw_bg3(
         const simulation::SnesPpuState& ppu,

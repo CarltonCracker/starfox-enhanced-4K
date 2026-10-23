@@ -1,6 +1,7 @@
 #pragma once
 #include "starfox/render/background_renderer.hpp"
 #include "starfox/render/tunnel_margin.hpp"
+#include <algorithm>
 #include <stdexcept>
 
 inline starfox::simulation::SnesPpuState tunnel_margin_fixture(int shift=0) {
@@ -46,6 +47,51 @@ template<class Draw> void check_tunnel_margins(Draw draw) {
             if(width==256 && changed) throw std::runtime_error("Native tunnel view changed");
         }
     }
+    // The cartridge hides the ten-line unscrolled HDMA lead-in behind its
+    // display border. In a full-height presentation it must continue the first
+    // ceiling page, not expose an unrelated atlas strip above the tunnel.
+    for(int page:{24,280}) for(bool horizontal:{false,true}) for(unsigned mosaic:{0U,0x32U}) {
+        auto guard=tunnel_margin_fixture();
+        guard.bg2_scroll_x=128;guard.bg2_horizontal_offsets_enabled=horizontal;
+        guard.mosaic=std::uint8_t(mosaic);
+        guard.bg2_scanline_scroll_y.fill(std::int16_t(page));
+        std::fill_n(guard.bg2_scanline_scroll_y.begin(),10,0);
+        // Give the hidden atlas rows a conspicuously different colour, so a
+        // native-width test cannot pass merely because both rows happen to match.
+        for(unsigned ty=0;ty<3;++ty) for(unsigned tx=0;tx<64;++tx) {
+            const auto at=(0x4000+(tx/32)*1024+ty*32+tx%32)*2;
+            guard.vram[at]=14;guard.vram[at+1]=0;
+        }
+        auto reference=guard;
+        std::fill_n(reference.bg2_scanline_scroll_y.begin(),10,std::int16_t(page));
+        const auto saved=guard;
+        for(unsigned width:{256U,400U,853U}) for(unsigned scale:{1U,2U}) {
+            const auto actual=draw(guard,width,scale,true),expected=draw(reference,width,scale,true);
+            if(actual!=expected) throw std::runtime_error("Tunnel exposes the unscrolled top guard as a bar");
+            const auto baseline=draw(guard,width,scale,false);
+            const unsigned origin=width/2-128;
+            unsigned corrected=0;
+            for(unsigned y=0;y<224*scale;++y) for(unsigned x=origin*scale;x<(origin+256)*scale;++x) {
+                if(actual[y*width*scale+x]==baseline[y*width*scale+x]) continue;
+                if(y>=12*scale) throw std::runtime_error("Tunnel top-guard fix moved visible scene pixels");
+                ++corrected;
+            }
+            if(!corrected) throw std::runtime_error("Tunnel top-guard regression never exercised the strip");
+        }
+        if(guard!=saved) throw std::runtime_error("Tunnel presentation changed the source PPU/HDMA state");
+    }
+    auto no_guard=tunnel_margin_fixture();
+    std::fill_n(no_guard.bg2_scanline_scroll_y.begin(),10,0);
+    no_guard.bg2_scanline_scroll_y[10]=24;
+    if(tunnel_ceiling_guard_page(no_guard)!=24) throw std::runtime_error("Source tunnel top guard was not identified");
+    no_guard.tunnel_scene=false;
+    if(tunnel_ceiling_guard_page(no_guard)) throw std::runtime_error("Water/sky HDMA was treated as a tunnel guard");
+    no_guard.tunnel_scene=true;no_guard.bg2_scanline_scroll_enabled=false;
+    if(tunnel_ceiling_guard_page(no_guard)) throw std::runtime_error("Static room was treated as a moving tunnel guard");
+    no_guard.bg2_scanline_scroll_enabled=true;no_guard.bg2_scanline_scroll_y[0]=280;
+    if(tunnel_ceiling_guard_page(no_guard)) throw std::runtime_error("An authored visible ceiling page was overwritten");
+    no_guard.bg2_scanline_scroll_y[0]=0;no_guard.bg2_scanline_scroll_y[10]=99;
+    if(tunnel_ceiling_guard_page(no_guard)) throw std::runtime_error("Unknown tunnel art received a guessed guard page");
     auto asymmetric=tunnel_margin_fixture();
     for(unsigned i=0;i<1024;++i) asymmetric.vram[0x8000+i*2]=14;
     if(tunnel_margin(asymmetric).data[0]) throw std::runtime_error("Asymmetric tunnel was forced into a symmetric corridor");
