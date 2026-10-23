@@ -2340,6 +2340,9 @@ if(STARFOX_BUILD_TESTS)
         add_test(NAME starfox_upstream_ending COMMAND starfox_ending_tests
             "${CMAKE_CURRENT_SOURCE_DIR}/upstream-ultrastarfox/SF.SFC"
             "${CMAKE_CURRENT_SOURCE_DIR}/upstream-ultrastarfox/SYMBOLS.TXT")
+        add_test(NAME starfox_upstream_background_parallel COMMAND starfox_background_scanline_tests --source-parallel
+            "${CMAKE_CURRENT_SOURCE_DIR}/upstream-ultrastarfox/SF.SFC"
+            "${CMAKE_CURRENT_SOURCE_DIR}/upstream-ultrastarfox/SYMBOLS.TXT")
         add_test(NAME starfox_upstream_msu_fade COMMAND starfox_msu_fade_tests
             "${CMAKE_CURRENT_SOURCE_DIR}/upstream-ultrastarfox/SF.SFC"
             "${CMAKE_CURRENT_SOURCE_DIR}/upstream-ultrastarfox/SYMBOLS.TXT"
@@ -2506,6 +2509,8 @@ if(STARFOX_BUILD_TESTS)
                     "${STARFOX_EX_SYMBOLS_FILE}"
         )
         add_test(NAME starfox_ex_ending COMMAND starfox_ending_tests
+            "${STARFOX_EX_ROM_FILE}" "${STARFOX_EX_SYMBOLS_FILE}")
+        add_test(NAME starfox_ex_background_parallel COMMAND starfox_background_scanline_tests --source-parallel
             "${STARFOX_EX_ROM_FILE}" "${STARFOX_EX_SYMBOLS_FILE}")
         add_test(NAME starfox_ex_intro_pacing COMMAND starfox_intro_pacing_tests
             "${STARFOX_EX_ROM_FILE}" "${STARFOX_EX_SYMBOLS_FILE}")

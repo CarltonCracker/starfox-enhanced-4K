@@ -8,6 +8,8 @@
 
 namespace starfox::render {
 
+class RowWorkers;
+
 // Center-height left wall, including source HDMA scroll. Transparent wall
 // texels fall back to the darkest palette entry, never the backdrop color.
 [[nodiscard]] std::uint8_t tunnel_wall_index(
@@ -40,6 +42,9 @@ struct BackgroundUniqueRegion {
 
 class BackgroundRenderer {
 public:
+    // Borrow an existing, joined presentation pool. Command recording stays
+    // serial; ground history is preserved in column strips. Null is serial.
+    RowWorkers* row_workers{};
     void draw_bg1(
         const simulation::SnesPpuState& ppu,
         Framebuffer& target,

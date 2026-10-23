@@ -1732,6 +1732,7 @@ void draw_touch_overlay(SDL_Renderer* renderer,
 
 class Window {
 public:
+    starfox::render::RowWorkers& row_workers() noexcept {return presentation_workers_;}
     explicit Window(starfox::simulation::RendererMode renderer_mode,
         DlssHost* dlss=nullptr, bool start_fullscreen=false,
         starfox::render::RendererBackend backend=starfox::render::RendererBackend::automatic,
@@ -1741,7 +1742,8 @@ public:
         sr_backend_request_.update(startup_sr_platform,false,false);
         if(!starfox::render::renderer_backend_supported(renderer_backend_))
             renderer_backend_=starfox::render::RendererBackend::automatic;
-        if (const auto* override = std::getenv("STARFOX_PRESENT_WORKERS")) {
+        const auto* render_threads=std::getenv("STARFOX_RENDER_THREADS");
+        if (const auto* override = render_threads?render_threads:std::getenv("STARFOX_PRESENT_WORKERS")) {
             const auto count = std::atoi(override);
             if (count >= 1 && count <= 8)
                 presentation_workers_.set_worker_count(
@@ -9413,6 +9415,7 @@ int main(int argc, char** argv) {
             for(const auto address:symbols.find(name)) player_shot_strategies.insert(address);
         starfox::render::ScaledTextRenderer text_renderer{rom, symbols};
         RecordingBackgroundRenderer background_renderer;
+        background_renderer.row_workers=&window.row_workers();
         const starfox::render::DustRenderer dust_renderer{rom, symbols};
         const starfox::render::SpriteRenderer sprite_renderer;
         const auto capture = [&game, &trigonometry]() {

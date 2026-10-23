@@ -1,9 +1,11 @@
 #include "starfox/render/background_renderer.hpp"
 #include "tilemap_coordinates.hpp"
 #include "starfox/render/tunnel_margin.hpp"
+#include "starfox/render/row_workers.hpp"
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <limits>
@@ -13,6 +15,36 @@ namespace starfox::render {
 namespace {
 
 using detail::wrap_tilemap_coordinate;
+
+// Row-band approach suggested by mtoensing/sternenfuchs (issue #13).
+// Each participant keeps its own decoder caches across claimed bands. The
+// counter balances detailed ground rows against inexpensive sky rows without
+// allocating a job or creating a thread for each band.
+struct BackgroundBands {
+    std::atomic<std::uint32_t>* next{};
+    std::uint32_t rows{};
+    std::uint32_t step{8U};
+    bool pending{true};
+    bool claim(std::uint32_t& first,std::uint32_t& last) noexcept {
+        if(!next) {
+            if(!pending) return false;
+            pending=false;first=0;last=rows;return true;
+        }
+        first=next->fetch_add(step,std::memory_order_relaxed);
+        last=std::min(rows,first+step);
+        return first<rows;
+    }
+};
+template<class Body> void background_bands(RowWorkers* workers,
+    std::uint32_t rows,bool parallel,const Body& body,std::uint32_t step=8U) {
+    if(!parallel || !workers || workers->worker_count()==1U) {
+        body(BackgroundBands{nullptr,rows,step});return;
+    }
+    std::atomic<std::uint32_t> next{};
+    workers->parallel_rows(rows,[&](std::uint32_t,std::uint32_t) {
+        body(BackgroundBands{&next,rows,step});
+    });
+}
 
 std::uint16_t vram_word(
     const simulation::SnesPpuState& ppu, std::uint32_t word_address) noexcept {
@@ -529,6 +561,10 @@ void BackgroundRenderer::draw_bg2(
         : std::min(target.width(), static_cast<std::uint32_t>(
             std::max<std::int32_t>(horizontal_origin + 256, 0)));
     if (first_x >= final_x) return;
+    // Command recording appends to one ordered list and must stay serial.
+    const bool parallel_background=row_workers && row_workers->worker_count()!=1U && !target.command_buffer()
+        && target.height()>=96U
+        && std::uint64_t(final_x-first_x)*target.height()>=32768U;
     const auto* tunnel_margin_profile=extend_tunnel_diagonals && ppu.tunnel_scene
         && extend_horizontal && target.width()>256?&tunnel_margin(ppu):nullptr;
     // Keep the actual tile-quantized boundaries until the atlas ends. Fitting
@@ -563,7 +599,9 @@ void BackgroundRenderer::draw_bg2(
             horizontal_origin, first_x, final_x));
         const auto native_last = unsigned(std::clamp<std::int64_t>(
             std::int64_t(horizontal_origin) + 256, native_first, final_x));
-        for (unsigned y = 0; y < target.height(); ++y) {
+        background_bands(row_workers,target.height(),parallel_background,[&](BackgroundBands bands) {
+        unsigned first_row,last_row;
+        while(bands.claim(first_row,last_row)) for (unsigned y=first_row;y<last_row;++y) {
             const int row_x = ppu.bg2_horizontal_offsets_enabled && y < ppu.bg2_horizontal_offsets.size()
                 ? ppu.bg2_horizontal_offsets[y] : scroll_x;
             const int row_y = row_scroll_y(int(y));
@@ -616,6 +654,7 @@ void BackgroundRenderer::draw_bg2(
             if (priority != TilePriorityPass::high && native_last < final_x)
                 margin(native_last,final_x,255);
         }
+        });
         return;
     }
     if ((ppu.mosaic & 2U) == 0U && !expanded_mode2
@@ -624,7 +663,9 @@ void BackgroundRenderer::draw_bg2(
         && !(ppu.background_mode == 1U && ppu.bg2_scanline_scroll_enabled && extend_horizontal)
         && unique_regions.empty() && !single_occurrence_top_rows
         && !ending_star_extension && !game_over_star_extension) {
-        for (unsigned y = 0; y < target.height(); ++y) {
+        background_bands(row_workers,target.height(),parallel_background,[&](BackgroundBands bands) {
+        unsigned first_row,last_row;
+        while(bands.claim(first_row,last_row)) for (unsigned y=first_row;y<last_row;++y) {
             const int row_x = ppu.bg2_horizontal_offsets_enabled && y < ppu.bg2_horizontal_offsets.size()
                 ? ppu.bg2_horizontal_offsets[y] : scroll_x;
             const int row_y = row_scroll_y(int(y));
@@ -638,6 +679,7 @@ void BackgroundRenderer::draw_bg2(
                 wrap_tilemap_coordinate(int(y) + row_y, height_pixels), row_x,
                 horizontal_origin, first, final, y, transparent_cgram_black);
         }
+        });
         return;
     }
     // A Mode 2 offset-per-tile column is one BG2 tile as it lies on the
@@ -702,6 +744,16 @@ void BackgroundRenderer::draw_bg2(
         ground_source_wrapped.resize(final_x - first_x, false);
     }
 
+    // This cache is normally lazy. Resolve its eight possible fine-scroll
+    // phases before sharing it; workers only read these immutable vectors.
+    if(parallel_background) for(int phase=0;phase<8;++phase) column_scroll_y_for(phase);
+    // Wide ground retains history down each column. Split that case into
+    // column strips instead of rows: every strip still visits ALL source rows
+    // in order and owns disjoint history and framebuffer cells. Other passes
+    // use row bands. Both layouts keep each participant's decoder cache local.
+    const bool column_bands=parallel_background && extend_ground_down;
+    background_bands(row_workers,column_bands?final_x-first_x:target.height(),parallel_background,[&](BackgroundBands bands) {
+
     // Decode each referenced 8x8 character and tilemap entry once per pass.
     // Wide Mode 2 otherwise reread four planar VRAM bytes and reconstructed
     // the same nibble for every output pixel—well over 170,000 times per
@@ -750,7 +802,13 @@ void BackgroundRenderer::draw_bg2(
     // mosaic / unique-art path. A borrowed row removes repeated scale, bounds,
     // command and dither checks without another staging image or changed ink.
     const auto draw_rows = [&](auto row_at) {
-        for (std::uint32_t screen_y = 0; screen_y < target.height(); ++screen_y) {
+        std::uint32_t band_first,band_last;
+        while(bands.claim(band_first,band_last)) {
+        const auto first_row=column_bands?0U:band_first;
+        const auto last_row=column_bands?target.height():band_last;
+        const auto band_first_x=column_bands?first_x+band_first:first_x;
+        const auto band_last_x=column_bands?first_x+band_last:final_x;
+        for (std::uint32_t screen_y=first_row;screen_y<last_row;++screen_y) {
             const auto write = row_at(screen_y);
             const auto sample_y = mosaic_coordinate(
                 static_cast<std::int32_t>(screen_y), ppu.mosaic, 0x02U);
@@ -767,7 +825,7 @@ void BackgroundRenderer::draw_bg2(
             const int atlas_scroll=moving_tunnel_atlas
                 ?wrap_tilemap_coordinate(row_scroll_x+128,width_pixels)-128:row_scroll_x;
             const bool authored_row=moving_tunnel_row(sample_y,row_scroll_y(sample_y));
-            for (auto screen_x = first_x; screen_x < final_x; ++screen_x) {
+            for (auto screen_x = band_first_x; screen_x < band_last_x; ++screen_x) {
                 const auto logical_x = static_cast<std::int32_t>(screen_x)
                     - horizontal_origin;
                 const int atlas_x=logical_x+atlas_scroll;
@@ -977,6 +1035,7 @@ void BackgroundRenderer::draw_bg2(
                 }
             }
         }
+        }
     };
     if (target.native_indexed_row(0)) {
         draw_rows([&](std::uint32_t y) {
@@ -992,6 +1051,7 @@ void BackgroundRenderer::draw_bg2(
             };
         });
     }
+    },column_bands?32U:8U);
 }
 
 void BackgroundRenderer::draw_bg3(

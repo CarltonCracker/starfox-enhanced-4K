@@ -6,6 +6,7 @@ param(
     [string[]]$Aspects=@('4_3','16_9','32_9'),
     [string]$Executable='build/current/starfox_pc.exe',
     [ValidateSet('GPU','SOFTWARE')][string]$Renderer='GPU',
+    [ValidateRange(0,8)][int]$RenderThreads=0,
     [switch]$LegacyD3D11,
     [switch]$DisableGpuEffects,
     [switch]$TraceGpu,
@@ -120,6 +121,7 @@ try {
     $env:STARFOX_TEST_UNPACED='1'
     $env:STARFOX_TEST_EXPERIENCE=$Experience
     $env:STARFOX_TEST_RENDERER=$Renderer
+    if($RenderThreads) {$env:STARFOX_RENDER_THREADS=[string]$RenderThreads}
     if($LegacyD3D11) {$env:STARFOX_TEST_D3D11_GPU='1'}
     if($DisableGpuEffects) {$env:STARFOX_DISABLE_GPU_EFFECTS='1'}
     if($TraceGpu) {$env:STARFOX_TRACE_GPU='1'}

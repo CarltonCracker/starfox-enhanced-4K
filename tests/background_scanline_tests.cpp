@@ -1,11 +1,16 @@
 #include "starfox/render/background_renderer.hpp"
+#include "starfox/render/row_workers.hpp"
+#include "starfox/assets/rom.hpp"
+#include "starfox/simulation/game_simulation.hpp"
 #include "tunnel_margin_cases.hpp"
 
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <string_view>
 
@@ -74,8 +79,8 @@ void number(std::uint64_t& hash, std::uint32_t value) {
         std::uint8_t(value >> 16U), std::uint8_t(value >> 24U)};
     add(hash, bytes);
 }
-void draw(const SnesPpuState& ppu, Framebuffer& frame, unsigned n) {
-    const BackgroundRenderer renderer;
+void draw(const SnesPpuState& ppu, Framebuffer& frame, unsigned n,RowWorkers* workers=nullptr) {
+    BackgroundRenderer renderer;renderer.row_workers=workers;
     const auto priority = static_cast<TilePriorityPass>(n % 3U);
     const int origin = int(frame.width()) / 2 - 128 + int(n % 9U) - 4;
     const bool extend = n % 4U != 1;
@@ -97,7 +102,7 @@ void draw(const SnesPpuState& ppu, Framebuffer& frame, unsigned n) {
     }
     renderer.draw_bg3(ppu, frame, priority, origin, extend);
 }
-std::uint64_t oracle_trace() {
+std::uint64_t oracle_trace(RowWorkers* workers=nullptr) {
     std::uint64_t hash = 14695981039346656037ULL;
     constexpr std::array widths{0U, 1U, 127U, 256U, 400U, 853U};
     constexpr std::array heights{1U, 97U, 192U, 224U};
@@ -109,12 +114,12 @@ std::uint64_t oracle_trace() {
         frame.clear(37); frame.begin_write_coverage();
         for (unsigned i = 0; i < frame.pixels().size(); ++i)
             frame.set_dither_alternate(i, std::uint8_t(i % 251U));
-        draw(ppu, frame, n);
+        draw(ppu, frame, n,workers);
         // The old point-writer trace below is pinned independently. Native
         // bulk writes must reproduce that same covered/tagged source image.
         Framebuffer native(widths[n % widths.size()], heights[(n / 6U) % heights.size()], scale);
         native.enable_layer_tags(true); native.clear(37); native.begin_write_coverage();
-        draw(ppu, native, n);
+        draw(ppu, native, n,workers);
         if (native.pixels() != frame.pixels() || native.layer_tags() != frame.layer_tags()
             || !std::equal(native.write_coverage().begin(), native.write_coverage().end(),
                 frame.write_coverage().begin()))
@@ -129,7 +134,7 @@ std::uint64_t oracle_trace() {
         auto ppu = source(n + 9U);
         Framebuffer frame(33, 29, n % 2U + 1U);
         RasterCommands commands; commands.reset(frame.stored_width(), frame.stored_height());
-        frame.record_to(&commands); draw(ppu, frame, n + 9U);
+        frame.record_to(&commands); draw(ppu, frame, n + 9U,workers);
         number(hash, std::uint32_t(commands.commands.size()));
         for (const auto& command : commands.commands) {
             number(hash, unsigned(command.left)); number(hash, unsigned(command.top));
@@ -166,6 +171,102 @@ void benchmark() {
         std::cout << layer << ',' << draws << ',' << elapsed << ',' << std::hex << hash << std::dec << '\n';
     }
 }
+void large_recording_parity() {
+    RowWorkers workers;workers.set_worker_count(8);
+    BackgroundRenderer serial,parallel;parallel.row_workers=&workers;
+    auto ppu=source(2);ppu.main_screen=2;ppu.background_mode=2;ppu.tunnel_scene=false;
+    for(bool offsets:{false,true}) {
+        ppu.bg2_vertical_offsets_enabled=offsets;
+        Framebuffer a(400,224),b(400,224);
+        RasterCommands left,right;left.reset(400,224);right.reset(400,224);
+        a.record_to(&left);b.record_to(&right);
+        serial.draw_bg2(ppu,0,0,a,TilePriorityPass::all,72);
+        parallel.draw_bg2(ppu,0,0,b,TilePriorityPass::all,72);
+        if(left.commands.size()<32768 || left.commands.size()!=right.commands.size()
+            || left.texels!=right.texels
+            || std::memcmp(left.commands.data(),right.commands.data(),left.commands.size()*sizeof(RasterCommand)))
+            throw std::runtime_error("Large BG2 recording lost serial painter order");
+    }
+}
+void parallel_benchmark(const char* rom_path=nullptr,const char* symbols_path=nullptr) {
+    using Clock=std::chrono::steady_clock;
+    RowWorkers workers;workers.set_worker_count(4);
+    BackgroundRenderer serial,parallel;parallel.row_workers=&workers;
+    auto ppu=source(2);
+    if(rom_path && symbols_path) {
+        const auto rom=starfox::assets::RomImage::load(rom_path);
+        const auto symbols=starfox::assets::SymbolMap::load(symbols_path);
+        auto game=std::make_unique<starfox::simulation::GameSimulation>(rom,symbols,"LEVEL1_1",
+            std::span<const std::uint8_t>{},true);
+        game->set_god_mode(true);
+        for(unsigned tick=0;tick<1000;++tick) static_cast<void>(game->tick({}));
+        ppu=game->map().ppu_state();
+        std::cout<<"Actual Corneria BG2 after 1000 source ticks (background-only benchmark)\n";
+    } else {
+        ppu.main_screen=2;ppu.background_mode=2;ppu.mosaic=0;
+        ppu.bg2_tile_size_16=false;ppu.tunnel_scene=false;
+        ppu.bg2_scanline_scroll_enabled=false;ppu.bg2_horizontal_offsets_enabled=false;
+    }
+    for(unsigned width:{256U,400U}) for(bool offsets:{false,true}) {
+        ppu.bg2_vertical_offsets_enabled=offsets;
+        Framebuffer a(width,224),b(width,224);
+        for(auto* f:{&a,&b}) {f->enable_layer_tags(true);f->begin_write_coverage();}
+        const auto run=[&](const BackgroundRenderer& renderer,Framebuffer& frame) {
+            const auto start=Clock::now();
+            for(unsigned tick=0;tick<160;++tick)
+                renderer.draw_bg2(ppu,int(tick),17,frame,TilePriorityPass::all,int(width)/2-128,
+                    true,true,false,0,{},false,false,0,true);
+            return std::chrono::duration<double,std::milli>(Clock::now()-start).count();
+        };
+        run(serial,a);run(parallel,b); // Warm caches and persistent workers.
+        std::array<double,5> solo{},shared{};
+        for(unsigned sample=0;sample<5;++sample) {
+            if(sample&1) {shared[sample]=run(parallel,b);solo[sample]=run(serial,a);}
+            else {solo[sample]=run(serial,a);shared[sample]=run(parallel,b);}
+            if(a.pixels()!=b.pixels() || a.layer_tags()!=b.layer_tags()
+                || !std::equal(a.write_coverage().begin(),a.write_coverage().end(),b.write_coverage().begin()))
+                throw std::runtime_error("BG2 benchmark changed output");
+        }
+        std::sort(solo.begin(),solo.end());std::sort(shared.begin(),shared.end());
+        std::cout<<"BG2 width="<<width<<" offsets="<<offsets<<" draws=160 serial-ms="<<solo[2]
+            <<" four-worker-ms="<<shared[2]<<" speedup="<<solo[2]/shared[2]<<'\n';
+    }
+}
+void source_parallel(const char* rom_path,const char* symbols_path) {
+    const auto rom=starfox::assets::RomImage::load(rom_path);
+    const auto symbols=starfox::assets::SymbolMap::load(symbols_path);
+    const bool ex=!symbols.find("PLANETSEQ2_L").empty();
+    RowWorkers workers;workers.set_worker_count(4);
+    BackgroundRenderer serial,parallel;parallel.row_workers=&workers;
+    unsigned samples=0;
+    for(const char* level:ex?std::array{"LEVEL5_1","LEVEL6_2","LEVEL1_3"}
+                            :std::array{"LEVEL1_1","LEVEL3_3","LEVEL1_3"}) {
+        auto game=std::make_unique<starfox::simulation::GameSimulation>(rom,symbols,level,
+            std::span<const std::uint8_t>{},true);
+        game->set_god_mode(true);
+        for(unsigned tick=0;tick<=1100;++tick) {
+            static_cast<void>(game->tick({}));
+            if(tick%100) continue;
+            const auto& p=game->map().ppu_state();
+            for(unsigned width:{256U,400U,853U}) for(unsigned scale:{1U,2U}) for(bool ground:{false,true}) {
+                Framebuffer a(width,224,scale),b(width,224,scale);
+                for(auto* f:{&a,&b}) {f->enable_layer_tags(true);f->clear(37);f->begin_write_coverage();}
+                const auto draw_frame=[&](const BackgroundRenderer& renderer,Framebuffer& frame) {
+                    ScopedLayer tag(frame,PixelLayer::background);
+                    for(auto pass:{TilePriorityPass::low,TilePriorityPass::high})
+                        renderer.draw_bg2(p,p.bg2_scroll_x,p.bg2_scroll_y,frame,pass,int(width)/2-128,
+                            true,true,false,0,{},false,false,0,ground,true);
+                };
+                draw_frame(serial,a);draw_frame(parallel,b);
+                if(a.pixels()!=b.pixels() || a.layer_tags()!=b.layer_tags()
+                    || !std::equal(a.write_coverage().begin(),a.write_coverage().end(),b.write_coverage().begin()))
+                    throw std::runtime_error(std::string("Source BG2 worker mismatch: ")+level+" tick="+std::to_string(tick));
+                ++samples;
+            }
+        }
+    }
+    std::cout<<(ex?"EX":"Original")<<" live BG2 worker parity: "<<samples<<" native/wide/ultrawide, 1x/2x and ground-history samples\n";
+}
 void native_row_contract() {
     const auto require = [](bool value) {
         if (!value) throw std::runtime_error("native indexed row ownership/eligibility changed");
@@ -200,7 +301,11 @@ void native_row_contract() {
 
 int main(int argc, char** argv) try {
     if (argc == 2 && std::string_view(argv[1]) == "--benchmark") { benchmark(); return 0; }
+    if (argc == 2 && std::string_view(argv[1]) == "--parallel-benchmark") { parallel_benchmark(); return 0; }
+    if (argc == 4 && std::string_view(argv[1]) == "--source-benchmark") { parallel_benchmark(argv[2],argv[3]); return 0; }
+    if (argc == 4 && std::string_view(argv[1]) == "--source-parallel") { source_parallel(argv[2],argv[3]); return 0; }
     native_row_contract();
+    large_recording_parity();
     check_tunnel_margins([](const auto& p,unsigned width,unsigned scale,bool extend) {
         Framebuffer f(width,224,scale);
         BackgroundRenderer{}.draw_bg2(p,p.bg2_scroll_x,p.bg2_scroll_y,f,TilePriorityPass::all,int(width)/2-128,
@@ -269,6 +374,13 @@ int main(int argc, char** argv) try {
         std::cout<<"Mode 2 offset-per-tile: columns follow each scanline's fine scroll\n";
     }
     const auto digest = oracle_trace();
+    RowWorkers workers;
+    for(unsigned count:{1U,2U,4U,8U}) {
+        workers.set_worker_count(count);
+        if(oracle_trace(&workers)!=digest)
+            throw std::runtime_error("Threaded BG2 changed pixels/tags/coverage/dither or ordered commands");
+    }
+    std::cout<<"BG2 worker parity: serial/1/2/4/8 workers match the independent source trace\n";
     // Filled from a separate executable built BEFORE changing the renderer:
     // background_renderer.cpp SHA256 450af058b47c38fd096b7416782f1b3ab
     // dcdd428b847388391a68958e7d587d0, GNU 13.2 / -O2 / c++20.

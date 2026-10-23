@@ -121,6 +121,19 @@ and preferences default to its `vr-data` directory. An optional
 it. `--enhanced-sky` enables that option at startup. The headset must have
 an active OpenXR runtime, even when using a standard gamepad.
 
+## Software render worker override
+
+BG2 backgrounds reuse the flat runtime's persistent presentation worker pool,
+claiming small bands without changing source cadence or presentation settings.
+Decoder caches are private to each participant. Ordinary passes use row bands;
+wide ground uses column strips to preserve its top-to-bottom history. Ordered
+GPU command recording remains serial.
+
+Set `STARFOX_RENDER_THREADS=1` for the serial reference, or `2` through `8` to
+limit the shared pool. This takes precedence over `STARFOX_PRESENT_WORKERS`;
+without either override the existing hardware-derived default is used. This
+does not change the separate VR renderer or resume 3DS development.
+
 ## Audio worker override
 
 Desktop, Android and VR runtimes use one persistent worker to render the
