@@ -1,9 +1,9 @@
 # In-game updates
 
-Options → Check for updates displays CURRENT VERSION (compiled from the CMake
-project version), LATEST VERSION, and one of: checking, new version available,
+Options → Check for updates displays CURRENT VERSION (compiled from
+`cmake/ReleaseVersion.cmake`), LATEST VERSION, and one of: checking, new version available,
 up to date, local build is newer, or a check error. Comparison is numeric across
-three/four components, not alphabetical. Failed checks do not claim the player
+three to five components, not alphabetical. Failed checks do not claim the player
 is up to date. No network request occurs until the update screen is opened.
 
 ## Installation support
@@ -33,6 +33,12 @@ is up to date. No network request occurs until the update screen is opened.
 
 Existing 0.0.8.8 downloads do not acquire new menu code automatically. The first
 release containing the updater must be installed normally.
+
+Public release 0.0.8.8.1 keeps all five components in tags, download filenames
+and the update screen. Native package versions use their platform's restricted
+format: Android/Quest build 19, Apple build 0.0.809, UWP 0.0.8.9, Vita 00.89 and
+PS5 01.000.001. These are increasing package identifiers, not alternate public
+release names. CMake's four-component project version remains the base series.
 
 ## Safety and failure behavior
 

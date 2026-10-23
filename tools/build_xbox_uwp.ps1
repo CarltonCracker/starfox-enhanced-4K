@@ -3,14 +3,14 @@ param(
     [string]$BuildDirectory = "build/xbox-uwp-x64",
     [string]$InstallDirectory = "dist/StarFoxEnhanced-xbox-uwp-x64",
     [ValidateRange(0, 65535)]
-    [int]$BuildRevision = 8
+    [int]$BuildRevision = 9
 )
 
 $ErrorActionPreference = 'Stop'
 $source = [System.IO.Path]::GetFullPath($SourceRoot)
 $build = [System.IO.Path]::GetFullPath((Join-Path $source $BuildDirectory))
 $install = [System.IO.Path]::GetFullPath((Join-Path $source $InstallDirectory))
-$packageName = 'StarFoxEnhanced-0.0.8.8-xbox-uwp-x64.appx'
+$packageName = 'StarFoxEnhanced-0.0.8.8.1-xbox-uwp-x64.appx'
 $sourcePrefix = $source.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
 if (-not $build.StartsWith($sourcePrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "BuildDirectory must remain inside SourceRoot"
@@ -237,7 +237,7 @@ try {
     # known-good. This also removes stale 0.0.2 packages from old checkouts.
     Get-ChildItem -LiteralPath $install -File -ErrorAction SilentlyContinue |
         Where-Object {
-            $_.Name -match '^StarFoxEnhanced-[0-9]+\.[0-9]+\.[0-9]+-xbox-uwp-x64\.appx$'
+            $_.Name -match '^StarFoxEnhanced-[0-9]+(?:\.[0-9]+){2,4}-xbox-uwp-x64\.appx$'
         } | ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }
     $installedPackagePath = Join-Path $install $packageName
     Copy-Item -LiteralPath $packagePath -Destination $installedPackagePath -Force

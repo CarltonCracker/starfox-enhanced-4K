@@ -9,8 +9,9 @@
 namespace starfox::app {
 inline constexpr std::string_view update_repository = "https://github.com/kandowontu2/starfox-enhanced";
 inline constexpr std::string_view update_api = "https://api.github.com/repos/kandowontu2/starfox-enhanced/releases/latest";
-// Four numeric components are intentional: 0.0.8.10 must sort after 0.0.8.9.
-using UpdateVersion = std::array<std::uint32_t, 4>;
+// Include the optional hotfix component: 0.0.8.8 < 0.0.8.8.1 < 0.0.8.9.
+// Compare numerically, so 0.0.8.10 still sorts after 0.0.8.9.
+using UpdateVersion = std::array<std::uint32_t, 5>;
 std::optional<UpdateVersion> parse_update_version(std::string_view text);
 struct UpdateRelease {
     std::string version;

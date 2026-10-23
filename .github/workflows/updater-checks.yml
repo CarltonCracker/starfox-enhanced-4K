@@ -5,9 +5,11 @@ on:
       - '.github/workflows/updater-checks.yml'
       - 'CMakeLists.txt'
       - 'cmake/UpdateService.cmake'
+      - 'cmake/ReleaseVersion.cmake'
       - 'src/app/update*'
       - 'include/starfox/app/update*'
       - 'tools/package/apply-update*'
+      - 'tools/check_release_version.py'
       - 'tests/*update*'
   workflow_dispatch:
 permissions:
@@ -31,6 +33,8 @@ jobs:
       PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - uses: actions/checkout@v4
+      - name: Check public and native release versions
+        run: python tools/check_release_version.py
       - name: Configure asset-free updater targets
         run: >-
           cmake -S tests/updater -B build/update-checks -G "${{ matrix.generator }}" -DCMAKE_BUILD_TYPE=Release

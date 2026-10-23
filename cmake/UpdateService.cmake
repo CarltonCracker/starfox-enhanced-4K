@@ -1,5 +1,6 @@
 # One lightweight service, shared by the SDL player and standalone tests.
 get_filename_component(STARFOX_UPDATE_SOURCE_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
+include("${CMAKE_CURRENT_LIST_DIR}/ReleaseVersion.cmake")
 file(READ "${STARFOX_UPDATE_SOURCE_ROOT}/tools/package/apply-update.ps1" STARFOX_UPDATE_SCRIPT)
 file(READ "${STARFOX_UPDATE_SOURCE_ROOT}/tools/package/apply-update-linux.py" STARFOX_LINUX_UPDATE_SCRIPT)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS

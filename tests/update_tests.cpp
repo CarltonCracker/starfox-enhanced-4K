@@ -39,13 +39,22 @@ int main(int argc,char** argv) {
     }
     require(parse_update_version("v0.0.8.10")>parse_update_version("0.0.8.9"),"lexicographic version comparison");
     require(parse_update_version("0.0.8")==parse_update_version("v0.0.8.0"),"three-part version normalization");
-    for(const auto* text:{"","v","1.2","1.2.3.","1.2.3.4.5","1.2.3-beta","01.2.3","1.-2.3","1.2.3/evil","4294967296.2.3"})
+    require(parse_update_version("0.0.8.8")==parse_update_version("v0.0.8.8.0"),"hotfix zero normalization");
+    require(parse_update_version("0.0.8.8.1")>parse_update_version("0.0.8.8"),"hotfix must be newer than its base");
+    require(parse_update_version("0.0.8.9")>parse_update_version("0.0.8.8.1"),"next release must supersede hotfix");
+    require(parse_update_version("0.0.8.8.10")>parse_update_version("0.0.8.8.9"),"numeric hotfix comparison");
+    for(const auto* text:{"","v","1.2","1.2.3.","1.2.3.4.5.6","1.2.3.4.","1.2.3.4.01","1.2.3.4.4294967296","1.2.3-beta","01.2.3","1.-2.3","1.2.3/evil","4294967296.2.3"})
         require(!parse_update_version(text),"invalid version accepted");
     const auto newer=parse_update_release(fixture(),"0.0.8.8","windows-x64.zip");
     require(newer.newer && newer.version=="0.0.8.9" && newer.bytes==1234 && newer.sha256==std::string(64,'a'),"update asset selection");
     require(!parse_update_release(fixture("0.0.8.8"),"0.0.8.8","windows-x64.zip").newer,"same version offered");
     require(!parse_update_release(fixture("0.0.8.7"),"0.0.8.8","windows-x64.zip").newer,"downgrade offered");
     require(parse_update_release(fixture("0.0.8.10"),"0.0.8.9","windows-x64.zip").newer,"four-part versions misordered");
+    const auto hotfix=parse_update_release(fixture("0.0.8.8.1"),"0.0.8.8","windows-x64.zip");
+    require(hotfix.newer && hotfix.version=="0.0.8.8.1" && hotfix.asset_url.ends_with("StarFoxEnhanced-0.0.8.8.1-windows-x64.zip"),"hotfix version/asset truncated");
+    require(!parse_update_release(fixture("0.0.8.8.1"),"0.0.8.8.1","windows-x64.zip").newer,"same hotfix offered");
+    require(!parse_update_release(fixture("0.0.8.8"),"0.0.8.8.1","windows-x64.zip").newer,"hotfix downgrade offered");
+    require(parse_update_release(fixture("0.0.8.9"),"0.0.8.8.1","windows-x64.zip").newer,"hotfix blocks next release");
     for(const auto* suffix:{"windows-x86.zip","windows-pcvr.zip","android-arm64.apk",""})
         require(parse_update_release(fixture(),"0.0.8.8",suffix).asset_url.empty(),"wrong platform selected");
     require(parse_update_release(replace(fixture(),"\"digest\":\"sha256:"+std::string(64,'a')+"\"","\"digest\":null"),
