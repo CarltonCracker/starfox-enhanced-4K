@@ -1792,6 +1792,17 @@ bool GameSimulation::launch_selected_level() {
                 50'000'000U, true);
         }
     }
+    if (!starfox_ex_cartridge_) {
+        // Normal progression visits PLANETSEQ before entering a mission.
+        // Its map bank restores orchestra samples, directory and tuning data;
+        // scores such as Asteroids/Space Armada do not upload those again.
+        // Preceding route banks above preserve cumulative effects, but leave
+        // band instruments installed. Restore the source prerequisite LAST,
+        // then let this stage's initializer overlay its own band if needed.
+        Wdc65816Registers registers;
+        registers.status = 0x24U;
+        map_.call_native_routine(map_music_, registers, 50'000'000U, true);
+    }
     configure_route_for_map(level);
     pending_map_=address;
     launch_pending_stage();
