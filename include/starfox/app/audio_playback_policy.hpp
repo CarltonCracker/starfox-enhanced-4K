@@ -13,15 +13,15 @@ struct AudioPlaybackPolicy {
     bool game_stream_role;
 };
 
-// Source PCM still arrives in complete 50 ms packets. Android's AAudio
-// backend adds its own triple-buffered mixer, so a 64 ms application prime
-// on top of the default 20 ms callbacks makes effects noticeably late.
-// Keep a 24 ms application cushion (enough for the 16 ms jitter regression)
-// and request shorter hardware callbacks, without changing source cadence.
+// Source PCM arrives in complete 50 ms packets. A 24 ms cushion and forced
+// 256-frame callbacks leave little handheld scheduling headroom (#56/#60).
+// Restore the safer policy and let SDL/AAudio choose its device
+// buffer and retain more than one source tick of application headroom. The
+// 150 ms cap still bounds catch-up latency; source cadence/pitch never change.
 [[nodiscard]] constexpr AudioPlaybackPolicy audio_playback_policy(
     AudioPlaybackPlatform platform) noexcept {
     switch (platform) {
-    case AudioPlaybackPlatform::android: return {24U, 150U, 256U, true};
+    case AudioPlaybackPlatform::android: return {64U, 150U, 0U, true};
     case AudioPlaybackPlatform::switch_console: return {64U, 150U, 512U, false};
     default: return {64U, 150U, 0U, false};
     }

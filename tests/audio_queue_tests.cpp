@@ -23,18 +23,18 @@ int main() {
     constexpr auto android_policy = audio_playback_policy(AudioPlaybackPlatform::android);
     constexpr auto switch_policy = audio_playback_policy(AudioPlaybackPlatform::switch_console);
     constexpr auto desktop_policy = audio_playback_policy(AudioPlaybackPlatform::desktop);
-    static_assert(android_policy.startup_ms == 24 && android_policy.device_sample_frames == 256
+    static_assert(android_policy.startup_ms == 64 && android_policy.device_sample_frames == 0
         && android_policy.limit_ms == 150 && android_policy.game_stream_role);
     static_assert(switch_policy.startup_ms == 64 && switch_policy.device_sample_frames == 512
         && switch_policy.limit_ms == 150 && !switch_policy.game_stream_role);
     static_assert(desktop_policy.startup_ms == 64 && desktop_policy.device_sample_frames == 0
         && desktop_policy.limit_ms == 150 && !desktop_policy.game_stream_role);
-    // Android defaults must reach the SDL device, not just an unused policy.
+    // Let Android drivers choose their callbacks; never force tiny buffers.
     SDL_ResetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES);
     SDL_ResetHint(SDL_HINT_AUDIO_DEVICE_STREAM_ROLE);
     configure_realtime_audio_device(android_policy);
-    require(std::string_view(SDL_GetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES)) == "256",
-        "Android callback size was not configured");
+    require(SDL_GetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES) == nullptr,
+        "Android policy still forces a small callback size");
     require(std::string_view(SDL_GetHint(SDL_HINT_AUDIO_DEVICE_STREAM_ROLE)) == "Game",
         "Android playback did not use the game stream role");
     require(SDL_Init(SDL_INIT_AUDIO), "audio initialization");
@@ -45,14 +45,14 @@ int main() {
     SDL_AudioSpec actual_device{};
     int actual_frames{};
     require(SDL_GetAudioDeviceFormat(SDL_GetAudioStreamDevice(device_stream),
-        &actual_device, &actual_frames) && actual_frames == 256,
-        "SDL did not open the requested short-buffer device");
+        &actual_device, &actual_frames) && actual_frames > 0,
+        "SDL did not negotiate a device buffer");
     SDL_AudioSpec actual_input{};
     require(SDL_GetAudioStreamFormat(device_stream, &actual_input, nullptr)
         && actual_input.freq == source.freq && actual_input.format == source.format
         && actual_input.channels == source.channels, "Device policy changed source PCM format");
     const auto description = realtime_audio_device_description(device_stream);
-    require(description.find("callback-frames=256") != std::string::npos
+    require(description.find("callback-frames=" + std::to_string(actual_frames)) != std::string::npos
         && description.find("driver=dummy") != std::string::npos,
         "Audio diagnostics did not report the negotiated device buffer");
     SDL_DestroyAudioStream(device_stream);
@@ -116,7 +116,7 @@ int main() {
     // Reproduce the previous Switch underrun with 8 ms of headroom, and verify
     // the shared bounded policy survives the same jitter without losing PCM.
     const auto jitter_underruns = [&](unsigned startup_ms, unsigned limit_ms,
-                                    unsigned output_hz = 32'000U) {
+                                    unsigned output_hz = 32'000U, unsigned late_ms = 16U) {
         const SDL_AudioSpec output_spec{SDL_AUDIO_S16, 2, static_cast<int>(output_hz)};
         auto* jitter = SDL_CreateAudioStream(&source, &output_spec);
         require(jitter != nullptr, "create jitter stream");
@@ -126,7 +126,7 @@ int main() {
         for (unsigned tick = 0; tick < 100; ++tick) {
             packet.fill(100);
             require(starfox::app::queue_realtime_audio(jitter, packet, limit_ms * 32U), "queue jitter packet");
-            std::vector<std::int16_t> consumed((tick % 2U ? 34U : 66U)
+            std::vector<std::int16_t> consumed((tick % 2U ? 50U - late_ms : 50U + late_ms)
                 * (output_hz / 1'000U) * 2U);
             const auto bytes = static_cast<int>(consumed.size() * 2U);
             const auto read = SDL_GetAudioStreamData(jitter, consumed.data(), bytes);
@@ -147,9 +147,15 @@ int main() {
     require(jitter_underruns(starfox::app::realtime_audio_startup_ms,
         starfox::app::realtime_audio_limit_ms) == 0, "bounded headroom did not prevent jitter underruns");
     require(jitter_underruns(android_policy.startup_ms, android_policy.limit_ms) == 0,
-        "Android reduced-latency policy underruns with 16 ms scheduling jitter");
+        "Android policy underruns with 16 ms scheduling jitter");
     require(jitter_underruns(android_policy.startup_ms, android_policy.limit_ms, 48'000U) == 0,
-        "Android reduced-latency policy underruns on a resampling 48 kHz device");
+        "Android policy underruns on a resampling 48 kHz device");
+    // The shortened policy passed 16 ms jitter but cannot tolerate a nearly
+    // missed 50 ms source deadline on a handheld. Preserve PCM through both.
+    require(jitter_underruns(24, 150, 48'000, 48) > 0,
+        "short Android cushion did not reproduce the missed-deadline underrun");
+    require(jitter_underruns(android_policy.startup_ms, android_policy.limit_ms, 48'000, 48) == 0,
+        "Android safety cushion underruns with a missed source deadline");
     require(jitter_underruns(switch_policy.startup_ms, switch_policy.limit_ms) == 0,
         "Switch startup headroom regressed");
     SDL_Quit();

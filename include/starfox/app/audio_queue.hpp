@@ -30,8 +30,7 @@ inline void configure_realtime_audio_device(
 }
 
 // The callback size is a request: some Android drivers choose another size.
-// Record the negotiated format/buffer so a device-specific report can show
-// whether the short-buffer request was actually honored.
+// Record the negotiated format/buffer for device-specific playback reports.
 inline std::string realtime_audio_device_description(SDL_AudioStream* stream) {
     SDL_AudioSpec device{};
     int frames{};
