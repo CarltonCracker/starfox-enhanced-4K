@@ -134,6 +134,31 @@ class LinuxUpdateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Unexpected"):
             updater.download(self.work, "https://evil.example/game.zip", 100)
 
+    def test_download_accepts_three_four_and_five_component_releases(self):
+        payload = b"synthetic update download"
+        for version in ("0.0.8", "0.0.8.8", "0.0.8.8.1"):
+            with self.subTest(version=version):
+                response = io.BytesIO(payload)
+                response.status = 200
+                opener = mock.Mock()
+                opener.open.return_value = response
+                url = (updater.REPOSITORY + f"/releases/download/v{version}/"
+                       + f"StarFoxEnhanced-{version}-linux-x64.zip")
+                with mock.patch.object(updater.urllib.request, "build_opener", return_value=opener):
+                    updater.download(self.work, url, len(payload))
+                self.assertEqual((self.work / "payload.zip").read_bytes(), payload)
+                self.assertEqual((self.work / "progress").read_text(), "100")
+                self.assertEqual(opener.open.call_args.args[0].full_url, url)
+                (self.work / "payload.zip").unlink()
+
+    def test_download_rejects_mismatched_and_malformed_release_versions(self):
+        for tag, asset in (("0.0.8.8.1", "0.0.8.8"), ("0.0.8.8", "0.0.8.8.1"),
+                           ("0.0.8.8.1.1", "0.0.8.8.1.1"), ("0.0.08", "0.0.08"),
+                           ("0.0.8.8.1-beta", "0.0.8.8.1-beta")):
+            with self.subTest(tag=tag, asset=asset), self.assertRaisesRegex(ValueError, "Unexpected"):
+                updater.download(self.work, updater.REPOSITORY + f"/releases/download/v{tag}/"
+                                 + f"StarFoxEnhanced-{asset}-linux-x64.zip", 100)
+
     @unittest.skipUnless(sys.platform.startswith("linux"), "native Linux filesystem policy")
     def test_source_and_package_managed_installs_are_manual(self):
         with self.assertRaisesRegex(ValueError, "Package-managed"):

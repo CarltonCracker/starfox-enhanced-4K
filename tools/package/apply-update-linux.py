@@ -263,7 +263,11 @@ class SafeRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def download(work, url, size):
-    if not re.fullmatch(re.escape(REPOSITORY) + r"/releases/download/v?[0-9]+(?:\.[0-9]+){2,3}/StarFoxEnhanced-[0-9]+(?:\.[0-9]+){2,3}-linux-x64\.zip", url):
+    component = r"(?:0|[1-9][0-9]*)"
+    version = component + r"(?:\." + component + r"){2,4}"
+    pattern = (re.escape(REPOSITORY) + r"/releases/download/v?(?P<version>" + version
+               + r")/StarFoxEnhanced-(?P=version)-linux-x64\.zip")
+    if not re.fullmatch(pattern, url):
         raise ValueError("Unexpected Linux update URL")
     if not 0 < size <= 4 * 1024**3 or shutil.disk_usage(work).free < 4 * size + RESERVE:
         raise ValueError("Invalid update size or not enough disk space")
