@@ -47,6 +47,31 @@ template<class Draw> void check_tunnel_margins(Draw draw) {
             if(width==256 && changed) throw std::runtime_error("Native tunnel view changed");
         }
     }
+    // Moving checker pages also contain real ink outside the 256-column
+    // viewport. Prefer it to the radial fit while it is still in the atlas:
+    // quantized tile edges need not land exactly on the fitted diagonals.
+    for(int shift:{-64,0,64}) for(int phase:{-512,0,512}) {
+        auto corridor=tunnel_margin_fixture(shift);
+        for(auto& x:corridor.bg2_horizontal_offsets) x=std::int16_t(x+phase);
+        auto atlas=corridor;atlas.tunnel_scene=false;
+        for(unsigned width:{400U,853U}) for(unsigned scale:{1U,2U}) {
+            const auto actual=draw(corridor,width,scale,true),source=draw(atlas,width,scale,false);
+            if(actual!=draw(tunnel_margin_fixture(shift),width,scale,true))
+                throw std::runtime_error("Moving tunnel continuation changed after a whole-atlas scroll");
+            const int origin=int(width)/2-128;
+            unsigned compared=0;
+            for(unsigned y=0;y<224*scale;++y) for(unsigned x=0;x<width*scale;++x) {
+                const int logical=int(x/scale)-origin;
+                const int row_x=int(corridor.bg2_horizontal_offsets[y/scale])-phase;
+                if((logical<0 || logical>=256) && logical+row_x>=0 && logical+row_x<512) {
+                    if(actual[y*width*scale+x]!=source[y*width*scale+x])
+                        throw std::runtime_error("Moving tunnel discarded authored margin ink for a fitted seam");
+                    ++compared;
+                }
+            }
+            if(compared<1000) throw std::runtime_error("Moving tunnel atlas regression missed its margins");
+        }
+    }
     // The cartridge hides the ten-line unscrolled HDMA lead-in behind its
     // display border. In a full-height presentation it must continue the first
     // ceiling page, not expose an unrelated atlas strip above the tunnel.
@@ -95,6 +120,9 @@ template<class Draw> void check_tunnel_margins(Draw draw) {
     auto asymmetric=tunnel_margin_fixture();
     for(unsigned i=0;i<1024;++i) asymmetric.vram[0x8000+i*2]=14;
     if(tunnel_margin(asymmetric).data[0]) throw std::runtime_error("Asymmetric tunnel was forced into a symmetric corridor");
+    auto unknown_page=tunnel_margin_fixture();unknown_page.bg2_scanline_scroll_y.fill(99);
+    if(draw(unknown_page,400,1,true)!=draw(unknown_page,400,1,false))
+        throw std::runtime_error("Unknown tunnel page lost its conservative edge fallback");
     auto offsets=tunnel_margin_fixture();
     offsets.bg2_vertical_offsets_enabled=true;
     if(tunnel_margin(offsets).data[0]!=15)

@@ -531,6 +531,16 @@ void BackgroundRenderer::draw_bg2(
     if (first_x >= final_x) return;
     const auto* tunnel_margin_profile=extend_tunnel_diagonals && ppu.tunnel_scene
         && extend_horizontal && target.width()>256?&tunnel_margin(ppu):nullptr;
+    // Keep the actual tile-quantized boundaries until the atlas ends. Fitting
+    // inside it introduces a visible join at x=0/255, especially when banking.
+    const bool moving_tunnel_atlas=tunnel_margin_profile && tunnel_margin_profile->data[0]
+        && width_pixels>256;
+    const auto moving_tunnel_row=[&](int y,int row_y) {
+        if(!moving_tunnel_atlas || y<0 || y>=224
+            || ((row_y&511)!=24 && (row_y&511)!=280)) return false;
+        const unsigned part=((row_y&511)==280?2U:0U)+(y>=112);
+        return (tunnel_margin_profile->data[0]&(1U<<part))!=0;
+    };
     // Nucleus/boss rooms are complete, static Mode 2 cross-sections, not
     // alternating HDMA corridor pages. Their 512-pixel atlas already contains
     // the missing ceiling/floor diagonals outside the native 256 columns.
@@ -557,6 +567,7 @@ void BackgroundRenderer::draw_bg2(
             const int row_x = ppu.bg2_horizontal_offsets_enabled && y < ppu.bg2_horizontal_offsets.size()
                 ? ppu.bg2_horizontal_offsets[y] : scroll_x;
             const int row_y = row_scroll_y(int(y));
+            const bool authored_row=moving_tunnel_row(int(y),row_y);
             const auto source_y = wrap_tilemap_coordinate(int(y) + row_y, height_pixels);
             const auto edge_colour = [&](int logical_x) {
                 const auto source_x = wrap_tilemap_coordinate(logical_x + row_x, width_pixels);
@@ -574,12 +585,17 @@ void BackgroundRenderer::draw_bg2(
             const auto margin=[&](unsigned first,unsigned last,int native_edge) {
                 const auto fallback=edge_colour(native_edge);
                 if(tunnel_margin_profile && tunnel_margin_profile->data[0]) {
+                    const int atlas_scroll=wrap_tilemap_coordinate(row_x+128,width_pixels)-128;
                     // Keep the existing bulk row writer at high render scales;
                     // a fitted surface has only a few colour runs per margin.
                     auto run_start=first;
                     auto run_colour=fallback;
                     for(unsigned x=first;x<last;++x) {
-                        const auto ink=tunnel_margin_profile->sample(int(x)-horizontal_origin,int(y),row_x,row_y);
+                        const int logical=int(x)-horizontal_origin;
+                        const int atlas_x=logical+atlas_scroll;
+                        const auto ink=authored_row && atlas_x>=0 && atlas_x<width_pixels
+                            ?std::optional<std::uint8_t>{edge_colour(logical)}
+                            :tunnel_margin_profile->sample(logical,int(y),atlas_scroll,row_y);
                         const auto colour=ink?*ink:fallback;
                         if(x!=first && colour!=run_colour) {
                             target.set_solid_indexed_row(int(run_start),int(y),x-run_start,run_colour);
@@ -748,13 +764,18 @@ void BackgroundRenderer::draw_bg2(
             const auto unique_scroll_x = unique_regions.empty() ? 0
                 : wrap_tilemap_coordinate(row_scroll_x + width_pixels / 2, width_pixels) - width_pixels / 2;
             const auto& column_scroll_y = column_scroll_y_for(row_scroll_x);
+            const int atlas_scroll=moving_tunnel_atlas
+                ?wrap_tilemap_coordinate(row_scroll_x+128,width_pixels)-128:row_scroll_x;
+            const bool authored_row=moving_tunnel_row(sample_y,row_scroll_y(sample_y));
             for (auto screen_x = first_x; screen_x < final_x; ++screen_x) {
                 const auto logical_x = static_cast<std::int32_t>(screen_x)
                     - horizontal_origin;
+                const int atlas_x=logical_x+atlas_scroll;
+                const bool authored_moving_margin=authored_row && atlas_x>=0 && atlas_x<width_pixels;
                 if(tunnel_margin_profile && priority!=TilePriorityPass::high
-                    && (logical_x<0 || logical_x>=256)) {
+                    && (logical_x<0 || logical_x>=256) && !authored_moving_margin) {
                     const int row_y=row_scroll_y(sample_y);
-                    if(const auto ink=tunnel_margin_profile->sample(logical_x,sample_y,row_scroll_x,row_y)) {
+                    if(const auto ink=tunnel_margin_profile->sample(logical_x,sample_y,atlas_scroll,row_y)) {
                         write(screen_x,*ink);continue;
                     }
                 }
@@ -774,7 +795,7 @@ void BackgroundRenderer::draw_bg2(
                 }
                 const auto sample_x = mosaic_coordinate(
                     ppu.tunnel_scene && extend_horizontal && priority!=TilePriorityPass::high
-                        && !authored_tunnel_extension
+                        && !authored_tunnel_extension && !authored_moving_margin
                         ? std::clamp<std::int32_t>(logical_x, 0, 255) : logical_x,
                     ppu.mosaic, 0x02U);
                 const auto sampled_screen_x = std::clamp(

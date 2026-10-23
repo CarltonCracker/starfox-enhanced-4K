@@ -142,13 +142,23 @@ void main(uint3 id:SV_DispatchThreadID) {
         int rowX=(flags&8u) && sampleY>=0 && sampleY<224?asint(memory[16640u+uint(sampleY)]):scrollX;
         int rowY=(flags&16u)?asint(memory[16864u+uint(clamp(sampleY,0,223))]):scrollY;
         if((flags&8192u) && sampleY>=0 && sampleY<10) rowY=asint(memory[16864u+10u]);
+        // Preserve real tile edges outside the viewport before extrapolating
+        // past the atlas. A fitted diagonal can disagree by an entire tile.
+        int atlasScroll=((rowX+128)&int(mapWidth-1))-128;
+        int atlasX=logicalX+atlasScroll;
+        bool movingTunnelAtlas=false;
+        if((flags&2048u) && mapWidth>256 && atlasX>=0 && atlasX<int(mapWidth)
+            && sampleY>=0 && sampleY<224 && ((rowY&511)==24 || (rowY&511)==280)) {
+            uint part=((rowY&511)==280?2u:0u)+(sampleY>=112?1u:0u);
+            movingTunnelAtlas=(memory[17600u]&(1u<<part))!=0;
+        }
         if((rowX&7)!=columnPhase) {columnPhase=rowX&7;columnY=columnScroll(columnX,expanded,columnPhase);}
-        if((flags&2048u) && outside && priority!=2u && sampleY>=0 && sampleY<224
+        if((flags&2048u) && !movingTunnelAtlas && outside && priority!=2u && sampleY>=0 && sampleY<224
             && ((rowY&511)==24 || (rowY&511)==280)) {
             uint page=(rowY&511)==280?1u:0u,part=page*2u+(sampleY>=112?1u:0u),base=17600u;
             if(memory[base]&(1u<<part)) {
                 uint colour=memory[base+40u+page*224u+uint(sampleY)];
-                float dx=abs(float(logicalX+rowX)-255.5),dy=abs(float(sampleY)+.5-(sampleY<112?112.5:111.5));
+                float dx=abs(float(logicalX+atlasScroll)-255.5),dy=abs(float(sampleY)+.5-(sampleY<112?112.5:111.5));
                 for(uint z=0;z<memory[base+1u+part];++z)
                     if(dx>=asfloat(memory[base+8u+part*8u+z*2u])*dy) colour=memory[base+9u+part*8u+z*2u];
                 put(x,y,colour,true);continue;
@@ -162,6 +172,7 @@ void main(uint3 id:SV_DispatchThreadID) {
             if(wrapped) {if(lastGround) put(x,y,lastGround,true,lastTerrain);continue;}
         }
         int unwrappedX=sampleX+rowX;
+        if(movingTunnelAtlas && outside) unwrappedX=atlasX;
         if(authoredTunnel && outside) {
             int centredScroll=((rowX+128)&int(mapWidth-1))-128;
             unwrappedX=clamp(sampleX+centredScroll,0,int(mapWidth)-1);

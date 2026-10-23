@@ -171,6 +171,25 @@ int main(int argc, char** argv) try {
             ++changed;
         }
         if(changed<1000) throw std::runtime_error("Actual tunnel margins retained flat bars");
+        if(profile.data[0]) {
+            auto atlas=p;atlas.tunnel_scene=false;
+            if(guard) std::fill_n(atlas.bg2_scanline_scroll_y.begin(),10,std::int16_t(guard));
+            Framebuffer authored(400,224);
+            renderer.draw_bg2(atlas,p.bg2_scroll_x,p.bg2_scroll_y,authored,TilePriorityPass::all,72);
+            const int atlas_width=((p.bg2_screen_size&1)?64:32)*(p.bg2_tile_size_16?16:8);
+            unsigned compared=0;
+            for(unsigned y=0;y<224;++y) for(unsigned x=0;x<400;++x) {
+                if(x>=72 && x<328) continue;
+                const int scroll=p.bg2_horizontal_offsets_enabled?p.bg2_horizontal_offsets[y]:p.bg2_scroll_x;
+                const int source_x=int(x)-72+((scroll+128)&(atlas_width-1))-128;
+                if(source_x<0 || source_x>=atlas_width || !authored.get(x,y)) continue;
+                if(authored.get(x,y)!=after.get(x,y))
+                    throw std::runtime_error("Actual moving corridor replaced available authored ink at the margin");
+                ++compared;
+            }
+            if(compared<1000) throw std::runtime_error("Actual corridor atlas regression missed its margins");
+            std::cout<<"Authored moving tunnel margin samples="<<compared<<'\n';
+        }
         std::cout<<"Actual corridor source: fit mask="<<profile.data[0]<<", changed presentation pixels="<<changed
             <<", native 256 columns exact below top guard="<<(guard?10:0)<<'\n';
         return 0;
