@@ -797,6 +797,12 @@ bool MapVm::execute_native_condition(std::uint32_t address) {
 
 ObjectHandle MapVm::allocate_map_object() {
     const auto handle = objects_->allocate_after(objects_->first_active());
+    // MOTHER.ASM initializes every map object to ATZREMOVE, including the
+    // direct and compact/table encodings. Only the attached-object opcode
+    // used to set it here. Unflagged exterior ships survived behind the view
+    // and eventually wrapped back into Space Armada's final corridor (#32).
+    // A native strategy may still replace this type (e.g. persistent ground).
+    if (handle != 0) objects_->at(handle).type = 0x08U;
     last_spawned_ = handle;
     return handle;
 }

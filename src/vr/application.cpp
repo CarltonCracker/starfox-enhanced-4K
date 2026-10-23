@@ -41,6 +41,7 @@
 #include "starfox/vr/pcm_output.hpp"
 #include "starfox/audio/spc700_audio.hpp"
 #include "starfox/audio/stem_mixer.hpp"
+#include "starfox/audio/parallel_stem_executor.hpp"
 #include "starfox/audio/msu1_pack.hpp"
 #include "starfox/assets/shape_decoder.hpp"
 #include "starfox/vr/vulkan_depth_targets.hpp"
@@ -85,6 +86,7 @@ struct LiveGame {
     starfox::vr::CartridgeSave cartridge_save;
     starfox::simulation::GameSimulation game;
     starfox::audio::Spc700Audio audio;
+    starfox::audio::ParallelStemExecutor stem_executor;
     std::shared_ptr<starfox::audio::Msu1Pack> pack;
     starfox::audio::Msu1Audio msu_audio;
     std::vector<int16_t> mixed;
@@ -123,7 +125,7 @@ struct LiveGame {
             if(host.stop_requested && host.stop_requested()) throw std::runtime_error("VR startup cancelled");
             const auto tick=game.tick({});
             starfox::audio::render_mixed_tick(audio,msu_audio,tick.audio_port_writes,game.map().take_msu_register_writes(),
-                game.music_volume(),game.sfx_volume(),mixed);
+                game.music_volume(),game.sfx_volume(),mixed,&stem_executor);
             game.synchronize_apu_output_ports(audio.output_ports());++warmup;
         }
         if(warmup==3000) throw std::runtime_error("Live game checkpoint did not start");
@@ -131,7 +133,7 @@ struct LiveGame {
         cartridge_save.synchronize(game.ex_save_ram());
         driver=std::make_unique<starfox::vr::GameFrameDriver>(game,[this](auto apu,auto msu) {
             msu_audio.set_enabled(game.msu1_music());msu_audio.set_paused(game.paused());
-            starfox::audio::render_mixed_tick(audio,msu_audio,apu,msu,game.music_volume(),game.sfx_volume(),mixed);
+            starfox::audio::render_mixed_tick(audio,msu_audio,apu,msu,game.music_volume(),game.sfx_volume(),mixed,&stem_executor);
             if(!discard_audio && !output.push(mixed)) throw std::runtime_error(output.status());
             cartridge_save.synchronize(game.ex_save_ram());
             return audio.output_ports();

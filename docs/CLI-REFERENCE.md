@@ -121,6 +121,15 @@ and preferences default to its `vr-data` directory. An optional
 it. `--enhanced-sky` enables that option at startup. The headset must have
 an active OpenXR runtime, even when using a standard gamepad.
 
+## Audio worker override
+
+Desktop, Android and VR runtimes use one persistent worker to render the
+independent SPC music/effects stems concurrently on multi-core CPUs. Each
+50 ms source tick is fully joined before mixing or returning APU ports; no
+source frames or samples are skipped. Set `STARFOX_SYNC_AUDIO=1` before
+launching to use serial rendering for compatibility or comparisons. Thread
+creation failure and single-core CPUs also retain the serial path.
+
 ## Asset builder
 
 ```text

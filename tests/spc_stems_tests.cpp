@@ -1,4 +1,7 @@
 #include "starfox/audio/spc700_audio.hpp"
+#if defined(STARFOX_PORTABLE_SPC_PARALLEL_ORACLE)
+#include "starfox/audio/parallel_stem_executor.hpp"
+#endif
 #if defined(STARFOX_SPC_PARALLEL_ORACLE)
 #include "native_stem_executor.hpp"
 #endif
@@ -6,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -15,7 +19,7 @@
 
 namespace {
 std::atomic<std::size_t> allocations{};
-bool count_allocations{};
+std::atomic<bool> count_allocations{};
 void require(bool value, const char* message) {
     if (!value) throw std::runtime_error(message);
 }
@@ -95,7 +99,11 @@ void advance(Audio& audio, std::span<const Write> writes) {
     // preserve its executable separately to compare complete state/PCM traces.
     static_cast<void>(audio.render_logic_tick(writes));
 #else
-#if defined(STARFOX_SPC_PARALLEL_ORACLE)
+#if defined(STARFOX_PORTABLE_SPC_PARALLEL_ORACLE)
+    static starfox::audio::ParallelStemExecutor executor(true);
+    require(executor.parallel_available(), "Portable oracle accidentally used serial fallback");
+    audio.render_stems_logic_tick(writes, &executor);
+#elif defined(STARFOX_SPC_PARALLEL_ORACLE)
     static starfox::platform::nintendo_3ds::NativeStemExecutor executor;
     require(executor.parallel_available(), "Parallel oracle accidentally used serial fallback");
     audio.render_stems_logic_tick(writes, &executor);
@@ -150,6 +158,27 @@ void operator delete[](void* memory, std::size_t) noexcept { std::free(memory); 
 
 int main(int argc, char** argv) {
     try {
+#if defined(STARFOX_PORTABLE_SPC_PARALLEL_ORACLE)
+        if (argc==2 && std::string_view(argv[1])=="--benchmark") {
+            Audio serial, parallel;
+            starfox::audio::ParallelStemExecutor executor(true);
+            require(executor.parallel_available(), "Benchmark worker unavailable");
+            const auto bank=upload(false);
+            serial.render_stems_logic_tick(bank);
+            parallel.render_stems_logic_tick(bank,&executor);
+            for(unsigned run=0;run<5;++run) {
+                const auto before=std::chrono::steady_clock::now();
+                for(unsigned tick=0;tick<256;++tick) serial.render_stems_logic_tick({});
+                const auto middle=std::chrono::steady_clock::now();
+                for(unsigned tick=0;tick<256;++tick) parallel.render_stems_logic_tick({},&executor);
+                const auto end=std::chrono::steady_clock::now();
+                require(serial.save_state()==parallel.save_state(),"Benchmark SPC/PCM state changed");
+                std::cout<<"256 SPC ticks serial_ms="<<std::chrono::duration<double,std::milli>(middle-before).count()
+                    <<" parallel_ms="<<std::chrono::duration<double,std::milli>(end-middle).count()<<'\n';
+            }
+            return 0;
+        }
+#endif
         require(argc == 1 || argc == 2, "Usage: spc_stems_tests [private trace file]");
         check_batched_bank_initialization();
         std::ofstream file;

@@ -1,5 +1,6 @@
 #include "starfox/audio/msu1_audio.hpp"
 #include "starfox/audio/stem_mixer.hpp"
+#include "starfox/audio/parallel_stem_executor.hpp"
 #include "starfox/state/container.hpp"
 
 #include <algorithm>
@@ -24,7 +25,8 @@ int main(int argc, char** argv) {
     require(!bytes.empty(), "Missing fixture");
     // Compare the shared tick path against the previous desktop operations.
     // Include looping, stop and failed replacements; SPC must advance in all modes.
-    for (bool enabled : {false,true}) {
+    for (bool parallel : {false,true}) for (bool enabled : {false,true}) {
+        starfox::audio::ParallelStemExecutor executor(parallel);
         auto loader=[&](std::uint16_t track) {return track==50 ? std::vector<std::uint8_t>{} : bytes;};
         starfox::audio::Msu1Audio shared_msu(loader),reference_msu(loader);
         starfox::audio::Spc700Audio shared_spc,reference_spc;
@@ -35,7 +37,7 @@ int main(int argc, char** argv) {
                 starfox::simulation::MsuRegisterWrite{0x2005,0,0},
                 starfox::simulation::MsuRegisterWrite{0x2007,static_cast<std::uint8_t>(tick==4 ? 0 : 3),0}};
             std::vector<std::int16_t> actual;
-            starfox::audio::render_mixed_tick(shared_spc,shared_msu,{},writes,73,41,actual);
+            starfox::audio::render_mixed_tick(shared_spc,shared_msu,{},writes,73,41,actual,&executor);
             (void)reference_spc.render_logic_tick({});
             reference_msu.process_register_writes(writes);
             const auto music=reference_msu.enabled() && !reference_msu.resume_native_music()
@@ -47,6 +49,7 @@ int main(int argc, char** argv) {
                 require(actual[i]==std::clamp(int(music[i])*73/100+int(effects[i])*41/100,-32768,32767),
                     "Shared mixer differs from desktop PCM");
             require(shared_spc.output_ports()==reference_spc.output_ports(),"Shared mixer changed SPC timing");
+            require(shared_spc.save_state()==reference_spc.save_state(),"Parallel mixer changed SPC state");
             require(shared_msu.playing()==reference_msu.playing(),"Shared mixer changed MSU state");
         }
     }

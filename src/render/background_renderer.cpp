@@ -525,7 +525,16 @@ void BackgroundRenderer::draw_bg2(
     if (first_x >= final_x) return;
     const auto* tunnel_margin_profile=extend_tunnel_diagonals && ppu.tunnel_scene
         && extend_horizontal && target.width()>256?&tunnel_margin(ppu):nullptr;
+    // Nucleus/boss rooms are complete, static Mode 2 cross-sections, not
+    // alternating HDMA corridor pages. Their 512-pixel atlas already contains
+    // the missing ceiling/floor diagonals outside the native 256 columns.
+    // Use that authored ink before holding the outermost atlas edge; clamping
+    // at the viewport edge instead stretched these surfaces into wide bars.
+    const bool authored_tunnel_extension=extend_tunnel_diagonals && ppu.tunnel_scene
+        && extend_horizontal && target.width()>256 && width_pixels>256
+        && ppu.background_mode==2 && !ppu.bg2_scanline_scroll_enabled;
     if (ppu.tunnel_scene && extend_horizontal && wrap_horizontal
+        && !authored_tunnel_extension
         && !target.command_buffer() && (ppu.mosaic & 2U) == 0U
         && !(ppu.background_mode == 2U && ppu.bg2_vertical_offsets_enabled)
         && unique_regions.empty() && !single_occurrence_top_rows
@@ -762,6 +771,7 @@ void BackgroundRenderer::draw_bg2(
                 }
                 const auto sample_x = mosaic_coordinate(
                     ppu.tunnel_scene && extend_horizontal && priority!=TilePriorityPass::high
+                        && !authored_tunnel_extension
                         ? std::clamp<std::int32_t>(logical_x, 0, 255) : logical_x,
                     ppu.mosaic, 0x02U);
                 const auto sampled_screen_x = std::clamp(
@@ -806,6 +816,10 @@ void BackgroundRenderer::draw_bg2(
                     }
                 }
                 auto unwrapped_source_x = sample_x + row_scroll_x;
+                if(authored_tunnel_extension && (logical_x<0 || logical_x>=256)) {
+                    const auto centred_scroll=((row_scroll_x+128)&(width_pixels-1))-128;
+                    unwrapped_source_x=std::clamp(sample_x+centred_scroll,0,width_pixels-1);
+                }
                 if ((ending_star_extension || game_over_star_extension) && extend_horizontal
                     && (logical_x < 0 || logical_x >= 256)
                     && (game_over_star_extension || unwrapped_source_x < 0 || unwrapped_source_x >= width_pixels)) {

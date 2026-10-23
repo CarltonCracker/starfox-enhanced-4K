@@ -21,6 +21,7 @@ extern "C" void StarfoxPS5_HideSplashScreen(void);
 #include "starfox/render/source_sprite_material.hpp"
 #include "starfox/audio/msu1_audio.hpp"
 #include "starfox/audio/stem_mixer.hpp"
+#include "starfox/audio/parallel_stem_executor.hpp"
 #include "starfox/audio/msu1_pack.hpp"
 #include "starfox/app/runtime_input.hpp"
 #include "starfox/app/update_service.hpp"
@@ -6994,7 +6995,7 @@ public:
         std::span<const starfox::simulation::MsuRegisterWrite> msu_writes,
         std::uint32_t speed_multiplier, bool queue_output = true) {
         starfox::audio::render_mixed_tick(emulator_,msu1_,writes,msu_writes,
-            music_volume_,sfx_volume_,mixed_samples_);
+            music_volume_,sfx_volume_,mixed_samples_,&stem_executor_);
         auto& samples = mixed_samples_;
         if(std::getenv("STARFOX_TEST_FRAMES") && std::getenv("STARFOX_TEST_AUDIO_SIGNATURES")) {
             const auto bytes=std::span<const std::uint8_t>{
@@ -7056,6 +7057,7 @@ public:
 
 private:
     const starfox::audio::Msu1Pack* pack_{};
+    starfox::audio::ParallelStemExecutor stem_executor_;
     starfox::audio::Spc700Audio emulator_;
     starfox::audio::Msu1Audio msu1_;
     SDL_AudioStream* stream_{};

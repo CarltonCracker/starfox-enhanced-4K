@@ -137,7 +137,10 @@ GpuRasterOutput GpuBackground::enqueue(void* device,void* command,const simulati
                 |(s.ending_star_extension?128U:0U)|(s.game_over_star_extension?256U:0U)
                 |(std::any_of(s.unique_regions.begin(),s.unique_regions.end(),[](const auto& r) {
                     return r.replacement_x_offset>=0 && (r.replacement_x_offset&BackgroundUniqueRegion::suppress_every_copy)!=0;
-                })?512U:0U)|(!s.continue_ground?1024U:0U)|(margin && margin->data[0]?2048U:0U);
+                })?512U:0U)|(!s.continue_ground?1024U:0U)|(margin && margin->data[0]?2048U:0U)
+                |(s.extend_tunnel_diagonals && ppu.tunnel_scene && s.extend_horizontal && logical_width>256
+                    && (ppu.bg2_screen_size&1 || ppu.bg2_tile_size_16)
+                    && ppu.background_mode==2 && !ppu.bg2_scanline_scroll_enabled?4096U:0U);
             std::array<std::int32_t,32> data{int(width),int(height),int(scale),0,
                 ppu.bg2_screen_base,ppu.bg2_character_base,(ppu.bg2_screen_size&1)?64:32,(ppu.bg2_screen_size&2)?64:32,
                 s.scroll_x,s.scroll_y,s.horizontal_origin,s.extend_horizontal?0:std::max(s.horizontal_origin,0),

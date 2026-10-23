@@ -1132,7 +1132,42 @@ int main(int argc, char** argv) {
     put8(0x018381U, 0x42U);
     put8(0x018382U, 2U); // END
 
+    // Every MOTHER map-spawn encoding starts with ATZREMOVE. Keep this
+    // separate from ordinary ObjectPool allocation and strategy type changes.
+    constexpr std::array<std::uint8_t,6> spawn_opcodes{0,10,112,116,118,134};
+    for (unsigned i=0;i<spawn_opcodes.size();++i) {
+        auto pc=0x018800U+i*0x40U;
+        const auto op=spawn_opcodes[i];put8(pc++,op);
+        if(op==112 || op==118) {
+            put8(pc++,0); // compressed zero-distance wait
+            put8(pc++,1);put8(pc++,2);put8(pc++,3);
+            if(op==112) put8(pc++,3);
+            put8(pc++,4);
+        } else {
+            put16(pc,0);pc+=2;
+            for(unsigned coordinate:{100U,200U,300U}) {put16(pc,coordinate);pc+=2;}
+            if(op==0) {put8(pc++,3);put8(pc++,4);}
+            else if(op==116) put8(pc++,4);
+            else {
+                put16(pc,0x9000);pc+=2;
+                put16(pc,0x9111);pc+=2;put8(pc++,2);
+                if(op==10) {put16(pc,0);pc+=2;}
+            }
+        }
+        put8(pc,2);
+    }
+
     const starfox::assets::RomImage map_rom{rom_bytes};
+    for(unsigned i=0;i<spawn_opcodes.size();++i) {
+        starfox::simulation::ObjectPool pool;
+        const auto owner=pool.allocate_after();
+        starfox::simulation::MapVm spawn_vm{map_rom,
+            starfox::simulation::MapDatabase{map_rom,0x018000,0x018100},pool};
+        spawn_vm.start(0x018800U+i*0x40U,owner);spawn_vm.advance_distance(1);
+        require(spawn_vm.ended() && pool.active_count()==2
+                && pool.at(spawn_vm.last_spawned()).type==8,
+            "A direct/table/compact/attached map spawn lost the source removal flag");
+    }
     starfox::simulation::ObjectPool map_objects;
     const auto player = map_objects.allocate_after();
     starfox::simulation::MapVm map_vm{
@@ -1142,6 +1177,8 @@ int main(int argc, char** argv) {
     require(map_objects.active_count() == 2, "zero-distance map object did not spawn");
     require(map_objects.at(map_vm.last_spawned()).shape == 0x9000,
             "map shape lookup is wrong");
+    require((map_objects.at(map_vm.last_spawned()).type & 8U) != 0,
+            "map-spawned object omitted MOTHER's ATZREMOVE default");
     require(map_objects.at(map_vm.last_spawned()).rotation_y == 64,
             "map rotation control did not modify the last object");
     require(map_vm.countdown() == 10, "map wait did not stop bytecode execution");

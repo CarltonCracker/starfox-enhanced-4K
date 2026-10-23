@@ -254,6 +254,7 @@ if(MINGW)
 endif()
 
 add_library(starfox_core
+    src/audio/parallel_stem_executor.cpp
     src/audio/msu1_audio.cpp
     src/audio/msu1_pack.cpp
     src/audio/spc700_audio.cpp
@@ -1756,6 +1757,13 @@ if(STARFOX_BUILD_TESTS)
     target_link_libraries(starfox_spc_parallel_stems_tests PRIVATE
         starfox_core starfox_3ds_stem_test_runtime Threads::Threads)
     add_test(NAME starfox_spc_parallel_stems_tests COMMAND starfox_spc_parallel_stems_tests)
+    add_executable(starfox_parallel_stem_executor_tests tests/parallel_stem_executor_tests.cpp)
+    target_link_libraries(starfox_parallel_stem_executor_tests PRIVATE starfox_core)
+    add_test(NAME starfox_parallel_stem_executor_tests COMMAND starfox_parallel_stem_executor_tests)
+    add_executable(starfox_spc_portable_parallel_tests tests/spc_stems_tests.cpp)
+    target_compile_definitions(starfox_spc_portable_parallel_tests PRIVATE STARFOX_PORTABLE_SPC_PARALLEL_ORACLE=1)
+    target_link_libraries(starfox_spc_portable_parallel_tests PRIVATE starfox_core)
+    add_test(NAME starfox_spc_portable_parallel_tests COMMAND starfox_spc_portable_parallel_tests)
     add_executable(starfox_3ds_pica_tests tests/nintendo_3ds_pica_tests.cpp)
     target_link_libraries(starfox_3ds_pica_tests PRIVATE starfox_3ds_frontend)
     add_test(NAME starfox_3ds_pica_tests COMMAND starfox_3ds_pica_tests)
@@ -2339,6 +2347,15 @@ if(STARFOX_BUILD_TESTS)
         add_test(NAME starfox_upstream_tunnel_margins COMMAND starfox_tunnel_scanline_tests
             "${CMAKE_CURRENT_SOURCE_DIR}/upstream-ultrastarfox/SF.SFC"
             "${CMAKE_CURRENT_SOURCE_DIR}/upstream-ultrastarfox/SYMBOLS.TXT")
+        add_test(NAME starfox_upstream_armada_lifecycle COMMAND starfox_tunnel_scanline_tests
+            "${CMAKE_CURRENT_SOURCE_DIR}/upstream-ultrastarfox/SF.SFC"
+            "${CMAKE_CURRENT_SOURCE_DIR}/upstream-ultrastarfox/SYMBOLS.TXT" 3280)
+        add_test(NAME starfox_upstream_andross_tunnel COMMAND starfox_tunnel_scanline_tests
+            "${CMAKE_CURRENT_SOURCE_DIR}/upstream-ultrastarfox/SF.SFC"
+            "${CMAKE_CURRENT_SOURCE_DIR}/upstream-ultrastarfox/SYMBOLS.TXT" 1000 BG_1_6B)
+        add_test(NAME starfox_upstream_nucleus_margins COMMAND starfox_tunnel_scanline_tests
+            "${CMAKE_CURRENT_SOURCE_DIR}/upstream-ultrastarfox/SF.SFC"
+            "${CMAKE_CURRENT_SOURCE_DIR}/upstream-ultrastarfox/SYMBOLS.TXT" 3500)
         add_test(NAME starfox_upstream_intro_pacing COMMAND starfox_intro_pacing_tests
             "${CMAKE_CURRENT_SOURCE_DIR}/upstream-ultrastarfox/SF.SFC"
             "${CMAKE_CURRENT_SOURCE_DIR}/upstream-ultrastarfox/SYMBOLS.TXT")

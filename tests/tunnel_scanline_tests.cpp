@@ -114,15 +114,42 @@ void benchmark() {
 } // namespace
 int main(int argc, char** argv) try {
     if (argc == 2 && std::string_view{argv[1]} == "--benchmark") { benchmark(); return 0; }
-    if(argc==3) {
+    if(argc>=3 && argc<=5) {
         const auto rom=starfox::assets::RomImage::load(argv[1]);
         const auto symbols=starfox::assets::SymbolMap::load(argv[2]);
         auto game=std::make_unique<starfox::simulation::GameSimulation>(rom,symbols,"LEVEL1_3",std::span<const std::uint8_t>{},true);
         game->set_god_mode(true);
-        for(unsigned tick=0;tick<1000;++tick) (void)game->tick({});
+        const auto ticks=argc>=4?std::stoul(argv[3]):1000U;
+        if(ticks>8000) throw std::runtime_error("Bounded corridor probe requires <=8000 ticks");
+        for(unsigned tick=0;tick<ticks;++tick) (void)game->tick({});
+        if(argc==5) {
+            const auto current=symbols.find("CURRENTBG").at(0);
+            const auto flags=symbols.find("BGFLAGS").at(0);
+            game->map().write_native_word(current,std::uint16_t(symbols.find(argv[4]).at(0)-symbols.find("BGLISTS").at(0)));
+            game->map().write_native_byte(flags,game->map().read_native_byte(flags)|4U);
+            starfox::simulation::Wdc65816Registers registers;
+            registers.status=0x24U;
+            game->map().call_native_routine(symbols.find("DOBGREQ_L").at(0),registers,10'000'000U,true);
+            game->map().refresh_background_metadata();
+            game->map().write_native_byte(flags,game->map().read_native_byte(flags)&~4U);
+            game->map().restore_map_state_from_native();
+            (void)game->tick({});
+        }
         const auto& p=game->map().ppu_state();
+        if(ticks>=3000) {
+            const auto cruiser=symbols.find("SHIP_4").at(0);
+            for(auto h:game->objects().active_handles())
+                if(game->objects().at(h).shape==cruiser)
+                    throw std::runtime_error("Exterior cruiser survived behind-view removal and re-entered the last corridor");
+        }
+        std::cout<<"corridor probe tick="<<ticks<<" bg="<<game->map().background()
+            <<" mode="<<unsigned(p.background_mode)<<'\n';
         const auto& profile=tunnel_margin(p);
-        if(!profile.data[0]) throw std::runtime_error("Actual Space Armada tunnel art failed the margin probe");
+        std::cout<<"fit="<<profile.data[0]<<" rowY="<<p.bg2_scanline_scroll_y[0]<<','<<p.bg2_scanline_scroll_y[112]
+            <<" hofs="<<p.bg2_horizontal_offsets[0]<<','<<p.bg2_horizontal_offsets[112]
+            <<" scan="<<p.bg2_scanline_scroll_enabled<<" vofs="<<p.bg2_vertical_offsets_enabled<<'\n';
+        if(!profile.data[0] && !(p.background_mode==2 && !p.bg2_scanline_scroll_enabled))
+            throw std::runtime_error("Actual Space Armada tunnel art failed the margin probe");
         Framebuffer before(400,224),after(400,224);
         const BackgroundRenderer renderer;
         renderer.draw_bg2(p,p.bg2_scroll_x,p.bg2_scroll_y,before,TilePriorityPass::all,72);
@@ -134,7 +161,7 @@ int main(int argc, char** argv) try {
             ++changed;
         }
         if(changed<1000) throw std::runtime_error("Actual tunnel margins retained flat bars");
-        std::cout<<"Actual Space Armada source: fit mask="<<profile.data[0]<<", changed margin pixels="<<changed<<", native 256 columns exact\n";
+        std::cout<<"Actual corridor source: fit mask="<<profile.data[0]<<", changed margin pixels="<<changed<<", native 256 columns exact\n";
         return 0;
     }
     const auto hash = trace();

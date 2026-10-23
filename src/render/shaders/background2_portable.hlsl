@@ -128,10 +128,11 @@ void main(uint3 id:SV_DispatchThreadID) {
     uint x=id.x;if(x>=logicalWidth) return;
     bool extend=(flags&1u)!=0,wrapX=(flags&2u)!=0,tunnel=(flags&32u)!=0;
     bool expanded=extend && logicalWidth>256 && (flags&4u),ground=expanded && logicalHeight>192 && !(flags&1024u);
-    int logicalX=int(x)-originX,sampleX=mosaicAt(tunnel && extend && priority!=2u?clamp(logicalX,0,255):logicalX);
+    bool authoredTunnel=(flags&4096u)!=0;
+    int logicalX=int(x)-originX,sampleX=mosaicAt(tunnel && extend && priority!=2u && !authoredTunnel?clamp(logicalX,0,255):logicalX);
     bool outside=logicalX<0 || logicalX>=256;
     uint mapWidth=tilesWide*tileEdge,mapHeight=tilesHigh*tileEdge;
-    int columnX=tunnel && extend?sampleX+originX:int(x),columnY=-2147483647,columnPhase=-1,previous=-1;uint lastGround=0;bool wrapped=false,lastTerrain=false;
+    int columnX=tunnel && extend && !authoredTunnel?sampleX+originX:int(x),columnY=-2147483647,columnPhase=-1,previous=-1;uint lastGround=0;bool wrapped=false,lastTerrain=false;
     for(uint y=0;y<logicalHeight;++y) {
         put(x,y,0,false);
         if(!enabled || int(x)<clipLeft || int(x)>=clipRight) continue;
@@ -160,6 +161,10 @@ void main(uint3 id:SV_DispatchThreadID) {
             if(wrapped) {if(lastGround) put(x,y,lastGround,true,lastTerrain);continue;}
         }
         int unwrappedX=sampleX+rowX;
+        if(authoredTunnel && outside) {
+            int centredScroll=((rowX+128)&int(mapWidth-1))-128;
+            unwrappedX=clamp(sampleX+centredScroll,0,int(mapWidth)-1);
+        }
         // Move sky texture coordinates, not the assembled frame. Ground rows,
         // tunnel walls, scanline horizon and foreground/HUD ownership stay put.
         if(!tunnel && stereoSkySourceX!=0 && !(terrainLast>terrainFirst && sourceY>=terrainFirst && sourceY<terrainLast)) {

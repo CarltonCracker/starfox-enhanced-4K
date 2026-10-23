@@ -73,6 +73,7 @@ inline TunnelMargin fit_tunnel_margin(const simulation::SnesPpuState& p) {
         std::array<std::vector<Transition>,224> rows;
         const unsigned begin=half?112:0,end=half?224:112,part=page*2+half;
         unsigned canonical=begin;
+        std::array<unsigned,256> support{};
         for(unsigned y=begin;y<end;++y) {
             auto previous=art(page,128,int(y));result.data[40+page*224+y]=previous;
             for(int x=127;x>=0;--x) {
@@ -80,12 +81,29 @@ inline TunnelMargin fit_tunnel_margin(const simulation::SnesPpuState& p) {
                 if(c!=previous) rows[y].push_back({c,x+1});
                 previous=c;
             }
-            if(rows[y].size()>rows[canonical].size()) canonical=y;
+            const double dy=std::abs(double(y)+.5-(half?111.5:112.5));
+            if(dy>4) {
+                std::array<bool,256> seen{};
+                for(const auto& t:rows[y]) if(!seen[t.colour]) {++support[t.colour];seen[t.colour]=true;}
+            }
+        }
+        // Tiny colour aliases where strips meet the vanishing point are not
+        // geometric zones. TST (Andross) has more of these than real walls.
+        // Pick the richest row of boundaries supported by at least two tile
+        // rows; otherwise a horizon-only alias rejects or corrupts every wall.
+        unsigned best=0;
+        for(unsigned y=begin;y<end;++y) {
+            unsigned count=0;
+            for(const auto& t:rows[y]) count+=support[t.colour]>=16;
+            if(count>best) {best=count;canonical=y;}
         }
         const auto& zones=rows[canonical];
-        for(unsigned z=0;z<zones.size() && z<3;++z) {
+        unsigned z=0;
+        for(const auto& zone:zones) {
+            if(support[zone.colour]<16) continue;
+            if(z==3) break;
             double xy=0,xx=0;unsigned count=0;
-            for(unsigned y=begin;y<end;++y) for(const auto& t:rows[y]) if(t.colour==zones[z].colour) {
+            for(unsigned y=begin;y<end;++y) for(const auto& t:rows[y]) if(t.colour==zone.colour) {
                 const double dy=std::abs(double(y)+.5-(half?111.5:112.5));
                 if(dy>4) {xy+=dy*(128-t.column);xx+=dy*dy;++count;}
                 break;
@@ -94,8 +112,8 @@ inline TunnelMargin fit_tunnel_margin(const simulation::SnesPpuState& p) {
             const float slope=float(xy/xx);
             if(!std::isfinite(slope) || slope<=0) break;
             std::memcpy(&result.data[8+part*8+z*2],&slope,4);
-            result.data[9+part*8+z*2]=zones[z].colour;
-            result.data[1+part]=z+1;result.data[0]|=1U<<part;
+            result.data[9+part*8+z*2]=zone.colour;
+            result.data[1+part]=++z;result.data[0]|=1U<<part;
         }
     }
     return result;

@@ -1,5 +1,6 @@
 #include "starfox/assets/rom.hpp"
 #include "starfox/audio/spc700_audio.hpp"
+#include "starfox/audio/parallel_stem_executor.hpp"
 #include "starfox/input/buttons.hpp"
 #include "starfox/simulation/game_simulation.hpp"
 #include "starfox/state/container.hpp"
@@ -233,6 +234,45 @@ void check_selected_orchestra_bank(const starfox::assets::RomImage& rom,
     require(inserted && heard_music, "Orchestra shortcut fixture never exercised stage music");
 }
 
+void check_parallel_spc(const starfox::assets::RomImage& rom,
+    const starfox::assets::SymbolMap& symbols) {
+    starfox::audio::ParallelStemExecutor executor(true);
+    require(executor.parallel_available(), "Real-driver audio test did not start the worker");
+    for(const auto* level:{"LEVEL1_1","LEVEL3_5"}) {
+        auto game=std::make_unique<starfox::simulation::GameSimulation>(
+            rom,symbols,level,std::span<const std::uint8_t>{},true);
+        game->set_god_mode(true);
+        starfox::audio::Spc700Audio serial,parallel;
+        const auto boot=game->map().take_apu_port_writes();
+        (void)serial.prime_upload_sequence(boot);
+        (void)parallel.prime_upload_sequence(boot);
+        game->synchronize_apu_output_ports(serial.output_ports());
+        bool audible{};
+        for(unsigned tick=0;tick<240;++tick) {
+            const auto result=game->tick({});
+            serial.render_stems_logic_tick(result.audio_port_writes);
+            parallel.render_stems_logic_tick(result.audio_port_writes,&executor);
+            require(std::equal(serial.last_music_samples().begin(),serial.last_music_samples().end(),
+                parallel.last_music_samples().begin(),parallel.last_music_samples().end()),
+                "Threaded real SPC music differs from serial");
+            require(std::equal(serial.last_effect_samples().begin(),serial.last_effect_samples().end(),
+                parallel.last_effect_samples().begin(),parallel.last_effect_samples().end()),
+                "Threaded real SPC effects differ from serial");
+            require(serial.output_ports()==parallel.output_ports(),"Threaded real SPC handshake changed");
+            audible|=std::any_of(serial.last_music_samples().begin(),serial.last_music_samples().end(),
+                [](auto sample){return sample!=0;});
+            if(tick%24==0) require(serial.save_state()==parallel.save_state(),"Threaded real SPC machine state changed");
+            if(tick==120) {
+                starfox::audio::Spc700Audio restored;
+                restored.load_state(parallel.save_state());
+                parallel=std::move(restored);
+            }
+            game->synchronize_apu_output_ports(serial.output_ports());
+        }
+        require(audible,"Real-driver parallel audio fixture remained silent");
+    }
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -242,6 +282,7 @@ int main(int argc, char** argv) {
     }
     const auto rom = starfox::assets::RomImage::load(argv[1]);
     const auto symbols = starfox::assets::SymbolMap::load(argv[2]);
+    check_parallel_spc(rom,symbols);
     {
         starfox::audio::Spc700Audio fresh;
         check_audio_restore(fresh);

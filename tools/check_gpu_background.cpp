@@ -49,12 +49,13 @@ int main(int argc,char** argv) {
         GpuBackground gpu;BackgroundRenderer reference;
         check_tunnel_margins([&](const auto& p,unsigned width,unsigned scale,bool extend) {
             GpuBackgroundSettings settings;settings.layer=2;
+            settings.scroll_x=p.bg2_scroll_x;settings.scroll_y=p.bg2_scroll_y;
             settings.horizontal_origin=int(width)/2-128;settings.extend_tunnel_diagonals=extend;
             const auto actual=run(device,gpu,p,width,224,scale,settings);
             Framebuffer expected(width,224,scale);
             expected.enable_layer_tags(true);expected.set_layer_override(settings.tag);
             expected.begin_write_coverage();
-            reference.draw_bg2(p,0,0,expected,settings.priority,settings.horizontal_origin,
+            reference.draw_bg2(p,p.bg2_scroll_x,p.bg2_scroll_y,expected,settings.priority,settings.horizontal_origin,
                 true,true,false,0,{},false,false,0,true,extend);
             for(std::size_t i=0;i<actual.size();++i) {
                 const auto packed=expected.write_coverage()[i]
