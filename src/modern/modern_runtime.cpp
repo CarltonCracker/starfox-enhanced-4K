@@ -263,14 +263,17 @@ bool ModernRuntime::present(SDL_Renderer* renderer,double alpha,int requested_wi
         require(command!=nullptr,"Acquire MODERN command buffer");
         s.inputs.hud_edge_shift=s.preview?0:hud_edge_shift(float(width)/float(height));
         if(tally && !s.preview) s.inputs.stage_tally=*tally;else s.inputs.stage_tally.reset();
-        // flat_scene_camera fills the height with the 224 source rows.
-        s.frame.set_target(unsigned(width),unsigned(height),unsigned(std::max(1L,std::lround(height/224.))));
+        const auto camera=s.preview?headset_preview_camera(*s.preview,float(width)/float(height))
+            :flat_scene_camera(*current,float(width)/float(height));
+        // Source lines one source pixel thick. flat_scene_camera fills the
+        // height with the 224 source rows; a headset eye's scale follows from
+        // its projection (as vr::VulkanModernLayers::eye_camera's).
+        const double source_pixel=s.preview?double(height)*std::abs(camera.projection[5])/512.:height/224.;
+        s.frame.set_target(unsigned(width),unsigned(height),unsigned(std::max(1L,std::lround(source_pixel))));
         s.frame.set_two_d_filter(unsigned(s.history.game().two_d_filter()));
         if(!s.frame.prepare(command,*previous,*current,alpha,std::move(world),s.inputs)) {
             SDL_CancelGPUCommandBuffer(command);throw std::runtime_error(s.frame.status());
         }
-        const auto camera=s.preview?headset_preview_camera(*s.preview,float(width)/float(height))
-            :flat_scene_camera(*current,float(width)/float(height));
         if(!s.frame.record_filtered_layers(command,camera)) {
             SDL_CancelGPUCommandBuffer(command);throw std::runtime_error(s.frame.status());
         }

@@ -336,6 +336,9 @@ void ModernFrame::prepare(const GameSceneSnapshot& previous,const GameSceneSnaps
     if(layers_rebuilt) {
         auto layers=assemble_frame_layers(current,inputs);
         tunnel_surround=std::move(layers.tunnel_surround);sprites=std::move(layers.sprites);
+        // As assemble_frame_layers places the PPU canvas.
+        sprite_layer=source_ui_layer_matrix(float(current.source_vanishing_point[0]),float(current.source_vanishing_point[1]),
+            current.flow==simulation::GameFlowState::ex_pregame_menu).value_or(identity_matrix);
         layer_revision_=current.revision;
     }
     // Backgrounds follow the source's scroll registers and per-scanline
@@ -442,7 +445,7 @@ void ModernFrame::prepare(const GameSceneSnapshot& previous,const GameSceneSnaps
         background_interpolated_=interpolated;
     }
     fog.reset();
-    if(fog_colour_ && !settings_.headset && landscape_world && fog_background_==current.background_id
+    if(fog_colour_ && landscape_world && fog_background_==current.background_id
         && gameplay_flow(current)) {
         static const auto distances=[] {
             std::array<float,2> d{1500.F,3300.F};

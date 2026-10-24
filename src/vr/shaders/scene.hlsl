@@ -32,10 +32,11 @@ bool reversed_depth() {return camera.projection[2][2]==0;}
 static bool source_line_overlay=false;
 static uint source_overlay_level=0;
 uint overlay_level(uint face_word) {return (face_word&16U)!=0?max(1U,(face_word>>8)&7U):0U;}
-// Two-colour source dither. VR keeps the checkerboard; MODERN defines
-// STARFOX_SCENE_RESOLVE_DITHER and shows the pair's linear-light average,
-// which is what the desktop's anti-aliasing resolves the checker to (a
-// 1-pixel checker scaled to the window in gamma space reads dark instead).
+// Two-colour source dither. VR keeps the checkerboard; MODERN shows the
+// pair's linear-light average, which is what the desktop's anti-aliasing
+// resolves the checker to (a 1-pixel checker scaled to the window in gamma
+// space reads dark instead): always where STARFOX_SCENE_RESOLVE_DITHER is
+// defined (the flat renderer), on a headset with camera.effects.w bit 1.
 float3 dither_linear(float3 c) {return select(c<=.04045,c/12.92,pow((c+.055)/1.055,2.4));}
 float3 dither_encoded(float3 c) {return select(c<=.0031308,c*12.92,1.055*pow(c,1./2.4)-.055);}
 // Smooth 2D filtering (camera.effects.w bit 0, MODERN): blend four source
@@ -53,12 +54,11 @@ float4 bilinear_resolve(float4 a,float4 b,float4 c,float4 d,float2 f,bool gamma_
     return float4(gamma_encoded?dither_encoded(rgb):rgb,1);
 }
 float4 dither_colour(float4 even,float4 odd,bool odd_cell,bool gamma_encoded) {
-#ifdef STARFOX_SCENE_RESOLVE_DITHER
+#ifndef STARFOX_SCENE_RESOLVE_DITHER
+    if((camera.effects.w&2U)==0) return odd_cell?odd:even;
+#endif
     if(!gamma_encoded) return (even+odd)*.5;
     return float4(dither_encoded((dither_linear(even.rgb)+dither_linear(odd.rgb))*.5),(even.a+odd.a)*.5);
-#else
-    return odd_cell?odd:even;
-#endif
 }
 struct Vertex {
     [[vk::location(0)]] float3 position : SCENE_INPUT(0,POSITION);
@@ -104,7 +104,9 @@ struct Fragment {
 };
 float4 tile_background_sample(Fragment input);
 #include "scene_geometry.hlsli"
-Fragment vertex_main(Vertex input) {
+// The vertex stages' shared bodies, wrapped by vertex_main and
+// vertex_textured_main (at the end: the headset's add the line brush).
+Fragment scene_vertex(Vertex input) {
     Fragment output;
     float3 position;uint visible;
     float4 eye_position=scene_eye_position(input,position,visible);
@@ -166,8 +168,30 @@ float4 fragment_solid_raw(Fragment input) {
     }
     return input.color;
 }
+// MODERN's distance haze (vr::ModernFrame::fog), shared by the flat renderer
+// (scene_sdl.hlsl's SdlFog) and the headset (STARFOX_SCENE_FOG's SceneFog):
+// colour in the target encoding (a = strength); params x/y = start/end
+// distance (source units), z = near plane x 256 (reversed depth: distance =
+// z / depth).
+float4 fog_by_distance(float4 colour,float depth,float4 fog_colour,float4 fog_params) {
+    if(fog_colour.a==0 || colour.a==0) return colour;
+    float distance=fog_params.z/max(depth,1e-9);
+    float amount=saturate((distance-fog_params.x)/max(fog_params.y-fog_params.x,1.))*fog_colour.a;
+    return float4(lerp(colour.rgb,fog_colour.rgb,amount),colour.a);
+}
+#if defined(STARFOX_SCENE_FOG)
+// The headset's haze (vr::VulkanSceneFog, set 1). Mode per draw in
+// camera.effects.w bits 2-3: 0 off, 1 every fragment, 2 the landscape.
+[[vk::binding(0,1)]] cbuffer SceneFog {float4 scene_fog_colour;float4 scene_fog_params;};
+uint scene_fog_mode() {return (camera.effects.w>>2)&3U;}
+#endif
 float4 fragment_main(Fragment input) : SV_Target0 {
-    return styled_colour(fragment_solid_raw(input));
+    float4 colour=styled_colour(fragment_solid_raw(input));
+#if defined(STARFOX_SCENE_FOG)
+    // Untextured faces are never landscape (mode 2 leaves them clear).
+    if(scene_fog_mode()==1) colour=fog_by_distance(colour,input.position.z,scene_fog_colour,scene_fog_params);
+#endif
+    return colour;
 }
 #if defined(STARFOX_SDL_SCENE_VERTEX)
 StructuredBuffer<uint> texels : register(t0,space0);
@@ -213,7 +237,7 @@ float3 tile_horizon(uint start) {
     float slope=count>1 && denominator!=0?(count*sum_xy-sum_x*sum_y)/denominator:0;
     return float3((sum_y-slope*sum_x)/count,slope,1);
 }
-Fragment vertex_textured_main(Vertex input) {
+Fragment scene_vertex_textured(Vertex input) {
     const float3 authored_position=input.position;
     const float2 authored_billboard=input.billboard;
     uint grid_visible=1;
@@ -493,7 +517,7 @@ Fragment vertex_textured_main(Vertex input) {
         input.position=surround_grid?smooth_point:float3(smooth_point.xy,min(smooth_point.z,12287));
         input.billboard*=min(distance,12287.)/256.;
     }
-    Fragment output=vertex_main(input);
+    Fragment output=scene_vertex(input);
     output.visible &= grid_visible;
     [branch] if((input.texture.w&8)!=0) {
         if((texels[input.texture.x+15]&0x80000000U)!=0) {
@@ -1456,6 +1480,57 @@ float4 fragment_textured_raw(Fragment input) {
         color.rgb=select(color.rgb<=.04045,color.rgb/12.92,pow((color.rgb+.055)/1.055,2.4));
     return color;
 }
-float4 fragment_textured_main(Fragment input) : SV_Target0 {
-    return styled_colour(fragment_textured_raw(input));
+// fog_by_distance by mode: 0 off, 1 every fragment, 2 the landscape: its
+// ground by distance and its sky dome by height above the horizon (full at
+// it, clear 56 art rows up), so the haze hangs over the horizon as well as in
+// front of it.
+float4 scene_fog(Fragment input,float4 colour,uint mode,float4 fog_colour,float4 fog_params) {
+    if(mode==0 || fog_colour.a==0 || colour.a==0) return colour;
+    if(mode==2) {
+        uint flags=texels[input.texture.x+7];
+        if((input.texture.w&8U)==0 || (flags&4096U)==0) return colour;
+        if((flags&16384U)==0) {
+            // The sky dome (landscape_world_sample's art rows above the horizon).
+            float3 d=input.surface_position;
+            float rows=d.y/max(-d.z,length(d)*.02)*256.;
+            float amount=pow(1.-saturate(rows/56.),1.5)*fog_colour.a;
+            return float4(lerp(colour.rgb,fog_colour.rgb,amount),colour.a);
+        }
+    }
+    return fog_by_distance(colour,input.position.z,fog_colour,fog_params);
 }
+float4 fragment_textured_main(Fragment input) : SV_Target0 {
+    float4 colour=styled_colour(fragment_textured_raw(input));
+#if defined(STARFOX_SCENE_FOG)
+    colour=scene_fog(input,colour,scene_fog_mode(),scene_fog_colour,scene_fog_params);
+#endif
+    return colour;
+}
+// MODERN on a headset: source lines one source pixel thick, as the desktop
+// paints each line point as a square (the flat renderer's SdlLineBrush).
+// Line draws repeat 2N-1 times (vr::scene_line_instances), N the target
+// pixels per source pixel (camera.effects.w bits 8-19, 4.4) rounded: instance
+// i < N shifts i pixels right, later ones shift down. A target pixel in clip
+// units per w follows from the same scale: the eye has 256 x that many pixels
+// per unit tangent, which the projection's diagonal maps to 2 clip units.
+Fragment headset_line_brush(Fragment output,uint instance) {
+    if(instance==0) return output;
+    float source_pixel=float((camera.effects.w>>8)&4095U)/16.;
+    uint pixels=uint(clamp(floor(source_pixel+.5),1.,64.));
+    float2 step=2.*float2(abs(camera.projection[0][0]),abs(camera.projection[1][1]))/(512.*source_pixel);
+    float2 shift=instance<pixels?float2(instance,0):float2(0,instance-pixels+1);
+    output.position.xy+=shift*step*output.position.w;
+    return output;
+}
+#if defined(STARFOX_SDL_SCENE_VERTEX) || defined(STARFOX_SDL_SCENE_FRAGMENT)
+// The flat renderer (its own SdlLineBrush) and the calibrated display.
+Fragment vertex_main(Vertex input) {return scene_vertex(input);}
+Fragment vertex_textured_main(Vertex input) {return scene_vertex_textured(input);}
+#else
+Fragment vertex_main(Vertex input,uint instance : SV_InstanceID) {
+    return headset_line_brush(scene_vertex(input),instance);
+}
+Fragment vertex_textured_main(Vertex input,uint instance : SV_InstanceID) {
+    return headset_line_brush(scene_vertex_textured(input),instance);
+}
+#endif
