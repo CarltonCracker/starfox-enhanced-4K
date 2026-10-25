@@ -1,6 +1,6 @@
 # Star Fox Enhanced
 
-This is a fork of Kandowontu's Star Fox Enhanced PC port to experiment with enhancements such a high resolution textures/sprites, replacing models with sprites, an any other potential timing work to match the original Super FX chip timing if needed.
+This is a fork of Kandowontu's Star Fox Enhanced PC port to experiment with enhancements such a high resolution textures/sprites, replacing sprites with true 3d models, an any other potential timing work to match the original Super FX chip timing if needed.
 
 My main focus will be Windows and PCVR (specifically Steam Frame)
 
