@@ -1,6 +1,6 @@
-# Star Fox Enhanced
+# Star Fox Enhanced 4K
 
-This is a fork of Kandowontu's Star Fox Enhanced PC port to experiment with enhancements such a high resolution textures/sprites, replacing sprites with true 3d models, an any other potential timing work to match the original Super FX chip timing if needed.
+This is a fork of Kandowontu's Star Fox Enhanced PC port to experiment with enhancements geared towards 1440p/4k gaming such as high resolution textures/sprites, replacing sprites with true 3d models, an any other potential timing work to match the original Super FX chip timing if needed.  This is achieved with a "modern" renderer that utilizes true 3D geometry for rendering, making it much faster than the standard renderer that, true to the original game, makes many passes per frame to generate an image.
 
 My main focus will be Windows and PCVR (specifically Steam Frame)
 
