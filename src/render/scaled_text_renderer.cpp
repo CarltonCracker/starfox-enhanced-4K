@@ -76,7 +76,7 @@ void ScaledTextRenderer::draw_unicode(std::u32string_view text,
             } else if (latin.base != U' ') {
                 const auto index = rom_->read8(game_font_translation_ + latin.base - 32U);
                 draw_cartridge_glyph(*rom_,game_font_glyphs_+index*24U,target,x,y,advance,ink);
-                const auto centre = x + std::max(1, (advance - 1) / 2);
+                const auto centre = x + std::max<std::int32_t>(1, (advance - 1) / 2);
                 switch (latin.accent) {
                 case U'\u0301': target.set(centre + 1,y - 2,ink); target.set(centre,y - 1,ink); break;
                 case U'\u0300': target.set(centre - 1,y - 2,ink); target.set(centre,y - 1,ink); break;
@@ -370,11 +370,8 @@ void ScaledTextRenderer::draw_face(
     std::int32_t y,
     Framebuffer& target,
     std::uint8_t colour_index_base,
-    bool alternate_portraits,
-    bool correct_pixel_aspect) const {
-    // Aspect correction uses stored-resolution writes, but portraits remain
-    // HUD artwork, not model pixels. Preserve this classification in both
-    // immediate drawing and recorded GPU commands.
+    bool alternate_portraits) const {
+    // Portraits remain HUD artwork in immediate and recorded GPU drawing.
     const ScopedLayer portrait_layer{target,PixelLayer::two_d};
     const auto data = alternate_portraits && face_data_2_ != 0U
         ? face_data_2_ : face_data_;
@@ -384,9 +381,9 @@ void ScaledTextRenderer::draw_face(
         for(unsigned i=0;i<bytes.size();++i) bytes[i]=rom_->read8(frame_address+i);
         const int scale=target.draw_scale();
         RasterCommand c;
-        c.right=(x+32)*scale;c.left=c.u=correct_pixel_aspect?c.right-(32*scale*7+3)/6:x*scale;
+        c.right=(x+32)*scale;c.left=c.u=x*scale;
         c.top=c.v=y*scale;c.bottom=c.top+40*scale;
-        c.du=scale;c.dv=correct_pixel_aspect?1:0;c.textured=8;c.colour_base=colour_index_base;
+        c.du=scale;c.dv=0;c.textured=8;c.colour_base=colour_index_base;
         c.tag=std::uint32_t(PixelLayer::two_d);
         c.texture_offset=commands->snapshot(bytes);commands->add(c);return;
     }
@@ -410,23 +407,7 @@ void ScaledTextRenderer::draw_face(
                         }
                     }
                     const auto colour=static_cast<std::uint8_t>(colour_index_base+pixel);
-                    if(!correct_pixel_aspect) {
-                        target.set(x + tile_x * 8 + column, y + tile_y * 8 + row,colour);
-                    } else {
-                        // SNES 256x224 -> 4:3 presents pixels 7:6 wide. Wide
-                        // game canvases use square pixels, so correct only the
-                        // portrait, retaining its right edge beside the text.
-                        // Work at stored resolution to avoid rounding a 32px
-                        // portrait to a coarse logical width at high upscale.
-                        const auto scale=static_cast<std::int32_t>(target.draw_scale());
-                        const auto edge=[scale](int value) {return (value*scale*7+3)/6;};
-                        const auto left=(x+32)*scale-edge(32);
-                        const auto source_x=tile_x*8+column;
-                        const auto top=(y+tile_y*8+row)*scale;
-                        for(auto py=top;py<top+scale;++py)
-                            for(auto px=left+edge(source_x);px<left+edge(source_x+1);++px)
-                                target.set_stored(px,py,colour);
-                    }
+                    target.set(x + tile_x * 8 + column, y + tile_y * 8 + row,colour);
                 }
             }
         }

@@ -73,6 +73,13 @@ README credits:
 ## Star Fox Enhanced native PC port
 
 - KandoWontU — project creator and repository author.
+- agrofubris — [stereo fork](https://github.com/agrofubris/starfox-enhanced-stereo)
+  reviewed for Crossview output and single-player Steam Deck controller priority;
+  direct SR Platform offscreen-weave handoff at `129d917`.
+- bo3b (Bo3b Johnson) — [SR-lib](https://github.com/bo3b/SR-lib) SDK packaging,
+  optional-runtime and weaver lifecycle reference.
+- oneup03 — [RT64 3D](https://github.com/oneup03/rt64-3D), credited by the stereo
+  fork as the original SR integration approach.
 - UltraStarFox and Team SFEX contributors — original and EX source mechanics,
   data, tools, research, and documentation on which the native runtime is
   based, credited individually above.
@@ -83,6 +90,12 @@ The optional `Starfox-MSU1.PAK` companion uses SunlitSpace542's
 [Star Fox MSU-1 PCM set](https://github.com/Sunlitspace542/star-fox-msu1-pcm),
 which is based on Aelieth's Church of Kondo set with additions and remapping
 for Sunlit's patch. The pack README also thanks qwertymodo for MSUPCM++.
+
+## 3D asteroid models
+
+The SUPER FX STYLE asteroid models (3D OPTIONS > 3D ASTEROIDS) are by
+CarltonCracker, MIT licensed; see
+[assets/models/asteroids](assets/models/asteroids/README.md).
 
 ## Libraries and legal notices
 

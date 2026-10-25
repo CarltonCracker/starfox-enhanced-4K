@@ -2,10 +2,15 @@
 #include "starfox/vr/game_scene.hpp"
 #include "starfox/vr/draw_packet.hpp"
 #include "starfox/assets/shape_decoder.hpp"
+#include "starfox/assets/hipoly_arwing.hpp"
+#include "starfox/render/asteroid_models.hpp"
 #include "starfox/vr/scene_interpolation.hpp"
 #include "starfox/vr/source_span_model.hpp"
+#include "starfox/render/texture_overrides.hpp"
+#include <functional>
 #include <unordered_map>
 #include <memory>
+#include <optional>
 
 namespace starfox::vr {
 inline constexpr uint32_t source_shadow_pass=0x10000U;
@@ -31,13 +36,34 @@ struct SourceModelPackets {
     // Keep the producer rejection reason for migration coverage audits.
     std::vector<SourceComputeFallback> compute_fallbacks;
     std::vector<SourceComputeModel> compute_models;
+    // The player's ship handle (low 16 bits of its packet handle), or 0.
+    uint16_t player{};
+    // Other Arwings the camera follows (the cockpit -> chase zoom ship).
+    std::vector<uint16_t> ships;
+    // (part, parent) handles for objects attached to another (al_attached):
+    // turrets and weak points the cartridge draws on their ship's hull.
+    std::vector<std::array<uint16_t,2>> attachments;
+    // Tunnel sections that enclose the camera (the twisting PIPE_* tunnels:
+    // Space Armada's boss entry, WASHENT, and the colony clear, CL_COLON).
+    // Painted, but far to near by real distance (ModernFrame), not in the
+    // cartridge's sort, whose per-shape offsets let a far section's wall cut
+    // through a near one. Their overlapping walls flicker depth-tested.
+    std::vector<uint16_t> depth_enclosures;
 };
 // Completed-tick model assembly only. Pending entries must be handled before
 // presenting a complete game scene; they must never be silently discarded.
 // This does not enumerate or emit background, overlay or extra shadow passes.
 class SourceModels {
 public:
+    struct CacheStats {std::size_t shapes{},entries{},vertices{},texels{};};
+    [[nodiscard]] CacheStats cache_stats() const noexcept {
+        return {shapes_.size(),geometry_cache_.size(),cached_vertices_,cached_texels_};
+    }
     SourceModels(const assets::RomImage&,const assets::SymbolMap&,bool cache_geometry=true,bool compute_solids=false,bool compute_shadows=true);
+    SceneInterpolationRules source_interpolation_rules(bool fixed_landscape_height=false) const noexcept {
+        auto result=interpolation_;result.fixed_landscape_height=fixed_landscape_height;return result;
+    }
+    double source_centre_scale(const GameSceneSnapshot&,std::uint32_t strategy,bool fixed_landscape_height) const noexcept;
     DrawPacket assemble_dust(const GameSceneSnapshot&,bool srgb_target=false,float units_per_metre=256) const;
     DrawPacket assemble_dust_gpu(const GameSceneSnapshot&,bool srgb_target=false,float units_per_metre=256) const;
     DrawPacket assemble_dust_interpolated(const GameSceneSnapshot& previous,const GameSceneSnapshot& current,
@@ -53,11 +79,21 @@ public:
         double alpha,bool srgb_target=false,float units_per_metre=256,bool gpu=false,bool fixed_landscape_height=false) const;
     SourceModelPackets assemble(const GameSceneSnapshot&,bool srgb_target=false,float units_per_metre=256);
     SourceModelPackets assemble_interpolated(const GameSceneSnapshot& previous,const GameSceneSnapshot& current,
-        double alpha,bool srgb_target=false,float units_per_metre=256,bool fixed_landscape_height=false);
+        double alpha,bool srgb_target=false,float units_per_metre=256,bool fixed_landscape_height=false,bool cpu_pilot_rig=false);
     // Same ordered world passes used by the live app and headless preflight:
     // grid, dust, then native model/shadow order. Does not include PPU overlays.
     SourceModelPackets assemble_world_interpolated(const GameSceneSnapshot& previous,
-        const GameSceneSnapshot& current,double alpha,bool srgb_target=false,bool surround_stars=false);
+        const GameSceneSnapshot& current,double alpha,bool srgb_target=false,bool surround_stars=false,bool cpu_pilot_rig=false);
+    void set_asteroid_models(render::AsteroidModels mode) noexcept {asteroid_models_=mode;}
+    // HIGH POLY ARWINGS: draw the ending model (and its broken-wing
+    // variants) for every player and teammate Arwing.
+    void set_hipoly_arwings(bool enabled) noexcept {hipoly_arwings_=enabled;}
+    // Replacement artwork for model textures (compute route), owned by the caller.
+    void set_texture_overrides(const render::TextureOverrides* overrides) noexcept {texture_overrides_=overrides;}
+    // Called for each texture of every shape drawn, with the 16 live model
+    // palette colours (BGR555, index 0 transparent) the texture's indices use.
+    using TextureObserver=std::function<void(const assets::TextureImage&,const std::array<uint16_t,16>&)>;
+    void set_texture_observer(TextureObserver observer) {texture_observer_=std::move(observer);}
 private:
     struct GeometryKey {
         const assets::Shape* shape{};
@@ -80,19 +116,31 @@ private:
     bool cache_geometry_{};
     bool compute_solids_{};
     bool compute_shadows_{true};
+    render::AsteroidModels asteroid_models_{};
+    bool hipoly_arwings_{};
+    const render::TextureOverrides* texture_overrides_{};
+    TextureObserver texture_observer_;
     DrawPacket connected_grid_pose(const GameSceneSnapshot&,const timing::RenderTransform&,
         const simulation::MatrixQ15&,bool,bool gpu=false) const;
     DrawPacket grid_pose(const GameSceneSnapshot&,const timing::RenderTransform&,
         const simulation::MatrixQ15&,bool,float,bool gpu=false) const;
     DrawPacket dust_pose(const GameSceneSnapshot&,const timing::RenderTransform&,
         const simulation::MatrixQ15&,bool,float,bool gpu=false) const;
-    SourceModelPackets assemble_poses(const GameSceneSnapshot&,std::span<const render::RenderPose>,std::span<const render::RenderPose>,bool,float,double);
+    SourceModelPackets assemble_poses(const GameSceneSnapshot&,std::span<const render::RenderPose>,std::span<const render::RenderPose>,bool,float,double,bool cpu_pilot_rig=false);
     SceneInterpolationRules interpolation_;
     const assets::RomImage* rom_{};
     uint32_t scaled_font_{},scaled_messages_{},star_colours_{};
     uint16_t intro_laser_shape_{};
+    uint16_t pilot_shape_{}; // MY_DEMOS, drawn for the player in the cockpit rig
+    std::array<uint16_t,4> flight_shapes_{}; // MYSHIP_4/L/R/B, replaced by pilot_shape_
+    // MYZOOM_4/L/R/B: the cockpit -> chase view zoom ship, kept on top of the
+    // objects drawn before it (SourceModelPackets::ships).
+    std::array<uint16_t,4> pass_through_shapes_{};
+    std::array<uint16_t,11> depth_enclosure_shapes_{};
     std::array<uint32_t,4> intro_showcase_strategies_{};
     assets::ShapeDecoder decoder_;
+    assets::HipolyArwings hipoly_;
+    std::optional<assets::ShapeDecoder> hipoly_decoder_;
     std::array<uint16_t,3> colours_{};
     std::unordered_map<uint64_t,assets::Shape> shapes_;
     mutable SceneVertex grid_material_{};

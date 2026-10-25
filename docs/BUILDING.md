@@ -3,6 +3,16 @@
 Prebuilt packages do not require these steps. See [the README](../README.md)
 for installation and supported ROM revisions.
 
+## Fixed desktop window size
+
+Set `FULLSCREEN 0`, `WINDOW_WIDTH 1280` and `WINDOW_HEIGHT 720` in `pregame.cfg`
+to start at that window size. Both dimensions must be present (width 256–16384,
+height 224–16384). `WINDOW_WIDTH 0` and `WINDOW_HEIGHT 0` restore automatic sizing.
+Non-matching aspect ratios are letterboxed; only FIT SCREEN stretches the image.
+Fullscreen keeps the dimensions for the next switch back to windowed mode.
+The desktop Alt+1 through Alt+4 shortcuts temporarily select native-size multiples;
+Alt+0 restores automatic sizing for the current session.
+
 ## Development launcher
 
 Release builds use the checked-in source-built BPS deltas and pinned symbol
@@ -52,6 +62,13 @@ A development map can be selected explicitly:
 
 Explicit external ROM/symbol pairs can still be passed to a development build
 for source-to-port comparisons.
+
+The resident source-reflection index is experimental validation code, not a
+released visual setting. Normal builds leave it out. Developers running those
+diagnostics must explicitly configure
+`-DSTARFOX_ENABLE_EXPERIMENTAL_REFLECTION_INDEX=ON` and provide a DXC build with
+SPIR-V code generation (the Windows SDK's DXIL-only DXC is insufficient).
+This does not disable the normal ray tracing, reflections or Leia integration.
 
 ## Regenerating upstream assets
 
@@ -192,6 +209,42 @@ Useful diagnostics include `starfox_stage_trace`, `starfox_stage_preview`,
 and licenses are recorded in `THIRD_PARTY_NOTICES.md`. The original Nintendo/
 Argonaut staff, Star Fox EX team, UltraStarFox contributors, native-port
 credit, and MSU-set attribution are recorded separately in `CREDITS.md`.
+
+`starfox_texture_dump` writes every Super FX texture straight from the ROM,
+without playing the game:
+
+```sh
+starfox_texture_dump Starfox-Assets.BIN textures [--map LEVEL3_7]
+starfox_texture_dump SF.SFC SYMBOLS.TXT textures [--map LEVEL3_7]
+```
+
+The bundle form writes `original/` and `ex/`. Each holds `atlas/` (every
+texture bank as a 256x128 page per 4-bit plane), `textures/` (each texture
+that a shape or colour table references) and `textures.csv`, which lists every
+size each texture is sampled at, its descriptors and the shapes that use it.
+`textures/` uses the names MODERN's replacement loader reads,
+`tex_AAAAAA_l.png` / `tex_AAAAAA_h.png` (SNES ROM address, low/high nibble
+plane), so an edited copy at any resolution goes into `textures/` next to
+`starfox_pc.exe`. The PNGs are RGBA with texel 0 transparent, coloured with
+CGRAM palette 7 after the `--map` stage has loaded (default `LEVEL1_1`). When
+the game samples one texture at several sizes, the largest is written.
+
+`textures/` also holds every communications portrait frame as
+`face_AAAAAA.png` (the frame's ROM address in `FACEDATA`, or EX's
+`FACEDATA2`), 32x40 and opaque, listed in `portraits.csv`. MODERN draws a
+`face_*.png` in `textures/` next to `starfox_pc.exe` over the whole portrait
+box at any resolution (keep 4:5) and applies the screen fade to it. Each
+mouth/eye position is its own frame. Original's table ends with a few frames
+of unrelated data that the game never shows.
+
+2D sprites (HUD labels, icons and digits, stage title lettering) live in
+VRAM, so the tool plays `--map` headlessly, steps `LIVES` to show every digit,
+and writes each sprite it sees as `obj_HHHHHHHHHHHHHHHH.png`, a hash of the
+sprite's pixels, size and palette (`render::sprite_override_key`), listed in
+`sprites.csv` with its tile and screen position. MODERN draws an `obj_*.png`
+in `textures/` over that sprite at any square size. With
+`STARFOX_MODERN_DUMP_TEXTURES=1` MODERN also writes every sprite it draws.
+Never commit the output, since it is ROM data.
 
 The EX regression runs every one of the 40 stage labels shipped through
 `PLANETS` and `PLANETS2` for 2,000 deterministic logic ticks. The source-only

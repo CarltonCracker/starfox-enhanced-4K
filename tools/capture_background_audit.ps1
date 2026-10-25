@@ -1,11 +1,15 @@
 param(
-    [string]$OutputDirectory='tmp/background-audit',
+    [string]$OutputDirectory='build/validation/active/background-frames',
     [ValidateSet('ORIGINAL','EX')][string]$Experience='ORIGINAL',
     [string[]]$Levels=@(),
     [ValidateRange(0,8000)][int[]]$Ticks=@(1000,6000),
     [string[]]$Aspects=@('4_3','16_9','32_9'),
     [string]$Executable='build/current/starfox_pc.exe',
     [ValidateSet('GPU','SOFTWARE')][string]$Renderer='GPU',
+    [ValidateRange(0,8)][int]$RenderThreads=0,
+    # Up to 2x keeps a single widest stored bitmap inside the 4 MB reserve.
+    [ValidateRange(1,2)][int]$RenderScale=1,
+    [ValidateRange(0,3)][int]$Contrast=0,
     [switch]$LegacyD3D11,
     [switch]$DisableGpuEffects,
     [switch]$TraceGpu,
@@ -22,6 +26,7 @@ param(
     [switch]$ArmadaApproach,
     [switch]$GodMode,
     [switch]$AudioPreroll,
+    [switch]$Msu1,
     [ValidateRange(1,30000)][int]$Frames=1,
     [ValidateRange(20,240)][int]$PresentationFps=60,
     [ValidateSet('ORIGINAL','UNLOCKED')][string]$TimingMode='ORIGINAL',
@@ -30,7 +35,9 @@ param(
     [ValidateRange(1,240)][int]$PressFrames=3,
     [ValidateRange(0,30000)][int]$CaptureStart=0,
     [ValidateRange(0,30000)][int]$CaptureInterval=0,
-    [switch]$IncludeSpecialRoutes
+    [switch]$IncludeSpecialRoutes,
+    [switch]$Compact,
+    [string]$Background=''
 )
 $ErrorActionPreference='Stop'
 if($PresentationInterval -and !$FinalTarget) {throw 'PresentationInterval requires FinalTarget'}
@@ -41,11 +48,31 @@ if ($Presses -and $Presses -notmatch '^(?:[0-9]+|0x[0-9a-fA-F]+):(?:[0-9]+|0x[0-
     throw 'Presses must be frame:numeric-button-mask pairs (for example 1200:64 for X/boost), not button names'
 }
 $auditPath=[IO.Path]::GetFullPath($OutputDirectory)
+$validationPath=[IO.Path]::GetFullPath('build/validation')
+$allowedPath=[IO.Path]::GetFullPath('build/validation/active')+[IO.Path]::DirectorySeparatorChar
+if(!$auditPath.StartsWith($allowedPath,[StringComparison]::OrdinalIgnoreCase) -or
+    [IO.Path]::GetPathRoot($auditPath) -ine 'C:\') {
+    throw 'Background captures must stay inside C: build/validation/active'
+}
+if($Compact -and ($Layers -or $PpuSnapshot -or $ModelLayers -or $FinalTarget -or $CaptureInterval)) {
+    throw 'Compact auditing accepts one final image per sample, without additional layer/snapshot/sequence captures'
+}
+function Assert-AuditStorage {
+    param([long]$PlannedBytes=4000000)
+    $used=[long]0
+    if(Test-Path -LiteralPath $validationPath) {
+        foreach($file in Get-ChildItem -LiteralPath $validationPath -Recurse -File -Force) {$used+=$file.Length}
+    }
+    if($used+$PlannedBytes -gt 1GB -or (Get-PSDrive C).Free-$PlannedBytes -lt 20GB) {
+        throw 'Capture would exceed the 1 GiB scratch budget or 20 GiB free-space reserve'
+    }
+}
+Assert-AuditStorage
 New-Item -ItemType Directory -Force -Path $auditPath | Out-Null
 $rom=if($Experience -eq 'EX') {'tmp/runtime-inputs/starfox-ex/SFES.SFC'} else {'upstream-ultrastarfox/SF.SFC'}
 $symbols=if($Experience -eq 'EX') {'assets/symbols/starfox-ex.txt'} else {'upstream-ultrastarfox/SYMBOLS.TXT'}
 $availableLevels=@(Get-Content -LiteralPath $symbols | ForEach-Object {
-    if($_ -match '^(LEVEL(?:[1-7]_[1-9]|_BLACKHOLE|_SPECIAL|_COMET)|GAMEOVER|INTROMAP|TITLEMAP|CONTMAP)\s') {$Matches[1]}
+    if($_ -match '^(LEVEL(?:[1-7]_[1-9]|_BLACKHOLE|_SPECIAL|_COMET)|TRAININGMAP|GAMEOVER|INTROMAP|TITLEMAP|CONTMAP)\s') {$Matches[1]}
 } | Sort-Object -Unique)
 # GAMEOVER is an application-supported front-end entry, not a ROM symbol.
 $availableLevels+=@('GAMEOVER')
@@ -56,6 +83,22 @@ if(!$Levels.Count) {throw 'No level entry points found'}
 foreach($level in $Levels) {
     if($level -notin $availableLevels) {throw "Unknown background entry for ${Experience}: $level"}
 }
+$expectedBackground=$null
+if($Background) {
+    if($Background -cnotmatch '^BG_[A-Z0-9_]+$' -or $Levels.Count -ne 1) {
+        throw 'A forced background requires one level and a BG_ symbol'
+    }
+    $base=$null;$entry=$null
+    Get-Content -LiteralPath $symbols | ForEach-Object {
+        if($_ -match '^BGLISTS\s+\$([0-9a-fA-F]+)') {$base=[Convert]::ToUInt32($Matches[1],16)}
+        if($_ -match ('^'+[regex]::Escape($Background)+'\s+\$([0-9a-fA-F]+)')) {$entry=[Convert]::ToUInt32($Matches[1],16)}
+    }
+    if($null -eq $base -or $null -eq $entry -or ($entry -band 0xff0000) -ne ($base -band 0xff0000)) {
+        throw 'Unknown authored background variant'
+    }
+    $expectedBackground=$entry-$base
+    if($AudioPreroll) {throw 'Forced backgrounds must be loaded after preroll; omit AudioPreroll for this diagnostic'}
+}
 # Isolate this fixture from other diagnostic hooks in the invoking shell.
 $savedEnvironment=@{}
 Get-ChildItem Env: | Where-Object {$_.Name -match '^(STARFOX_|SDL_AUDIODRIVER$)'} | ForEach-Object {
@@ -65,6 +108,7 @@ Get-ChildItem Env: | Where-Object {$_.Name -match '^(STARFOX_|SDL_AUDIODRIVER$)'
 try {
     $env:SDL_AUDIODRIVER='dummy'
     $env:STARFOX_TEST_HIDDEN='1'
+    $env:STARFOX_TEST_WINDOW_SIZE='800x450'
     $env:STARFOX_TEST_FRAMES=[string]$Frames
     $env:STARFOX_TEST_GOD_MODE=if($GodMode) {'1'} else {'0'}
     if($AudioPreroll) {$env:STARFOX_TEST_PREROLL_AUDIO='1'}
@@ -80,10 +124,11 @@ try {
     $env:STARFOX_TEST_UNPACED='1'
     $env:STARFOX_TEST_EXPERIENCE=$Experience
     $env:STARFOX_TEST_RENDERER=$Renderer
+    if($RenderThreads) {$env:STARFOX_RENDER_THREADS=[string]$RenderThreads}
     if($LegacyD3D11) {$env:STARFOX_TEST_D3D11_GPU='1'}
     if($DisableGpuEffects) {$env:STARFOX_DISABLE_GPU_EFFECTS='1'}
     if($TraceGpu) {$env:STARFOX_TRACE_GPU='1'}
-    $env:STARFOX_TEST_RENDER_SCALE='1'
+    $env:STARFOX_TEST_RENDER_SCALE=[string]$RenderScale
     $env:STARFOX_TEST_ANTI_ALIASING='0'
     $env:STARFOX_TEST_SEPARATED_MODELS='0'
     $env:STARFOX_TEST_PRESENTATION_FPS=[string]$PresentationFps
@@ -98,6 +143,19 @@ try {
     $env:STARFOX_TEST_BLOOM_2D='0'
     $env:STARFOX_TEST_FSR1_SELECTION='0'
     $env:STARFOX_TEST_DLSS_SELECTION='0'
+    $env:STARFOX_TEST_DLSS45_SELECTION='0'
+    $env:STARFOX_TEST_GLOBAL_ENHANCEMENTS='0'
+    $env:STARFOX_TEST_WORLD_DISTORTION='0'
+    $env:STARFOX_TEST_MODEL_FX='0'
+    $env:STARFOX_TEST_WORLD_FX='0'
+    $env:STARFOX_TEST_ADAPTIVE_EXPOSURE='0'
+    $env:STARFOX_TEST_PHOSPHOR_PERSISTENCE='0'
+    $env:STARFOX_TEST_PARTICLE_ENHANCEMENTS='0'
+    $env:STARFOX_TEST_DEPTH_ENHANCEMENTS='0'
+    $env:STARFOX_TEST_SCENE_ENHANCEMENTS='0'
+    $env:STARFOX_TEST_CAMERA_RESPONSE='0'
+    $env:STARFOX_TEST_VOLUMETRIC_FOG_QUALITY='0'
+    $env:STARFOX_TEST_MOTION_BLUR_QUALITY='0'
     $env:STARFOX_TEST_STEREO_OUTPUT='0'
     $env:STARFOX_TEST_RTX_LIGHTING='0'
     $env:STARFOX_TEST_2D_FILTER='0'
@@ -111,9 +169,10 @@ try {
     if($EnhancedGround){$env:STARFOX_TEST_ENVIRONMENT_0='1'}
     if($UnbatchedTerrain){$env:STARFOX_TEST_UNBATCHED_TERRAIN='1'}
     $env:STARFOX_TEST_MODEL_SMOOTHING='0'
-    $env:STARFOX_TEST_HDR_EFFECT='0'
+    $env:STARFOX_TEST_HDR_EFFECT=[string]$Contrast
     $env:STARFOX_TEST_CHROMATIC_ABERRATION='0'
-    $env:STARFOX_TEST_MSU1='0'
+    $env:STARFOX_TEST_MSU1=if($Msu1){'1'}else{'0'}
+    if($Msu1) {$env:STARFOX_TRACE_MSU1='1'}
     $env:STARFOX_TEST_VSYNC='0'
     $env:STARFOX_TEST_ENHANCED_SHADOWS='0'
     $env:STARFOX_TEST_RAY_TRACING='0'
@@ -122,13 +181,23 @@ try {
     # Record the reached flow and background ID, not just the requested level.
     # A direct-entry sample can already be at its boss or another background.
     $env:STARFOX_TRACE_RENDER_STATE='1'
+    if($Background) {$env:STARFOX_TEST_BACKGROUND=$Background}
     if($TraceObjects) {$env:STARFOX_TRACE_OBJECTS='1'}
     foreach($level in $Levels) {
         foreach($tick in $Ticks) {
             if($tick -lt 0) {throw 'Negative preroll'}
             foreach($aspect in $Aspects) {
-                if($aspect -notin @('4_3','16_9','32_9')) {throw "Unsupported audit aspect: $aspect"}
+                if($aspect -notin @('4_3','16_9','16_10','21_9','32_9')) {throw "Unsupported audit aspect: $aspect"}
                 $stem="$Experience-$level-$tick-$aspect"
+                if($Background) {$stem="$Experience-$level-$Background-$tick-$aspect"}
+                $samples=1
+                if($CaptureInterval) {$samples+=[Math]::Max(0,[Math]::Ceiling(($Frames-$CaptureStart)/$CaptureInterval))}
+                if($PresentationInterval) {$samples+=[Math]::Ceiling($Frames/$PresentationInterval)}
+                $copies=1+8*[int][bool]$Layers+8*[int][bool]$ModelLayers+4*[int][bool]$PpuSnapshot+[int][bool]$FinalTarget
+                Assert-AuditStorage -PlannedBytes ([long](4000000*$samples*$copies+$Frames*$(if($TraceObjects){1000000}else{4096})))
+                if(@(Get-ChildItem -LiteralPath $auditPath | Where-Object {$_.Name -match ('^'+[regex]::Escape($stem)+'(?:\.|-)')}).Count) {
+                    throw "Sample already exists; choose a new audit directory: $stem"
+                }
                 $env:STARFOX_TEST_PREROLL_TICKS="$tick"
                 $env:STARFOX_TEST_DISPLAY_MODE=$aspect
                 $env:STARFOX_CAPTURE_PATH=Join-Path $auditPath "$stem.bmp"
@@ -163,8 +232,41 @@ try {
                     }
                     Write-Output "Capture running: $stem, PID $($process.Id)"
                 }
-                if($process.ExitCode -ne 0 -or !(Test-Path -LiteralPath $env:STARFOX_CAPTURE_PATH)) {throw "Capture failed: $stem"}
+                # The timed wait can return before redirected output drains.
+                $process.WaitForExit()
+                $exitCode=$process.ExitCode
+                $process.Dispose()
+                if($exitCode -ne 0 -or !(Test-Path -LiteralPath $env:STARFOX_CAPTURE_PATH)) {throw "Capture failed: $stem"}
                 if($FinalTarget -and !(Test-Path -LiteralPath $env:STARFOX_CAPTURE_PRESENTATION_PATH)) {throw "Final capture missing: $stem"}
+                if($Msu1 -and !(Select-String -LiteralPath (Join-Path $auditPath "$stem.log") -Pattern '^msu1 enabled=1 available=1 ' -Quiet)) {
+                    throw "MSU-1 was requested but not confirmed active/available: $stem (see its log)"
+                }
+                if($Background) {
+                    $selected=Get-Content -LiteralPath (Join-Path $auditPath "$stem.log") | Where-Object {$_ -match '^enhanced-backdrop-selection:'} | Select-Object -Last 1
+                    if($selected -notmatch 'background=([0-9]+)' -or [int]$Matches[1] -ne $expectedBackground) {
+                        throw "Forced background was replaced before capture: $stem"
+                    }
+                }
+                if($Compact) {
+                    Add-Type -AssemblyName System.Drawing
+                    $bitmap=[System.Drawing.Image]::FromFile($env:STARFOX_CAPTURE_PATH)
+                    try {$bitmap.Save((Join-Path $auditPath "$stem.png"),[System.Drawing.Imaging.ImageFormat]::Png)}
+                    finally {$bitmap.Dispose()}
+                    # Only this invocation's newly generated bitmap, never a
+                    # recursive cleanup or pre-existing screenshot/settings.
+                    Remove-Item -LiteralPath $env:STARFOX_CAPTURE_PATH
+                    # A successful animated probe needs its final geometry,
+                    # not hundreds of repeated per-object diagnostic lines.
+                    # Failed runs retain the complete original error log.
+                    $trace=Get-Content -LiteralPath (Join-Path $auditPath "$stem.log")
+                    $receipt=@($trace | Select-Object -First 20)
+                    $receipt+=@($trace | Where-Object {$_ -match '^(enhanced-backdrop-|render-state|msu1 )'} | Select-Object -Last 7)
+                    $receipt+=@($trace | Where-Object {$_ -match '(?i)(warning|error|failed|fallback)'})
+                    $receipt | Select-Object -Unique | Set-Content -LiteralPath (Join-Path $auditPath "$stem.receipt.txt")
+                    # A redirector/AV may briefly retain the raw log's handle.
+                    # Keep it if locked, never overwrite/truncate a live file.
+                    Remove-Item -LiteralPath (Join-Path $auditPath "$stem.log") -ErrorAction SilentlyContinue
+                }
                 Write-Output "Captured $stem"
             }
         }

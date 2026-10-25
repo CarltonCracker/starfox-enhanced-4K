@@ -360,8 +360,21 @@ int main(int argc,char** argv) {
             // accidentally stand in for schema/boolean validation here.
             const auto crc=assets::crc32(cartridge.bytes());
             const auto payload=state::unpack(full_saved,0x47414d01U,crc);
+            // Locate the first optional field by changing that field alone.
+            // New appended effects must not silently move this legacy cut.
+            auto marked_game=game.restored_state(full_saved);
+            marked_game->set_infinite_lives(true);
+            const auto marked_state=marked_game->save_state();
+            const auto marked_payload=state::unpack(marked_state,0x47414d01U,crc);
+            require(payload.size()==marked_payload.size(),"Lives changed archive size");
+            std::size_t lives_offset=payload.size(),differences=0;
+            for(std::size_t i=0;i<payload.size();++i) if(payload[i]!=marked_payload[i]) {
+                lives_offset=i;++differences;
+            }
+            require(differences==1,"Could not isolate optional lives field");
+            const auto optional_tail_size=payload.size()-lives_offset;
             for(unsigned tail=0;tail<2;++tail) {
-                auto legacy=std::vector<std::uint8_t>(payload.begin(),payload.end()-13+tail);
+                auto legacy=std::vector<std::uint8_t>(payload.begin(),payload.begin()+lives_offset+tail);
                 if(tail) legacy.back()=1;
                 auto migrated=game.restored_state(state::pack(0x47414d01U,crc,legacy));
                 require(migrated->god_mode(),"Legacy state lost active God Mode");
@@ -380,7 +393,7 @@ int main(int argc,char** argv) {
                 "Cheat state roundtrip lost enabled settings");
             for(unsigned index=0;index<2;++index) {
                 auto invalid=std::vector<std::uint8_t>(payload.begin(),payload.end());
-                invalid[invalid.size()-13+index]=2;
+                invalid[lives_offset+index]=2;
                 rejects([&] {static_cast<void>(game.restored_state(state::pack(0x47414d01U,crc,invalid)));});
             }
             auto trailing=std::vector<std::uint8_t>(payload.begin(),payload.end());
@@ -401,7 +414,7 @@ int main(int argc,char** argv) {
             const auto menu_saved=menu->save_state();
             const auto menu_payload=state::unpack(menu_saved,0x47414d01U,crc);
             auto migrated_menu=game.restored_state(state::pack(0x47414d01U,crc,
-                menu_payload.first(menu_payload.size()-13)));
+                menu_payload.first(menu_payload.size()-optional_tail_size)));
             require(migrated_menu->pregame_selection()==6 && !migrated_menu->infinite_lives(),
                 "Legacy Cheats Back became Infinite Lives after restore");
         }
@@ -450,7 +463,10 @@ int main(int argc,char** argv) {
         game.set_dlss_mode(1);
         game.set_fsr1_mode(4);
         game.set_fsr1_menu(true);
+        game.set_gpu_renderer(simulation::GpuRenderer::fast);
         auto full_restore = game.restored_state(full_saved);
+        require(full_restore->gpu_renderer()==simulation::GpuRenderer::fast,
+            "state restore reset the current GPU FAST host preference");
         require(full_restore->stereo_output()==2,"state restore reset current stereo output");
         require(full_restore->reflective_surfaces_setting()==3,"state restore reset reflection preference");
         require(full_restore->dlss_mode()==1 && full_restore->fsr1_mode()==4 && full_restore->fsr1_menu(),

@@ -1,6 +1,7 @@
 #include "starfox/render/row_workers.hpp"
 
 #include <algorithm>
+#include <exception>
 
 namespace starfox::render {
 namespace {
@@ -93,6 +94,28 @@ void RowWorkers::parallel_rows(
     const auto span = rows / static_cast<std::uint32_t>(slices);
     const auto remainder = rows % static_cast<std::uint32_t>(slices);
 
+    // Never let an exception escape a worker thread (std::terminate), or let
+    // the dispatching slice unwind while other slices still borrow `body`.
+    // Retain the first failure, join every participant, then rethrow on the
+    // caller so its normal renderer error handling can run. The wrapper and
+    // exception storage both outlive the synchronous join below.
+    struct JoinedJob {
+        const std::function<void(std::uint32_t, std::uint32_t)>& body;
+        std::mutex& mutex;
+        std::exception_ptr failure;
+        void operator()(std::uint32_t first, std::uint32_t last) {
+            try {
+                body(first, last);
+            } catch (...) {
+                const std::lock_guard<std::mutex> lock{mutex};
+                if (!failure) failure = std::current_exception();
+            }
+        }
+    } joined_job{body, mutex_, {}};
+    // std::function's reference_wrapper constructor does not allocate. Keep
+    // the successful per-pass hot path free of a new wrapper allocation.
+    const std::function<void(std::uint32_t, std::uint32_t)> joined_body = std::ref(joined_job);
+
     {
         const std::lock_guard<std::mutex> lock{mutex_};
         // Reuse the persistent job storage instead of allocating a temporary
@@ -106,18 +129,19 @@ void RowWorkers::parallel_rows(
             cursor += length;
             job_bounds_[slice * 2U + 1U] = cursor;
         }
-        job_ = &body;
+        job_ = &joined_body;
         pending_ = pool_.size();
         ++generation_;
     }
     work_ready_.notify_all();
-    body(0U, span + (remainder != 0U ? 1U : 0U));
+    joined_body(0U, span + (remainder != 0U ? 1U : 0U));
     {
         std::unique_lock<std::mutex> lock{mutex_};
         work_done_.wait(lock, [this] { return pending_ == 0U; });
         job_ = nullptr;
         job_bounds_.clear();
     }
+    if (joined_job.failure) std::rethrow_exception(joined_job.failure);
 }
 
 } // namespace starfox::render

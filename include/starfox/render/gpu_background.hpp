@@ -21,12 +21,17 @@ struct GpuBackgroundSettings {
     bool game_over_star_extension{}; // BG_AND: keep Andross unique; extend only stars.
     unsigned single_occurrence_top_rows{};
     unsigned sky_source_min{}; // Optional authored top row; extend only outside native view.
+    bool continue_ground{true}; // False for sky/orbital art: never extrude a star into a floor.
+    bool extend_tunnel_diagonals{}; // Source-art fitted margins; native columns stay exact.
     std::vector<BackgroundUniqueRegion> unique_regions;
     // Optional authored BG2 terrain rows [first,last), in source tilemap
     // pixels, not screen coordinates. Empty by default; never applies to tunnels.
     std::array<std::uint32_t,2> terrain_source_rows{};
     std::array<std::uint32_t,2> logical_viewport{}; // optional independent raster dimensions
     std::array<float,2> raster_jitter{};
+    // Logical-pixel source offset for distant BG2 artwork only. Authored
+    // terrain rows retain their ground projection; HUD layers never use it.
+    float stereo_sky_source_x{};
     const EnvironmentEffects* reflection_environment{}; // borrowed during reflection submission only
 };
 class GpuBackground {

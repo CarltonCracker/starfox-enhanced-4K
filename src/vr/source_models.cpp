@@ -1,15 +1,18 @@
 #include "starfox/vr/source_models.hpp"
+#include "starfox/compat/bit_cast.hpp"
 #include <stdexcept>
+#include <cstdlib>
 #include <bit>
 #include <cmath>
 #include "starfox/render/grid_projection.hpp"
+#include "starfox/render/source_sprite_material.hpp"
 #include "starfox/render/grid_line_sample.hpp"
 #include "starfox/vr/background_tiles.hpp"
-#include "starfox/vr/vulkan_connected_grid.hpp"
+#include "starfox/vr/scene_types.hpp"
 namespace starfox::vr {
 SourceModelPackets SourceModels::assemble_world_interpolated(const GameSceneSnapshot& previous,
-    const GameSceneSnapshot& current,double alpha,bool srgb,bool surround_stars) {
-    auto result=assemble_interpolated(previous,current,alpha,srgb,256,surround_stars);
+    const GameSceneSnapshot& current,double alpha,bool srgb,bool surround_stars,bool cpu_pilot_rig) {
+    auto result=assemble_interpolated(previous,current,alpha,srgb,256,surround_stars,cpu_pilot_rig);
     auto dust=assemble_dust_interpolated(previous,current,alpha,srgb,256,true);
     const bool controls=current.flow==simulation::GameFlowState::controls_type
         || current.flow==simulation::GameFlowState::controls_choice;
@@ -54,7 +57,7 @@ bool text_packet(const assets::RomImage& rom,uint32_t font,uint32_t messages,
     if(!model) {error="Invalid scaled text transform";return false;}
     packet.model=*model;
     if(object.colour_table<0x8000) return true;
-    const int size=127+std::bit_cast<int8_t>(object.texture_scroll_x);
+    const int size=127+starfox::bit_cast<int8_t>(object.texture_scroll_x);
     std::vector<uint8_t> tokens;
     for(uint32_t i=0;i<256;++i) {
         const auto token=rom.read8((messages&0xff0000U)+object.colour_table+i);
@@ -129,7 +132,9 @@ bool particle_packet(const GameSceneSnapshot& scene,simulation::ObjectHandle own
 }
 }
 SourceModels::SourceModels(const assets::RomImage& rom,const assets::SymbolMap& symbols,bool cache_geometry,bool compute_solids,bool compute_shadows)
-    :cache_geometry_(cache_geometry),compute_solids_(compute_solids),compute_shadows_(compute_shadows),rom_(&rom),decoder_(rom,symbols) {
+    :cache_geometry_(cache_geometry),compute_solids_(compute_solids),compute_shadows_(compute_shadows),rom_(&rom),decoder_(rom,symbols),
+    hipoly_(assets::build_hipoly_arwings(rom,symbols)) {
+    if(hipoly_.rom) hipoly_decoder_.emplace(*hipoly_.rom,symbols);
     const auto symbol=[&](const char* name) {const auto& values=symbols.find(name);return values.empty()?uint32_t{}:values.front();};
     const auto rom_symbol=[&](const char* name) {
         for(auto address:symbols.find(name)) if((address&0xffffU)>=0x8000U && (address>>16U)<0x70U) return address;
@@ -141,6 +146,12 @@ SourceModels::SourceModels(const assets::RomImage& rom,const assets::SymbolMap& 
     interpolation_.flash_player=symbol("FLASHPLAYER_STRAT");
     interpolation_.discrete_rotation_shape=static_cast<uint16_t>(symbol("UP_DOOR"));
     intro_laser_shape_=static_cast<uint16_t>(symbol("RELFASTELASER"));
+    pilot_shape_=static_cast<uint16_t>(symbol("MY_DEMOS"));
+    for(unsigned i=0;const char* name:{"MYSHIP_4","MYSHIP_L","MYSHIP_R","MYSHIP_B"}) flight_shapes_[i++]=static_cast<uint16_t>(symbol(name));
+    for(unsigned i=0;const char* name:{"MYZOOM_4","MYZOOM_L","MYZOOM_R","MYZOOM_B"})
+        pass_through_shapes_[i++]=static_cast<uint16_t>(symbol(name));
+    for(unsigned i=0;const char* name:{"PIPE_0","PIPE_1","PIPE_2","PIPE_3","PIPE_4","PIPE_5","PIPE_6","PIPE_8","PIPE_8_0","PIPE_9","PIPE_9_0"})
+        depth_enclosure_shapes_[i++]=static_cast<uint16_t>(symbol(name));
     intro_showcase_strategies_={symbol("ZACOINTRO_ISTRAT"),symbol("ZACO2INTRO_ISTRAT"),
         symbol("ZACOINTRO_STRAT"),symbol("ZACO2INTRO_STRAT")};
     if(symbol("M_NANMODE")) interpolation_.crosshair=symbol("TEST_ISTRAT");
@@ -324,7 +335,7 @@ DrawPacket SourceModels::grid_pose(const GameSceneSnapshot& scene,const timing::
         // carry the discarded sub-unit camera motion into the eye shader.
         for(const double value:{camera.x,camera.y,camera.z}) {
             const auto remainder=float(value-std::trunc(value));
-            packet.geometry.texels.push_back(std::bit_cast<uint32_t>(-remainder));
+            packet.geometry.texels.push_back(starfox::bit_cast<uint32_t>(-remainder));
         }
         SceneVertex base{};
         render::FaceMaterial material{{14,14,false},nullptr};
@@ -411,13 +422,13 @@ DrawPacket SourceModels::dust_pose(const GameSceneSnapshot& scene,const timing::
             || scene.flow==simulation::GameFlowState::controls_choice;
         if(controls) packet.model=source_layer_matrix(float(scene.source_vanishing_point[0])+16.F,
             float(scene.source_vanishing_point[1])+16.F).value();
-        for(double value:{camera.x,camera.y,camera.z}) packet.geometry.texels.push_back(std::bit_cast<uint32_t>(float(value)));
+        for(double value:{camera.x,camera.y,camera.z}) packet.geometry.texels.push_back(starfox::bit_cast<uint32_t>(float(value)));
         for(auto value:m) packet.geometry.texels.push_back(uint32_t(int32_t(value)));
         for(unsigned index=0;index<64;++index) {
             const auto shade=rom_->read8(star_colours_+index);
             SceneVertex colour{};render::FaceMaterial material{{shade,shade,false},nullptr};
             if(!apply_scene_material(colour,material,palette,112,1,srgb)) throw std::runtime_error("Invalid GPU dust colour");
-            for(float value:colour.color) packet.geometry.texels.push_back(std::bit_cast<uint32_t>(value));
+            for(float value:colour.color) packet.geometry.texels.push_back(starfox::bit_cast<uint32_t>(value));
         }
         if(dust_vertices_ && !dust_vertices_->empty()
             && bool(dust_vertices_->front().texture[3]&16384U)==controls && dust_source_points_.size()==scene.dust_point_count
@@ -486,33 +497,30 @@ SourceModelPackets SourceModels::assemble(const GameSceneSnapshot& scene,bool sr
     const auto shadows=scene.shadows_enabled?interpolate_scene_poses(scene,scene,1.,interpolation_,true):std::vector<render::RenderPose>{};
     return assemble_poses(scene,{},shadows,srgb,units,1.);
 }
-SourceModelPackets SourceModels::assemble_interpolated(const GameSceneSnapshot& previous,const GameSceneSnapshot& scene,double alpha,bool srgb,float units,bool fixed_landscape_height) {
+double SourceModels::source_centre_scale(const GameSceneSnapshot& scene,std::uint32_t strategy,bool fixed_landscape_height) const noexcept {
+    if(!fixed_landscape_height) return 1;
+    if(!scene.meters.extended && scene.flow==simulation::GameFlowState::title) return 2;
+    if(scene.meters.extended && scene.flow==simulation::GameFlowState::intro && strategy
+        && std::find(intro_showcase_strategies_.begin(),intro_showcase_strategies_.end(),strategy)!=intro_showcase_strategies_.end()) return .375;
+    return 1;
+}
+SourceModelPackets SourceModels::assemble_interpolated(const GameSceneSnapshot& previous,const GameSceneSnapshot& scene,double alpha,bool srgb,float units,bool fixed_landscape_height,bool cpu_pilot_rig) {
     if(!std::isfinite(alpha)) throw std::invalid_argument("Invalid scene interpolation fraction");
     if(previous.flow!=scene.flow || timing::camera_transform_is_discontinuous(previous.camera,scene.camera)) alpha=1.;
     auto rules=interpolation_;rules.fixed_landscape_height=fixed_landscape_height;
     auto poses=interpolate_scene_poses(previous,scene,alpha,rules);
-    if(fixed_landscape_height && !scene.meters.extended && scene.flow==simulation::GameFlowState::title) {
-        // Original's ship belongs behind its logo, independently of EX's
-        // deliberately close model showcase. Preserve the viewing direction.
-        for(auto& pose:poses) {pose.x*=2.;pose.y*=2.;pose.z*=2.;}
-    }
-    if(fixed_landscape_height && scene.meters.extended && scene.flow==simulation::GameFlowState::intro) {
-        for(size_t i=0;i<poses.size();++i) {
-            const auto strategy=scene.objects[i].object.strategy_address;
-            if(strategy && std::find(intro_showcase_strategies_.begin(),intro_showcase_strategies_.end(),strategy)
-                !=intro_showcase_strategies_.end()) {
-                // Apply before either GPU generation or fallback assembly.
-                // Scale the centre, not the geometry; preserve its viewing ray
-                // and source lighting depth while enlarging the model.
-                poses[i].x*=.375;poses[i].y*=.375;poses[i].z*=.375;
-            }
-        }
+    for(size_t i=0;i<poses.size();++i) {
+        // Same source policy for model geometry and enhancement emitters.
+        // Scale the centre only, preserving geometry and source lighting depth.
+        const auto scale=source_centre_scale(scene,scene.objects[i].object.strategy_address,fixed_landscape_height);
+        poses[i].x*=scale;poses[i].y*=scale;poses[i].z*=scale;
     }
     const auto shadows=scene.shadows_enabled?interpolate_scene_poses(previous,scene,alpha,rules,true):std::vector<render::RenderPose>{};
-    return assemble_poses(scene,poses,shadows,srgb,units,alpha);
+    return assemble_poses(scene,poses,shadows,srgb,units,alpha,cpu_pilot_rig);
 }
-SourceModelPackets SourceModels::assemble_poses(const GameSceneSnapshot& scene,std::span<const render::RenderPose> poses,std::span<const render::RenderPose> shadows,bool srgb,float units,double alpha) {
+SourceModelPackets SourceModels::assemble_poses(const GameSceneSnapshot& scene,std::span<const render::RenderPose> poses,std::span<const render::RenderPose> shadows,bool srgb,float units,double alpha,bool cpu_pilot_rig) {
     SourceModelPackets result;
+    result.player=uint16_t(scene.player);
     ++cache_epoch_;
     auto words=scene.cgram;
     std::copy(scene.model_palette.begin(),scene.model_palette.end(),words.begin()+112);
@@ -551,17 +559,40 @@ SourceModelPackets SourceModels::assemble_poses(const GameSceneSnapshot& scene,s
         if(scene.colour_table_override && !crosshair) colour=*scene.colour_table_override;
         else if((flags&2U) && !(flags&0x20U)) colour=colours_[(flags&1U)?1:2];
         else if(flags&1U) colour=colours_[0];
+        // The cockpit encloses the detailed cutscene Arwing in place of the
+        // in-flight ship, with the same pose, palette and hit-flash colours.
+        // Only the in-flight ship shapes; the flash's blink uses other shapes.
+        const bool pilot_hull=cpu_pilot_rig && !shadow && pilot_shape_ && (item.handle==scene.player
+            || (interpolation_.flash_player && object.strategy_address==interpolation_.flash_player))
+            && std::find(flight_shapes_.begin(),flight_shapes_.end(),object.shape)!=flight_shapes_.end();
+        const uint32_t shape=pilot_hull?pilot_shape_:object.shape;
+        const bool hipoly=hipoly_arwings_ && hipoly_decoder_ && hipoly_.replaces(shape);
+        const auto& decoder=hipoly?*hipoly_decoder_:decoder_;
         try {
-            const uint64_t base_key=(uint64_t(object.shape)<<32U)|colour;
+            const uint64_t base_key=(uint64_t(render::source_sprite_colour(object))<<56U)
+                |(uint64_t(hipoly)<<48U)|(uint64_t(shape)<<32U)|colour;
             auto base=shapes_.find(base_key);
-            if(base==shapes_.end()) base=shapes_.emplace(base_key,decoder_.decode(object.shape,{},colour)).first;
+            if(base==shapes_.end()) base=shapes_.emplace(base_key,decoder.decode(shape,{},colour,
+                render::source_sprite_colour_count(object))).first;
             const auto header=base->second.header;
             const auto selected=shadow?header.shadow_pointer:assets::ShapeDecoder::select_lod_pointer(header,item.source_pose.source_depth);
             const uint64_t lod_key=base_key|(uint64_t(selected)<<16U);
             auto lod=shapes_.find(lod_key);
-            if(lod==shapes_.end()) lod=shapes_.emplace(lod_key,decoder_.decode_lod(header,selected,colour)).first;
+            if(lod==shapes_.end()) lod=shapes_.emplace(lod_key,decoder.decode_lod(header,selected,colour,
+                render::source_sprite_colour_count(object))).first;
             DrawPacket packet;std::string error;
             auto pose=shadow?shadows[i]:poses.empty()?item.source_pose:poses[i];
+            // playeroutofcock_strat (cockpit -> chase view) flies a 16x zoom
+            // Arwing (MYZOOM_*, shift 4) out from the camera. Like the player's
+            // ship it stays on top of what the cartridge draws before it
+            // (vr::painter_scenery); the Super FX clips it at z = 0 and never
+            // hides it, so neither does this.
+            if(!shadow && std::find(pass_through_shapes_.begin(),pass_through_shapes_.end(),object.shape)!=pass_through_shapes_.end())
+                result.ships.push_back(uint16_t(item.handle));
+            if(!shadow && object.attached) result.attachments.push_back({uint16_t(item.handle),uint16_t(object.attached)});
+            if(!shadow && object.shape && std::find(depth_enclosure_shapes_.begin(),depth_enclosure_shapes_.end(),object.shape)
+                    !=depth_enclosure_shapes_.end())
+                result.depth_enclosures.push_back(uint16_t(item.handle));
             // EX's aiming marks use their dedicated HUD palette entry, not
             // the active model colour table or the scene's warp animation.
             if(crosshair) {
@@ -574,20 +605,26 @@ SourceModelPackets SourceModels::assemble_poses(const GameSceneSnapshot& scene,s
             pose.collapse_to_axis_line=scene.flow==simulation::GameFlowState::intro
                 && intro_laser_shape_ && object.shape==intro_laser_shape_ && pose.z<1024.;
             if(pose.simple_scaled_sprite) {
-                auto adjustment=static_cast<int16_t>(std::bit_cast<int8_t>(object.texture_scroll_x));
+                auto adjustment=static_cast<int16_t>(starfox::bit_cast<int8_t>(object.texture_scroll_x));
                 for(unsigned shift=0;shift<header.shift;++shift) adjustment=simulation::add16(adjustment,adjustment);
                 auto diameter=simulation::add16(header.size,adjustment);
                 diameter=simulation::add16(diameter,diameter);
                 pose.simple_sprite_world_size=diameter?diameter:1;
                 pose.simple_sprite_colour=object.extended[21];
             }
+            // Optional 3D asteroids replace whole-object sprites before any
+            // geometry is built, so every VR path draws them as solids.
+            const assets::Shape* drawn=&lod->second;
+            if(!shadow) if(const auto* model=render::substitute_asteroid_model(lod->second,pose,asteroid_models_)) drawn=model;
+            if(texture_observer_ && !shadow) for(const auto& texture:drawn->textures) texture_observer_(texture,scene.model_palette);
             const uint32_t pass_key=uint32_t(item.handle)|(shadow?source_shadow_pass:0U);
-            if(compute_solids_ && (!shadow || compute_shadows_) && !pose.simple_scaled_sprite
-                && !lod->second.faces.empty()
+            if(compute_solids_ && !(cpu_pilot_rig && !shadow && (item.handle==scene.player
+                || (interpolation_.flash_player && object.strategy_address==interpolation_.flash_player))) && (!shadow || compute_shadows_) && !pose.simple_scaled_sprite
+                && !drawn->faces.empty()
                 && pose.effect_clip_right<=pose.effect_clip_left) {
                 SourceSpanModel prepared;
                 auto continuous_pose=pose;continuous_pose.continuous_geometry=true;
-                render::RenderSettings settings;settings.colour_index_base=112;
+                render::RenderSettings settings;settings.colour_index_base=112;settings.texture_overrides=texture_overrides_;
                 const bool warp_requested=pose.colour_warp && !pose.force_colour;
                 bool ordinary=!warp_requested && !pose.wireframe_mode && !pose.wobble_mode && !pose.wave_mode && !pose.cel_mode;
                 auto base_pose=continuous_pose;base_pose.colour_warp=warp_requested;
@@ -595,12 +632,12 @@ SourceModelPackets SourceModels::assemble_poses(const GameSceneSnapshot& scene,s
                 bool ready;
                 if(pose.collapse_to_axis_line) {
                     axis=std::make_shared<SourceAxisInputs>();
-                    ready=prepare_source_axis_model(lod->second,continuous_pose,settings,224,192,prepared,*axis,error);
-                } else ready=prepare_source_span_model(lod->second,base_pose,settings,224,192,prepared,error,ordinary);
+                    ready=prepare_source_axis_model(*drawn,continuous_pose,settings,224,192,prepared,*axis,error);
+                } else ready=prepare_source_span_model(*drawn,base_pose,settings,224,192,prepared,error,ordinary);
                 std::shared_ptr<SourceWarpInputs> warp;
                 if(ready && warp_requested) {
                     warp=std::make_shared<SourceWarpInputs>();
-                    ready=prepare_source_warp_inputs(lod->second,continuous_pose,settings,prepared.projection,prepared.bsp,*warp,error,
+                    ready=prepare_source_warp_inputs(*drawn,continuous_pose,settings,prepared.projection,prepared.bsp,*warp,error,
                         prepared.fragmented?&prepared.faces:nullptr,prepared.source_vertex_count);
                     if(ready) ready=std::all_of(warp->templates.primitives.begin(),warp->templates.primitives.end(),
                         [](auto primitive){return primitive==render::PackedPrimitive::polygon
@@ -654,9 +691,9 @@ SourceModelPackets SourceModels::assemble_poses(const GameSceneSnapshot& scene,s
                 const auto model=game_model_matrix(pose,units);
                 if(!model) {defer("Invalid native model transform");continue;}
                 packet.model=*model;packet.shading=render::source_shading(pose);
-                key.shape=&lod->second;key.scale=pose.scale;
-                key.animation=pose.animation_frame%std::max(std::size_t(1),lod->second.frames.size());
-                const bool colour_animated=std::any_of(lod->second.colour_materials.begin(),lod->second.colour_materials.end(),
+                key.shape=drawn;key.scale=pose.scale;
+                key.animation=pose.animation_frame%std::max(std::size_t(1),drawn->frames.size());
+                const bool colour_animated=std::any_of(drawn->colour_materials.begin(),drawn->colour_materials.end(),
                     [](const auto& m){return !m.animation_frames.empty();});
                 key.colour_frame=colour_animated?pose.colour_frame:0;
                 key.scroll_x=pose.texture_scroll_x;key.scroll_y=pose.texture_scroll_y;
@@ -671,8 +708,8 @@ SourceModelPackets SourceModels::assemble_poses(const GameSceneSnapshot& scene,s
                     packet.geometry=cached->second.geometry;cached->second.used=cache_epoch_;reused=true;
                 }
             }
-            if(!reused && !build_draw_packet(lod->second,pose,palette,112,1,srgb,units,packet,error)) {
-                defer("shape "+std::to_string(object.shape)+" LOD "+std::to_string(selected)+": "+error);continue;
+            if(!reused && !build_draw_packet(*drawn,pose,palette,112,1,srgb,units,packet,error,texture_overrides_)) {
+                defer("shape "+std::to_string(shape)+" LOD "+std::to_string(selected)+": "+error);continue;
             }
             if(!reused && interpolation_.crosshair && object.strategy_address==interpolation_.crosshair) {
                 // Reticle stations belong to the game's camera plane, not

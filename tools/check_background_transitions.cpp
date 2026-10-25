@@ -3,6 +3,7 @@
 #include "starfox/render/background_renderer.hpp"
 #include "starfox/render/palette.hpp"
 #include "starfox/assets/decrunch.hpp"
+#include "starfox/render/environment_effects.hpp"
 #include <filesystem>
 #include <bit>
 #include <charconv>
@@ -14,8 +15,10 @@
 #include <map>
 
 int main(int argc,char** argv) try {
-    if(argc!=5 && argc!=6) {std::cerr<<"Usage: starfox_background_transition_check ROM SYMBOLS LEVEL TICKS(1..8000) [NEW_CAPTURE_DIRECTORY]\n";return 1;}
-    const std::filesystem::path capture_directory=argc==6?argv[5]:"";
+    if(argc!=5 && argc!=6) {std::cerr<<"Usage: starfox_background_transition_check ROM SYMBOLS LEVEL TICKS(1..8000) [NEW_CAPTURE_DIRECTORY|--audit|--audit-moving]\n";return 1;}
+    const bool moving=argc==6 && std::string_view(argv[5])=="--audit-moving";
+    const bool audit=moving || (argc==6 && std::string_view(argv[5])=="--audit");
+    const std::filesystem::path capture_directory=argc==6 && !audit?argv[5]:"";
     if(!capture_directory.empty() && std::filesystem::exists(capture_directory))
         throw std::runtime_error("Capture directory must be new; refusing to overwrite artifacts");
     unsigned ticks=0;const std::string_view count=argv[4];
@@ -48,9 +51,45 @@ int main(int argc,char** argv) try {
     using Key=std::tuple<unsigned,unsigned,unsigned,unsigned,unsigned,unsigned,bool,bool,bool>;
     std::optional<Key> previous;unsigned changes=0;
     std::optional<std::pair<int,int>> previous_orbital_scroll;
-    std::cout<<"level="<<argv[3]<<" ticks="<<ticks<<" god_mode=1 input=none timing=unlocked_20_fps msu=0\n";
+    struct AuditSpan {
+        unsigned ticks{},first{},last{},fitted{};
+        float min_horizon=1e9f,max_horizon=-1e9f,min_slope=1e9f,max_slope=-1e9f;
+        float max_residual{};
+    };
+    std::map<unsigned,AuditSpan> audit_spans;
+    starfox::input::InputLatch input;
+    std::cout<<"level="<<argv[3]<<" ticks="<<ticks<<" god_mode=1 input="<<(moving?"bank-pitch-laser":"none")
+        <<" timing=unlocked_20_fps msu=0\n";
     for(unsigned tick=0;tick<=ticks;++tick) {
         const auto& ppu=game.map().ppu_state();
+        if(audit) {
+            auto& span=audit_spans[game.map().background()];
+            if(!span.ticks++) span.first=tick;
+            span.last=tick;
+            const auto name=background_names.find(game.map().background());
+            const bool ex=game.peek_meter_state().extended;
+            const auto horizon=name==background_names.end()
+                    || !starfox::render::gameplay_landscape_backdrop(name->second,ex)?std::nullopt:
+                std::optional<unsigned>{starfox::render::gameplay_landscape_horizon(name->second,ex).value_or(
+                    starfox::render::resolved_landscape_origin(name->second,ex)+128)};
+            if(horizon) if(const auto fit=starfox::render::environment_raster_horizon(ppu,float(*horizon),ppu.bg2_scroll_x)) {
+                ++span.fitted;
+                span.min_horizon=std::min(span.min_horizon,(*fit)[0]);
+                span.max_horizon=std::max(span.max_horizon,(*fit)[0]);
+                span.min_slope=std::min(span.min_slope,(*fit)[1]);
+                span.max_slope=std::max(span.max_slope,(*fit)[1]);
+                const float period=float(((ppu.bg2_screen_size&2)?64:32)*(ppu.bg2_tile_size_16?16:8));
+                for(unsigned i=0;i<32;++i) {
+                    const unsigned at=(0x2fa0+i)*2;
+                    const unsigned word=ppu.vram[at]|(unsigned(ppu.vram[at+1])<<8);
+                    if(!(word&0x4000)) continue;
+                    const float x=float(8*(i+1))-128-float(ppu.bg2_scroll_x&7);
+                    const float predicted=float(*horizon)-(*fit)[0]-(*fit)[1]*x;
+                    span.max_residual=std::max(span.max_residual,
+                        std::abs(std::remainder(float(word&(unsigned(period)-1))-predicted,period)));
+                }
+            }
+        }
         if(const auto name=background_names.find(game.map().background());name!=background_names.end()
             && (name->second=="BG_5_1I" || name->second=="BG_5_1E")) {
             if(ppu.bg2_scanline_scroll_enabled)
@@ -229,10 +268,24 @@ int main(int argc,char** argv) try {
             }
             break;
         }
-        const auto result=game.tick({});
+        if(moving) {
+            // Eight two-axis positions, plus pulsed laser fire. This is a
+            // repeatable coverage probe, not a claim of completing a stage.
+            constexpr std::array<std::uint16_t,8> directions{0x100,0x900,0x800,0xa00,0x200,0x600,0x400,0x500};
+            input.sample(std::uint16_t(directions[(tick/120)%8] | (tick%4<2?0x4000:0)));
+        }
+        const auto result=game.tick(input.consume());
         static_cast<void>(audio.render_logic_tick(result.audio_port_writes));
         game.synchronize_apu_output_ports(audio.output_ports());
         static_cast<void>(game.map().take_msu_register_writes());
+    }
+    if(audit) for(const auto& [bg,span]:audit_spans) {
+        const auto name=background_names.find(bg);
+        std::cout<<"audit_span bg="<<bg<<" name="<<(name==background_names.end()?"unknown":name->second)
+            <<" ticks="<<span.ticks<<" first="<<span.first<<" last="<<span.last<<" fitted="<<span.fitted;
+        if(span.fitted) std::cout<<" horizon="<<span.min_horizon<<','<<span.max_horizon
+            <<" slope="<<span.min_slope<<','<<span.max_slope<<" max_native_residual="<<span.max_residual;
+        std::cout<<'\n';
     }
     std::cout<<"changes="<<changes<<"; state transitions only, not visual or completed-route proof\n";
 } catch(const std::exception& error) {std::cerr<<error.what()<<'\n';return 1;}

@@ -1,5 +1,6 @@
 #include "starfox/render/gpu_model.hpp"
 #include "starfox/render/gpu_scene.hpp"
+#include "starfox/render/gpu_scene_counters.hpp"
 #include "starfox/render/packed_faces.hpp"
 #include "starfox/render/face_material.hpp"
 #include "starfox/assets/shape_decoder.hpp"
@@ -96,7 +97,11 @@ int main(int argc,char** argv)try {
         std::cout<<"Pending-work and invalid-dimension rejection preserve caller cancellation; subsequent mixed rendering tests recovery\n";
     }
     const unsigned width=(live_wingman || live_ex61)?400:224,height=(live_wingman || live_ex61)?224:192;
-    SDL_GPUTransferBufferCreateInfo ti{SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD,width*height*((terrain || live_wingman || wobble_bypass || backface || colour_warp || wave || axis || billboard_batch || destruction)?16U:4U)*20+4096,0};
+    // Readback holds scale^2 pixels of colour (4 B) and surfaces (16 B).
+    // STARFOX_TEST_MODEL_SCALE=N (1-10) checks exactly that scale.
+    const unsigned requested_scale=SDL_getenv("STARFOX_TEST_MODEL_SCALE")?unsigned(std::stoul(SDL_getenv("STARFOX_TEST_MODEL_SCALE"))):0U;
+    const unsigned default_squared=(terrain || live_wingman || wobble_bypass || backface || colour_warp || wave || axis || billboard_batch || destruction)?16U:4U;
+    SDL_GPUTransferBufferCreateInfo ti{SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD,width*height*std::max(default_squared,requested_scale*requested_scale)*20+4096,0};
     auto* download=SDL_CreateGPUTransferBuffer(device,&ti);require(download);
     if(mixed_batch) {
         auto* command=SDL_AcquireGPUCommandBuffer(device);require(command);
@@ -120,7 +125,8 @@ int main(int argc,char** argv)try {
         require(SDL_CancelGPUCommandBuffer(command));
         std::cout<<"Empty batch clears; invalid layout rejects; following batches verify recovery\n";
     }
-    std::set<std::uint32_t> seen;unsigned checked=0,skipped=0,images=0;std::uint64_t drawn=0;
+    std::set<std::uint32_t> seen;unsigned checked=0,skipped=0,images=0,msaa_packets=0;std::uint64_t drawn=0;
+    bool captured_msaa=false;
     double maximum_normal_error=0,maximum_depth_error=0;
     auto model_entries=symbols.entries();
     // The live EX 6-1 frame at tick 1000 exposed a single half-pixel tie on
@@ -175,17 +181,19 @@ int main(int argc,char** argv)try {
         }
         for(unsigned isolated_layer=0;isolated_layer<(isolated_layers?3U:1U);++isolated_layer)
         for(unsigned mode=0;mode<(wobble_combinations?10U:warp_alternate?5U:destruction?5U:alternate?4U:1U);++mode)
-        for(unsigned view:{0U,1U,2U,3U,4U,5U,6U}) for(unsigned scale:{1U,2U,4U}) {
+        for(unsigned view:{0U,1U,2U,3U,4U,5U,6U}) for(unsigned scale:{1U,2U,4U,requested_scale}) {
             if(view==6 && !billboard_batch) continue;
             if(const auto* requested=SDL_getenv("STARFOX_TEST_MODEL_VIEW");requested && view!=std::stoul(requested)) continue;
-            if(const auto* requested=SDL_getenv("STARFOX_TEST_MODEL_SCALE");requested && scale!=std::stoul(requested)) continue;
+            // A requested scale (GPU FAST allows up to 10x) replaces the defaults.
+            if(requested_scale && scale!=requested_scale) continue;
+            if(!scale) continue;
             check_context=name+" mode "+std::to_string(mode)+" view "+std::to_string(view)+" scale "+std::to_string(scale);
             if(SDL_getenv("STARFOX_TEST_CONTINUOUS_FIRST") && view<3) continue;
             if(native_axis && (view>=3 || scale!=1))continue;
             if(native_backface && (view>=3 || scale!=1))continue;
             if(live_wingman && view!=0) continue;
             if(live_ex61 && (view!=0 || scale!=1)) continue;
-            if(scale==4 && !terrain && !live_wingman && !wobble_bypass && !backface && !colour_warp && !wave && !axis && !billboard_batch && !destruction) continue;
+            if(scale==4 && !requested_scale && !terrain && !live_wingman && !wobble_bypass && !backface && !colour_warp && !wave && !axis && !billboard_batch && !destruction) continue;
             if(matrix_only && view>=4) continue;
             starfox::render::RenderSettings settings;settings.render_scale=scale;
             settings.backface_culling=backface;
@@ -320,17 +328,27 @@ int main(int argc,char** argv)try {
                     front=legacy.enqueue_commands(device,command,batch,metadata,((view+layer/2)&1U)!=0);
                     if(!front.pixels) {SDL_CancelGPUCommandBuffer(command);throw std::runtime_error(legacy.status());}
                 } else if(mixed_batch) {
+                    // GPU FAST: batch draws opt into the bounded in-place raster.
+                    const bool bounded=std::getenv("STARFOX_TEST_BOUNDED_MODEL_RASTER")!=nullptr;
                     if(recorded_batch) {
-                        recording.append_model(pending,{&shape,layer_pose,settings,metadata});
+                        starfox::render::GpuModelDraw recorded{&shape,layer_pose,settings,metadata};
+                        recorded.bounded_raster=bounded;
+                        recording.append_model(pending,recorded);
                         continue;
                     }
                     starfox::render::GpuModelDraw model_draw{&shape,layer_pose,settings,metadata};
-                    model_draw.geometry_depth=terrain;
+                    model_draw.geometry_depth=terrain;model_draw.bounded_raster=bounded;
                     draws.emplace_back(model_draw);
                     continue;
                 } else {
                     const auto started=std::chrono::steady_clock::now();
-                    front=gpu.enqueue(device,command,shape,layer_pose,settings,width,height,metadata,nullptr,trace_geometry?&diagnostics:nullptr);
+                    starfox::render::GpuMsaaFaces msaa_faces;
+                    const bool pack_msaa=SDL_getenv("STARFOX_TEST_MSAA_PACK")!=nullptr;
+                    front=gpu.enqueue(device,command,shape,layer_pose,settings,width,height,metadata,nullptr,trace_geometry?&diagnostics:nullptr,
+                        false,nullptr,nullptr,{}, {},pack_msaa?&msaa_faces:nullptr);
+                    if(pack_msaa && msaa_faces.triangles && (!msaa_faces.kinds || !msaa_faces.triangle_count))
+                        throw std::runtime_error(name+": incomplete MSAA face packet");
+                    if(msaa_faces.triangles) ++msaa_packets;
                     submission_us.push_back(std::chrono::duration<double,std::micro>(
                         std::chrono::steady_clock::now()-started).count());
                 }
@@ -437,6 +455,49 @@ int main(int argc,char** argv)try {
                     std::cout<<"GPU clipped "<<i<<": "<<clipped[4+i*4]<<","<<clipped[5+i*4]<<" UV "<<clipped[6+i*4]<<","<<clipped[7+i*4]<<'\n';
             }
             for(std::size_t i=0;i<source.size();++i){mismatch+=(pixels[i]&255U)!=source[i];drawn+=source[i]!=0;}
+            if(const auto* capture=SDL_getenv("STARFOX_TEST_MSAA_CAPTURE");capture && !captured_msaa &&
+                std::any_of(source.begin(),source.end(),[](auto p){return p!=0;})) {
+                // Exercise the final resident resolve, not just packet creation.
+                starfox::render::GpuScene aa_scene;
+                std::array<starfox::render::Rgba8,256> palette{};
+                for(unsigned p=0;p<256;++p) palette[p]={std::uint8_t(p),std::uint8_t(p*3),std::uint8_t(255-p),255};
+                palette[0]={0,0,0,255};
+                const std::array<starfox::render::GpuSceneDraw,1> aa_draws{starfox::render::GpuModelDraw{&shape,pose,settings,false}};
+                const unsigned aa_samples=SDL_getenv("STARFOX_TEST_MSAA_SAMPLES")?unsigned(std::stoul(SDL_getenv("STARFOX_TEST_MSAA_SAMPLES"))):8U;
+                require(starfox::render::msaa_sample_count(aa_samples));
+                const starfox::render::GpuScene::MsaaSettings aa_settings{nullptr,aa_samples,palette};
+                const auto aa_started=std::chrono::steady_clock::now();
+                require(aa_scene.render_resident(device,width*scale,height*scale,aa_draws,{},&aa_settings));
+                auto* color=static_cast<SDL_GPUTexture*>(aa_scene.resident_output().msaa_color);require(color);
+                SDL_GPUTransferBufferCreateInfo info{SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD,width*height*scale*scale*4,0};
+                auto* readback=SDL_CreateGPUTransferBuffer(device,&info);require(readback);
+                auto* cb=SDL_AcquireGPUCommandBuffer(device);require(cb);auto* pass=SDL_BeginGPUCopyPass(cb);require(pass);
+                SDL_GPUTextureRegion from{color,0,0,0,0,0,width*scale,height*scale,1};
+                SDL_GPUTextureTransferInfo to{readback,0,0,0};SDL_DownloadFromGPUTexture(pass,&from,&to);SDL_EndGPUCopyPass(pass);
+                auto* done=SDL_SubmitGPUCommandBufferAndAcquireFence(cb);require(done);require(SDL_WaitForGPUFences(device,true,&done,1));SDL_ReleaseGPUFence(device,done);
+                const auto aa_elapsed=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-aa_started).count();
+                auto* rgba=static_cast<std::uint8_t*>(SDL_MapGPUTransferBuffer(device,readback,false));require(rgba);
+                unsigned edges=0,visible=0;
+                for(unsigned p=0;p<width*height*scale*scale;++p) {visible+=rgba[p*4+3]!=0;edges+=rgba[p*4+3]!=0 && rgba[p*4+3]!=255;}
+                auto* surface=SDL_CreateSurfaceFrom(width*scale,height*scale,SDL_PIXELFORMAT_RGBA32,rgba,width*scale*4);require(surface);
+                require(SDL_SaveBMP(surface,capture));SDL_DestroySurface(surface);
+                SDL_UnmapGPUTransferBuffer(device,readback);SDL_ReleaseGPUTransferBuffer(device,readback);
+                require(visible!=0);require(edges!=0);
+                std::cout<<"Resolved MSAA capture: "<<capture<<" ("<<visible<<" visible pixels, "<<edges<<" partial-coverage pixels)\n";
+                std::cout<<"MSAA "<<aa_samples<<" samples: cold scene+readback "<<aa_elapsed<<" ms (includes allocation/pipeline creation; not steady-state FPS)\n";
+                if(SDL_getenv("STARFOX_TEST_MSAA_PROFILE")) {
+                    std::vector<double> timings;
+                    for(unsigned iteration=0;iteration<35;++iteration) {
+                        const auto start=std::chrono::steady_clock::now();
+                        require(aa_scene.render_resident(device,width*scale,height*scale,aa_draws,{},&aa_settings));
+                        require(aa_scene.wait_for_completion());
+                        if(iteration>=5) timings.push_back(std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count());
+                    }
+                    std::sort(timings.begin(),timings.end());
+                    std::cout<<"MSAA warm scene+wait: median "<<timings[timings.size()/2]<<" ms, p95 "<<timings[(timings.size()-1)*95/100]<<" ms; 30 samples, excludes readback (single-model fixture, not game FPS)\n";
+                }
+                captured_msaa=true;
+            }
             const auto* surfaces=reinterpret_cast<const float*>(pixels+source.size());
             const auto expected_surfaces=cpu_surfaces.samples();
             if(submitted_batch) {
@@ -448,7 +509,7 @@ int main(int argc,char** argv)try {
                 for(std::size_t i=0;i<source.size();++i) {
                     const auto& sample=metadata.samples()[i];
                     require(downloaded.pixels()[i]==std::uint8_t(pixels[i]));
-                    require(downloaded.layer_tags()[i]==std::uint8_t(pixels[i]>>8));
+                    require(downloaded.layer_tags()[i]==starfox::render::gpu_pixel_layer(pixels[i]));
                     require(bool(downloaded.write_coverage()[i])==bool(pixels[i]&(1U<<26)));
                     require(sample.valid==bool(pixels[i]&(1U<<24)));
                     if(sample.valid) {
@@ -479,7 +540,7 @@ int main(int argc,char** argv)try {
             for(std::size_t i=0;i<source.size();++i) {
                 const auto& expected=expected_surfaces[i];
                 if(bool(pixels[i]&(1U<<26))!=bool(cpu.write_coverage()[i])) throw std::runtime_error(name+" layer "+std::to_string(isolated_layer)+" mode "+std::to_string(mode)+" view "+std::to_string(view)+" scale "+std::to_string(scale)+": write coverage mismatch at "+std::to_string(i));
-                if(((pixels[i]>>8)&255U)!=cpu.layer_tags()[i]) throw std::runtime_error(name+": pixel layer mismatch");
+                if(starfox::render::gpu_pixel_layer(pixels[i])!=cpu.layer_tags()[i]) throw std::runtime_error(name+": pixel layer mismatch");
                 if(!axis && !scene_mode && packed.polygon_only && bool(pixels[i]&(1U<<26))!=expected.valid) throw std::runtime_error(name+": pixel coverage mismatch");
                 if(bool(pixels[i]&(1U<<24))!=expected.valid) throw std::runtime_error(name+" view "+std::to_string(view)+" scale "+std::to_string(scale)+": surface coverage mismatch at "+std::to_string(i)+" GPU "+std::to_string(pixels[i])+" CPU valid "+std::to_string(expected.valid));
                 if(!expected.valid) continue;
@@ -510,9 +571,12 @@ int main(int argc,char** argv)try {
     }
     if(!checked) throw std::runtime_error("GPU model fixture selected no models");
     if(!drawn) throw std::runtime_error("GPU model comparisons produced no nonzero pixels; select a visible fixture ("+std::to_string(images)+" images checked)");
+    if(SDL_getenv("STARFOX_TEST_MSAA_PACK") && !msaa_packets) throw std::runtime_error("MSAA packet test produced no packets");
+    if(SDL_getenv("STARFOX_TEST_MSAA_CAPTURE") && !captured_msaa) throw std::runtime_error("No visible MSAA capture fixture");
     gpu.release_device();scene.release_device();legacy.release_device();SDL_ReleaseGPUTransferBuffer(device,download);SDL_DestroyGPUDevice(device);SDL_Quit();
     std::cout<<checked<<(terrain?" generated terrain patches, ":" real models, ")<<images<<" GPU images match SoftwareRenderer; "<<drawn<<" nonzero pixels; "<<skipped<<" filtered/unsupported/empty models deferred\n";
     std::cout<<"Surface coverage/palettes exact; maximum normal error "<<maximum_normal_error<<", depth error "<<maximum_depth_error<<'\n';
+    if(msaa_packets) std::cout<<msaa_packets<<" MSAA model packets emitted\n";
     if(!submission_us.empty()) {
         std::sort(submission_us.begin(),submission_us.end());
         std::cout<<"Direct model CPU enqueue wall time: "<<submission_us.size()<<" samples, median "
@@ -523,5 +587,12 @@ int main(int argc,char** argv)try {
     if(scene_mode) std::cout<<(mixed_scene?"Five-layer mixed":"Three-layer model")<<" resident composition: black writes, independent surfaces and ping-pong reuse passed\n";
     if(recorded_batch) std::cout<<"Recorded CPU fallback: pixels, layer tags, write coverage and surface samples match direct rendering exactly\n";
     if(queued_batch) std::cout<<"Four changing submissions without readback before each compared frame preserve final geometry and metadata\n";
+    if(std::getenv("STARFOX_TEST_BOUNDED_MODEL_RASTER") && starfox::render::scene_counters::enabled()) {
+        // With STARFOX_TRACE_SCENE_COST, prove batches really took the bounded path.
+        const auto bounded=starfox::render::scene_counters::frame_totals()[
+            std::size_t(starfox::render::scene_counters::Counter::bounded_dispatches)].load();
+        std::cout<<"bounded-dispatches="<<bounded<<'\n';
+        require(bounded!=0);
+    }
     return 0;
 }catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}

@@ -1,4 +1,8 @@
 #pragma once
+#if !defined(__3DS__) && !defined(STARFOX_SCENE_SOURCE_ONLY) && __has_include("starfox/vr/presentation.hpp")
+#include "starfox/vr/presentation.hpp"
+#define STARFOX_SCENE_TRACKED_HELPERS
+#endif
 #include "starfox/render/object_snapshot.hpp"
 #include "starfox/render/software_renderer.hpp"
 #include "starfox/render/grid_line_history.hpp"
@@ -15,10 +19,48 @@ struct GameSceneObject {
     render::RenderPose source_pose;
 };
 
+struct SourceCorridorBounds {
+    // Cartridge world axes (Y down). Authored tunnel constants, not the
+    // narrower player collision limits used by entrance/exit strategies.
+    std::int16_t left{},right{},top{},bottom{};
+    // Left/right/ceiling/floor bits. The colony's left movement limit is NOT
+    // a wall: its source cross-section is open on that side.
+    std::uint8_t walls{15};
+    bool operator==(const SourceCorridorBounds&) const=default;
+};
+
+struct SourceCorridor {
+    std::uint16_t background{};
+    SourceCorridorBounds bounds;
+};
+inline constexpr std::size_t source_corridor_count=11;
+
+// Space Armada's boss room (BG_1_3D/DA while the player is in it). The cartridge
+// paints the room as a fixed BG2 picture; its real wall is the ring the
+// BOSS_8_4 wall panels rotate on (GASTRATS nucleuswallrot): x = r sin a,
+// z = 2r cos a + PLAYER_POSZ + (160 << BOSS8_SCALE), r = BOSS8_CIRC. Cartridge
+// world axes (Y down). The reactor (BOSS_8_1 cover, GB3STRAT boss8) stands
+// on the floor at NUCLEUSHEIGHT and reaches the ceiling: top..bottom.
+struct SourceNucleusRoom {
+    std::int16_t centre_z{}; // World Z of the ring's centre this tick.
+    std::int16_t radius{};   // Ring X radius; its Z radius is twice this.
+    std::int16_t top{},bottom{};
+    std::uint16_t panel_shape{};   // BOSS_8_4 wall panels.
+    std::uint16_t reactor_shape{}; // BOSS_8_1C: the spinning reactor cover.
+    bool operator==(const SourceNucleusRoom&) const=default;
+};
+// Resolve only source-linked background/flight-mode pairs. In particular,
+// unused KTUNNEL constants do not describe EX's Gekkou tunnel artwork.
+[[nodiscard]] std::array<std::optional<SourceCorridor>,source_corridor_count>
+    source_corridors(const assets::SymbolMap&);
+
 // Owned source-tick data, not references into the mutable object pool. Retain
 // one shared snapshot for both eyes and for asynchronous GPU fence retries.
 struct GameSceneSnapshot {
     uint64_t revision{};
+    // revision identifies completed ticks; scene_epoch identifies scene/state
+    // discontinuities. Temporal rendering must not reset on every source tick.
+    uint64_t scene_epoch{};
     timing::TransformSnapshot camera;
     simulation::MatrixQ15 view_matrix{};
     int16_t view_float_y{};
@@ -27,6 +69,10 @@ struct GameSceneSnapshot {
     bool shadows_enabled{};
     simulation::GameFlowState flow{};
     simulation::ObjectHandle player{};
+    // A live player reference is captured independently of draw visibility.
+    std::optional<render::ObjectPresentationSnapshot> pilot_reference;
+    bool pilot_tracking{};
+    uint8_t control_type{}; // Native C_TYPE; bit 1 inverts the vertical pad axis.
     render::ObjectSnapshotMap transforms;
     std::vector<GameSceneObject> objects; // Native draw-list order, never sorted.
     std::array<simulation::ParticleState,simulation::kMaximumParticles> particles{};
@@ -43,6 +89,8 @@ struct GameSceneSnapshot {
     simulation::DialogueState dialogue;
     bool paused{};
     simulation::CircleEffectState circle;
+    // TRANS.ASM fixed-colour math (damage flash, scripted full-screen flashes).
+    simulation::ColourMathEffectState colour_math;
     simulation::WindowWipeState wipe;
     bool native_ex_bitmap{};
     bool ex_title_logo_screen{};
@@ -58,6 +106,8 @@ struct GameSceneSnapshot {
     bool background_landscape_unique_right_half{};
     uint16_t landscape_atlas_origin{232};
     bool background_water_surround{};
+    std::optional<SourceCorridorBounds> background_corridor;
+    std::optional<SourceNucleusRoom> background_nucleus;
     bool background_space_horizon{};
     bool background_unique_space{};
     std::array<unsigned,4> background_planet_rect{};
@@ -76,7 +126,40 @@ struct GameSceneSnapshot {
     std::array<uint16_t,16> model_palette{};
     uint8_t game_frame{},model_scale{};
     std::optional<uint16_t> colour_table_override;
+    // MHUD.MC first-person indicators: HUDROT (bit 15 enables, low byte is
+    // the roll angle), M_HUDCOLOUR and M_HUDFLAGS (bits 0/1: damaged wings).
+    uint16_t cockpit_hud_roll{};
+    uint8_t cockpit_hud_colour{},cockpit_hud_flags{};
 };
+
+#if defined(STARFOX_SCENE_TRACKED_HELPERS)
+inline bool pilot_view_active(const GameSceneSnapshot& scene,const PresentationPreferences& preferences) noexcept {
+    return preferences.cockpit && scene.pilot_tracking && scene.pilot_reference
+        && (scene.flow==simulation::GameFlowState::gameplay || scene.flow==simulation::GameFlowState::training);
+}
+inline bool world_panel_scene(const GameSceneSnapshot& scene) noexcept {
+    // Complete authored interface scenes share one raster/quad, including their
+    // menu-preview models. Gameplay world geometry remains stereoscopic.
+    return scene.paused || scene.briefing.active
+        || scene.flow==simulation::GameFlowState::title
+        || scene.flow==simulation::GameFlowState::controls_type
+        || scene.flow==simulation::GameFlowState::controls_choice
+        || scene.flow==simulation::GameFlowState::planet_select
+        || scene.flow==simulation::GameFlowState::planet_travel
+        || scene.flow==simulation::GameFlowState::ex_pregame_menu;
+}
+inline EyeCamera source_panel_camera(const GameSceneSnapshot& scene) noexcept {
+    // Source focal length 256; 256x224 PPU canvas contains the 224x192 FX
+    // viewport at (16,16). Preserve dynamic authored vanishing points.
+    auto result=EyeCamera{identity_matrix,{}};
+    result.projection={2,0,0,0,0,-512.F/224,0,0,
+        1.F-2.F*(scene.source_vanishing_point[0]+16)/256.F,
+        1.F-2.F*(scene.source_vanishing_point[1]+16)/224.F,-1,-1,
+        0,0,-.05F,0};
+    return result;
+}
+#undef STARFOX_SCENE_TRACKED_HELPERS
+#endif
 
 inline bool replace_native_dialogue(const GameSceneSnapshot& scene) {
     return scene.dialogue.active && !scene.paused
@@ -93,24 +176,47 @@ inline bool same_landscape_mapping(const GameSceneSnapshot& previous,const GameS
         && previous.background_landscape_unique_right_half==current.background_landscape_unique_right_half;
 }
 
+// Console stereo keeps the authored camera; a tracked-headset renderer can
+// retain its existing presentation-only follow adjustment. Neither changes VM.
+enum class SceneCameraPolicy {headset_tracking,source};
 class GameSceneHistory {
 public:
     GameSceneHistory(const simulation::GameSimulation&,const assets::RomImage&,
-                     const assets::SymbolMap&);
+                     const assets::SymbolMap&,SceneCameraPolicy=SceneCameraPolicy::headset_tracking);
     // Capture once after a completed logic tick, including every catch-up
     // tick. Publication is transactional; retained older snapshots stay valid.
     void capture();
+    // Identify from the live source BG/mode, not a possibly older logic-tick
+    // snapshot. Native 60 Hz rasters use this same presentation-only policy.
+    [[nodiscard]] bool is_final_vortex_sky(uint16_t background,unsigned mode) const noexcept;
     // Pause/camera-clock rebases must not replay the previous pose on resume.
-    void reset_interpolation() noexcept {previous_=current_;}
+    void reset_interpolation() noexcept {older_=previous_=current_;}
+    [[nodiscard]] render::GridLineHistory::State grid_history_state() const noexcept {return grid_line_history_.state();}
+    // State loading rebuilds source assets, never deserializes pointers or old
+    // interpolated poses. Retain the source ink's carried endpoint and revision
+    // so the first post-load capture advances it exactly once.
+    void restore_grid_history(const render::GridLineHistory::State& state,std::uint64_t revision,
+        std::array<std::int16_t,2> start) {
+        if(!current_ || revision==UINT64_MAX || (state.initialized && state.number>revision))
+            throw std::invalid_argument("Invalid source scene history checkpoint");
+        auto grid=grid_line_history_;grid.restore(state);
+        auto next=std::make_shared<GameSceneSnapshot>(*current_);
+        next->revision=revision;next->grid_line_start=start;
+        grid_line_history_=grid;current_=std::move(next);reset_interpolation();
+    }
     [[nodiscard]] const simulation::GameSimulation& game() const {return game_;}
     [[nodiscard]] std::shared_ptr<const GameSceneSnapshot> current() const {return current_;}
     [[nodiscard]] std::shared_ptr<const GameSceneSnapshot> previous() const {return previous_;}
+    [[nodiscard]] std::shared_ptr<const GameSceneSnapshot> older() const {return older_;}
 private:
     const simulation::GameSimulation& game_;
     const assets::RomImage& rom_;
     simulation::TrigTables trig_;
-    std::array<uint32_t,12> addresses_{};
+    SceneCameraPolicy camera_policy_;
+    std::array<uint32_t,13> addresses_{};
     std::array<uint32_t,2> tracking_strategies_{};
+    std::array<uint32_t,4> cockpit_strategies_{};
+    uint16_t cockpit_shape_{};
     std::array<uint32_t,11> model_addresses_{};
     uint32_t depth_tables_{};
     uint16_t ex_title_intro_background_{};
@@ -131,8 +237,20 @@ private:
     std::array<uint16_t,25> landscape_backgrounds_{};
     uint16_t water_background_{};
     uint16_t colony_background_{};
+    std::array<uint16_t,source_corridor_count> corridor_backgrounds_{};
+    std::array<std::optional<SourceCorridorBounds>,source_corridor_count> corridor_bounds_{};
+    std::array<uint16_t,2> nucleus_backgrounds_{}; // BG_1_3D, BG_1_3DA
+    std::array<uint32_t,3> nucleus_player_strategies_{}; // Entry, outside the room: PLAYERWASHENT_STRAT/_ISTRAT, PLAYERTOCSLOW_ISTRAT
+    // Space Armada: the player inside the carrier (tunnels, the pipe tunnel
+    // to the boss, the boss room) and the open-space cruisers that circle
+    // with it (GA2STRAT cruiser1), hidden while it is inside.
+    std::array<uint32_t,7> inside_ship_strategies_{};
+    std::array<uint32_t,4> outside_cruiser_strategies_{};
+    std::optional<SourceNucleusRoom> nucleus_room_; // centre_z holds the ring's offset ahead of PLAYER_POSZ
+    uint32_t player_posz_address_{};
     std::array<uint32_t,3> dust_addresses_{};
-    std::shared_ptr<const GameSceneSnapshot> previous_,current_;
+    std::array<uint32_t,3> cockpit_hud_addresses_{}; // HUDROT, M_HUDCOLOUR, M_HUDFLAGS (optional)
+    std::shared_ptr<const GameSceneSnapshot> older_,previous_,current_;
     render::GridLineHistory grid_line_history_;
 };
 }

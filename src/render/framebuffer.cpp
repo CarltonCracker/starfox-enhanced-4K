@@ -4,6 +4,7 @@
 #include <array>
 #include <fstream>
 #include <stdexcept>
+#include <type_traits>
 
 namespace starfox::render {
 namespace {
@@ -25,20 +26,42 @@ void write_u32(std::ofstream& output, std::uint32_t value) {
     write_u16(output, static_cast<std::uint16_t>((value >> 16U) & 0xffffU));
 }
 
+// Select rather than branch on each transparent pixel. Keeping metadata
+// choices outside the loop lets both ARM64 and desktop compilers vectorize
+// the same portable code. Source and destination must not alias; material
+// pairs and in-place copies retain the general compositor below.
+template<bool Tags, bool SourceTags, bool Coverage>
+void composite_indexed_row(const std::uint8_t* source, std::uint8_t* destination,
+    const std::uint8_t* source_tags, std::uint8_t* destination_tags,
+    std::uint8_t* coverage, std::size_t count) noexcept {
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto mask = std::uint8_t(0U - unsigned(source[i] != 0));
+        destination[i] = (destination[i] & ~mask) | (source[i] & mask);
+        if constexpr (Tags) {
+            const auto tag = SourceTags ? source_tags[i] : std::uint8_t(PixelLayer::three_d);
+            destination_tags[i] = (destination_tags[i] & ~mask) | (tag & mask);
+        }
+        if constexpr (Coverage) coverage[i] = (coverage[i] & ~mask) | (1U & mask);
+    }
+}
+
 } // namespace
 
 void composite_transparent_layer(const Framebuffer& source,
-    Framebuffer& destination, const LayerCompositeSettings& settings) noexcept {
+    Framebuffer& destination, const LayerCompositeSettings& settings) {
+    const auto pairs=source.dither_pairs();
+    const bool carry_pairs=!pairs.empty() && source.draw_scale()>1 && destination.draw_scale()>1;
+    if(carry_pairs && !destination.command_buffer()) destination.enable_dither_pairs(true);
     const auto mosaic_enabled = settings.mosaic_layer_mask != 0U
         && (settings.mosaic & settings.mosaic_layer_mask) != 0U;
     const auto mosaic_size = static_cast<std::int32_t>(
         (settings.mosaic >> 4U) + 1U);
     if(auto* commands=destination.command_buffer()) {
         RasterCommand c;const int scale=destination.draw_scale();
-        c.left=std::max({0,settings.offset_x,settings.clip_left})*scale;
-        c.top=std::max({0,settings.offset_y,settings.clip_top})*scale;
-        c.right=std::min({int(destination.width()),settings.offset_x+int(source.width()),settings.clip_right})*scale;
-        c.bottom=std::min({int(destination.height()),settings.offset_y+int(source.height()),settings.clip_bottom})*scale;
+        c.left=std::max<std::int32_t>({0,settings.offset_x,settings.clip_left})*scale;
+        c.top=std::max<std::int32_t>({0,settings.offset_y,settings.clip_top})*scale;
+        c.right=std::min<std::int32_t>({int(destination.width()),settings.offset_x+int(source.width()),settings.clip_right})*scale;
+        c.bottom=std::min<std::int32_t>({int(destination.height()),settings.offset_y+int(source.height()),settings.clip_bottom})*scale;
         if(c.left>=c.right || c.top>=c.bottom) return;
         c.textured=5;c.texture_offset=commands->snapshot(source.pixels());
         c.u_mask=source.stored_width();c.v_mask=source.stored_height();
@@ -47,6 +70,11 @@ void composite_transparent_layer(const Framebuffer& source,
         c.reserved0=mosaic_enabled?mosaic_size:1;c.tag=std::uint32_t(PixelLayer::three_d);
         c.dither=source.layer_tags_enabled();
         if(c.dither) c.reserved1=commands->snapshot(source.layer_tags());
+        if(carry_pairs) {
+            std::vector<std::uint8_t> bytes;bytes.reserve(pairs.size()*2);
+            for(auto pair:pairs) {bytes.push_back(std::uint8_t(pair));bytes.push_back(std::uint8_t(pair>>8));}
+            c.colour_base=commands->snapshot(bytes)+1;
+        }
         commands->add(c);return;
     }
     if (!mosaic_enabled
@@ -57,8 +85,8 @@ void composite_transparent_layer(const Framebuffer& source,
         // for every source pixel. This is particularly important for Render
         // Upscale: the old generic path repeated that machinery nine times
         // per logical pixel at 3x even though no resampling was required.
-        auto source_left = std::max(0, -settings.offset_x);
-        auto source_top = std::max(0, -settings.offset_y);
+        auto source_left = std::max<std::int32_t>(0, -settings.offset_x);
+        auto source_top = std::max<std::int32_t>(0, -settings.offset_y);
         auto source_right = std::min(
             static_cast<std::int32_t>(source.width()),
             static_cast<std::int32_t>(destination.width())
@@ -112,6 +140,35 @@ void composite_transparent_layer(const Framebuffer& source,
             && source_tags.size() == source_pixels.size();
         constexpr auto geometry_tag =
             static_cast<std::uint8_t>(PixelLayer::three_d);
+        if (!carry_pairs && destination.dither_pairs().empty() && &source != &destination) {
+            // Issue #13: adapt the row-wise composite idea from mtoensing's
+            // PortMaster patches, without assuming ARM NEON or bypassing the
+            // newer dither-material provenance contract.
+            const auto count = stored_source_right - stored_source_left;
+            const auto rows = [&](auto tags, auto tagged_source, auto coverage) {
+                for (auto y = stored_source_top; y < stored_source_bottom; ++y) {
+                    const auto si = y * source.stored_width() + stored_source_left;
+                    const auto di = std::size_t(std::int64_t(y) + stored_offset_y)
+                        * destination.stored_width()
+                        + std::size_t(std::int64_t(stored_source_left) + stored_offset_x);
+                    composite_indexed_row<decltype(tags)::value, decltype(tagged_source)::value,
+                        decltype(coverage)::value>(source_pixels.data() + si,
+                            destination_pixels.data() + di,
+                            source_tagged ? source_tags.data() + si : nullptr,
+                            transfer_tags ? destination_tags.data() + di : nullptr,
+                            destination.tracks_write_coverage()
+                                ? destination.write_coverage_data() + di : nullptr, count);
+                }
+            };
+            const auto with_coverage = [&](auto tags, auto tagged_source) {
+                if (destination.tracks_write_coverage()) rows(tags, tagged_source, std::true_type{});
+                else rows(tags, tagged_source, std::false_type{});
+            };
+            if (!transfer_tags) with_coverage(std::false_type{}, std::false_type{});
+            else if (source_tagged) with_coverage(std::true_type{}, std::true_type{});
+            else with_coverage(std::true_type{}, std::false_type{});
+            return;
+        }
         for (auto y = stored_source_top; y < stored_source_bottom; ++y) {
             auto source_index = y * source.stored_width()
                 + stored_source_left;
@@ -123,9 +180,10 @@ void composite_transparent_layer(const Framebuffer& source,
                         + stored_offset_x);
             for (auto x = stored_source_left; x < stored_source_right; ++x) {
                 const auto colour = source_pixels[source_index];
-                if (colour != 0U) {
+                if (colour != 0U || (carry_pairs && (pairs[source_index]&256))) {
                     destination_pixels[destination_index] = colour;
                     destination.mark_written(destination_index);
+                    if(carry_pairs && (pairs[source_index]&256)) destination.set_dither_alternate(destination_index,std::uint8_t(pairs[source_index]));
                     if (transfer_tags) {
                         destination_tags[destination_index] = source_tagged
                             ? source_tags[source_index] : geometry_tag;
@@ -196,7 +254,8 @@ void composite_transparent_layer(const Framebuffer& source,
                     const auto source_stored_y = source_origin_y + source_row;
                     const auto colour = source.get_stored(
                         source_stored_x, source_stored_y);
-                    if (colour == 0U) continue;
+                    const auto pair=carry_pairs?pairs[std::size_t(source_stored_y)*source.stored_width()+source_stored_x]:0;
+                    if (colour == 0U && !(pair&256)) continue;
                     // Carry the source layer across the composite. Super FX
                     // layers hold both projected geometry and cartridge HUD
                     // art, so the tag has to follow the pixel rather than the
@@ -206,6 +265,7 @@ void composite_transparent_layer(const Framebuffer& source,
                         : PixelLayer::three_d;
                     destination.set_stored(destination_origin_x + column,
                         destination_origin_y + row, colour, layer);
+                    if(pair&256) destination.set_dither_alternate(std::size_t(destination_origin_y+row)*destination.stored_width()+destination_origin_x+column,std::uint8_t(pair));
                 }
             }
         }

@@ -17,8 +17,8 @@ presentation, widescreen support, and optional visual enhancements using Codex A
 Codex and AI tools used for programming, testing, documentation and some visual
 assets.
 
-**[Download 0.0.8](https://github.com/kandowontu2/starfox-enhanced/releases/tag/v0.0.8)** ·
-[Changelog](https://github.com/kandowontu2/starfox-enhanced/blob/main/docs/RELEASE-0.0.8.md) ·
+**[Download 0.0.8.8.1](https://github.com/kandowontu2/starfox-enhanced/releases/tag/v0.0.8.8.1)** ·
+[Changelog](https://github.com/kandowontu2/starfox-enhanced/blob/main/docs/RELEASE-0.0.8.8.1.md) ·
 [Settings and controls](https://github.com/kandowontu2/starfox-enhanced/blob/main/docs/SETTINGS-AND-CONTROLS.md) ·
 [Build guide](https://github.com/kandowontu2/starfox-enhanced/blob/main/docs/BUILDING.md) ·
 [Report a bug](https://github.com/kandowontu2/starfox-enhanced/issues)
@@ -64,19 +64,27 @@ competition cartridges, Star Fox 2 and unknown revisions are not supported.
 | Linux x64 | Native SDL3 runtime. |
 | macOS universal | Unsigned application for Intel and Apple Silicon. |
 | iOS arm64 | Unsigned device bundle; [signing/sideloading instructions](https://github.com/kandowontu2/starfox-enhanced/blob/main/platform/apple/IOS_INSTALL.md). |
-| Android arm64 | Development APK is a CI artifact while release signing is unavailable; see the upgrade notice below. |
+| Android arm64 | Signed APK; release updates retain the original signing certificate. |
 | Nintendo Switch | Homebrew NRO; [setup and optional forwarder](https://github.com/kandowontu2/starfox-enhanced/blob/main/platform/switch/README.md). |
 | PS Vita | Homebrew VPK; [setup](https://github.com/kandowontu2/starfox-enhanced/blob/main/platform/vita/README.md). |
+| PS5 | Homebrew native title (fake-signed folder); [setup](https://github.com/kandowontu2/starfox-enhanced/blob/main/platform/ps5/README.md). |
 | Xbox UWP x64 | Developer Mode required; [setup](https://github.com/kandowontu2/starfox-enhanced/blob/main/platform/uwp/README.md). |
 | Windows PCVR / Quest 3 | Experimental OpenXR packages; [VR setup](https://github.com/kandowontu2/starfox-enhanced/blob/main/docs/VR-BUILD.md). |
+| Steam Frame (native, ARM64) | Experimental native OpenXR build that runs on the headset itself; [setup and notes](https://github.com/kandowontu2/starfox-enhanced/blob/main/docs/STEAM-FRAME.md). |
 
 Build success does not guarantee identical behavior on every device.
 See the [release notes](https://github.com/kandowontu2/starfox-enhanced/blob/main/docs/RELEASE-0.0.8.md) for verification limits.
 
-**Android/Quest upgrades:** the original release-signing keystore is unavailable.
-Validation APKs therefore use temporary signing keys, are not included in
-release downloads, and cannot update an existing installation. Back up saves
-and settings before uninstalling an older build.
+An [experimental Nintendo 3DS port](platform/3ds/README.md) has a native
+tester package with the real pre-game menu and lower-screen cockpit HUD.
+New 3DS/XL are the slider-stereo target; New 2DS XL uses mono. Original
+3DS/XL/2DS are unsupported because their performance is insufficient.
+[Installation and testing instructions](platform/3ds/TESTING.md) identify
+the current candidate. Native builds pass CI, but physical-console
+performance and complete gameplay acceptance remain unverified.
+
+**Android/Quest upgrades:** release builds retain the recovered original signing
+certificate. No signing-key change or reinstall is required for 0.0.8.
 
 ## Features and settings
 
@@ -161,6 +169,22 @@ settings/saves are copied there on first launch when available.
 The first normal launch copies missing data from former preference locations;
 existing portable files win, and originals are not deleted. Mobile and console
 builds use writable platform storage instead of their read-only package folders.
+
+## Checking for updates
+
+Open **Options → Check for updates** to see the **current version**, **latest
+version**, and whether a newer stable release is available. Checks run only
+when requested or when this screen is first opened, not during normal startup.
+
+Packaged Windows x64/x86 and portable Linux x64 desktop players can download a verified update and
+restart to install it after confirmation. Settings, saves, controller/touch/HUD
+layouts, imported game data and optional music are preserved. Source checkouts
+are never updated in place. Linux automatic installation uses system Python 3;
+read-only/package-managed installations stay manual. macOS desktop players can
+check versions and open the release page; mobile/console packages still need their platform's
+normal installer. This does not add unattended background installation.
+
+See [update behavior and safety](docs/UPDATES.md) for details.
 
 ## Development and credits
 

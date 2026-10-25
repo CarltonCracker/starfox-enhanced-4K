@@ -1,5 +1,54 @@
 # VR development status
 
+## MODERN renderer in PCVR (experimental, October 11)
+
+`STARFOX_MODERN=1 starfox_pcvr` (or `--modern` on the runtime check) draws
+the frame the flat MODERN renderer plans. That plan is `vr::ModernFrame` in
+`starfox_scene`, which `modern::SdlFrameRenderer` uses as well. The default
+VR renderer is unchanged.
+
+- Depth is reversed (cleared to 0, tests compare GREATER) and objects get a
+  per-list-position draw-order bias. Large static scenery is painted in native
+  order before the depth-tested pass (`vr::painter_scenery`). Inset and
+  coplanar overlays are decals.
+- Planets get a 3D sky dome and a world-fixed ground plane with the ground
+  dots. The Armada's chequered tunnels become a 3D corridor. Headsets map both
+  differently from flat views (`vr::set_headset_mapping`): the sky by
+  direction (cylindrical, seamless all round) and corridor rows by distance
+  along the corridor, so they hold up when you look sideways or behind.
+- It also draws the vector crosshair, smooth 2D filtering, the fixed-colour
+  damage and scripted flashes, and replacement landscape art from
+  `textures/`.
+- `=0` turns a part off: `STARFOX_MODERN_LANDSCAPE`, `_CORRIDOR`,
+  `_GROUND_DOTS`, `_CLASSIC_SCROLL`, `_FILTER`. ENHANCED SKY is ignored while
+  MODERN is on.
+
+Without a headset, `STARFOX_MODERN_HEADSET_PREVIEW=yaw,pitch[,fov]` on the
+desktop MODERN renderer plans the frame exactly as PCVR does. It draws from
+the seat with that head direction, through the same shader.
+
+## Release 0.0.8 delayed-crash investigation (October 4)
+
+The tester's roughly one-minute VR exit is tracked in
+[VR-CRASH-INVESTIGATION.md](VR-CRASH-INVESTIGATION.md). Their correction places
+Quest 3/PCVR testing via PC, so the APK is only a separately identified reference,
+not the sole failing-build baseline. Development Quest and PCVR now retain
+bounded session logs and live scene/memory/cache diagnostics. Both development
+builds, Quest payload validation, seventeen VR host suites and repeated Windows
+log-rotation/failure checks pass; no device reproduction or crash fix is claimed.
+EX headset presentation now
+omits the separate native cockpit shell without changing the cartridge camera
+or console views. Build and regression results belong to the investigation
+checkpoint, not to the already published APK.
+## Steam Frame
+
+I added a native Steam Frame target, see [STEAM-FRAME.md](STEAM-FRAME.md). It
+has its own loop and menu (`steam_frame_application.cpp` and `frame_menu.hpp`),
+which only `starfox_steamframe` turns on through `ApplicationHost::steam_frame`.
+PCVR and Quest keep running `application.cpp` and `startup_menu.hpp` as they
+were, so their input, menus, preferences and presentation are unchanged.
+`third_party/sfvr` is used by the Frame loop only.
+
 ## Current native Linux PCVR regression (September 23)
 
 Rebuilt the current shared worktree in the existing Ubuntu x86-64 OpenXR/Vulkan

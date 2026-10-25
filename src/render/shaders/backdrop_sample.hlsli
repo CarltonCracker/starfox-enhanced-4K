@@ -71,7 +71,7 @@ float3 backdropLimbColour(float3 surface,uint4 ramp[4]) {
         float3(cb&255,(cb>>8)&255,(cb>>16)&255),shade-float(a));
 }
 bool backdropCovers(float x,float y,float horizon,float slope,float4 projection,float4 keep0,float4 keep1) {
-    if(projection.w==7) return true;
+    if(projection.w==7 || projection.w==10) return true;
     if(projection.w==6 || projection.w==8) return y<horizon+slope*x;
     if(projection.w==5) return facePlanetCoordinates(x,y,keep1).x>=0;
     if(projection.w==9) return cloudLimbCoordinates(x,y,keep1).x>=0;
@@ -83,7 +83,12 @@ bool backdropCovers(float x,float y,float horizon,float slope,float4 projection,
 float2 backdropCoordinates(float x,float y,float horizon,float slope,float scroll,float4 projection) {
     float inverse=rsqrt(1+slope*slope),dy=y-horizon;
     float v=projection.z+inverse*(dy-slope*x)*projection.y;
-    return float2((inverse*(x+slope*dy)+scroll)*projection.x,projection.w>=7?saturate(v):v);
+    if(projection.w==10) {
+        float depth=max(0.f,v-.8f);
+        return float2((inverse*(x+slope*dy)+scroll)*projection.x,v<=.8f?v:.8f+depth/(1+depth));
+    }
+    return float2((inverse*(x+slope*dy)+scroll)*projection.x,
+        projection.w>=6 && projection.w<=8?saturate(v):v);
 }
 float2 backdropCoordinates(float x,float y,float horizon,float slope,float scroll) {
     return backdropCoordinates(x,y,horizon,slope,scroll,float4(1/512.f,1/160.f,1.f,0.f));
@@ -93,7 +98,7 @@ float2 backdropCoordinates(float x,float y,float horizon,float slope,float scrol
         float2 uv=cityMoonCoordinates(x,y,keep1);
         if(uv.y>=2) return uv;
     }
-    if(projection.w==6 || projection.w==7) {
+    if(projection.w==6 || projection.w==7 || projection.w==10) {
         if(backdropInEllipse(float2(x,y),keep0)) return float2(((x-keep0.x)/keep0.z+1)*.25f,2+((y-keep0.y)/keep0.w+1)*.5f);
         if(backdropInEllipse(float2(x,y),keep1)) return float2(.5f+((x-keep1.x)/keep1.z+1)*.25f,2+((y-keep1.y)/keep1.w+1)*.5f);
     }
@@ -158,11 +163,32 @@ float3 backdropSample(float u,float v,uint w,uint h,uint base,bool repeatVertica
     }
     return c;
 }
-float3 backdropSample(float u,float v,uint w,uint h,uint base,float mode) {
+float3 backdropOrbitalParameters(float4 projection,float scroll) {
+    return float3(scroll*projection.x,projection.y!=0?projection.x/projection.y:1.f,projection.z);
+}
+float3 backdropSample(float u,float v,uint w,uint h,uint base,float mode,float3 orbital) {
+    if(mode==10) {
+        uint rows=h/3;
+        if(v>=2) return backdropBilinear(saturate(u)*float(w-1),saturate(v-2)*float(rows-1),w,rows,base+2*rows*w*4);
+        float encoded=max(0.f,v-.8f),depth=encoded/max(.0001f,1-encoded);
+        float3 colour=backdropSample(u,v<=.8f?v:.8f+depth,w,rows,base);
+        if(depth==0) return colour;
+        float x=(u-orbital.x)/orbital.y,y=.8f+depth-orbital.z;
+        float denominator=max(.001f,sqrt(1+x*x+y*y)+y);
+        float dx=x/denominator,dz=1/denominator;
+        float angle=frac(orbital.x)*6.283185307179586f,cosine=cos(angle),sine=sin(angle);
+        float2 surface=float2(.5f+.45f*(dx*cosine-dz*sine),.5f+.45f*(dx*sine+dz*cosine));
+        float3 ground=backdropBilinear(saturate(surface.x)*float(w-1),saturate(surface.y)*float(rows-1),w,rows,base+rows*w*4);
+        float blend=saturate(depth*4);blend=blend*blend*(3-2*blend);
+        return lerp(colour,ground,blend);
+    }
     if(mode==6 || mode==7 || mode==8) {
         if(v<2) return backdropSample(u,v,w,h/2,base);
         return backdropBilinear(saturate(u)*float(w-1),float(h/2)+saturate(v-2)*float(h/2-1),w,h,base);
     }
     if(mode==3 || mode==4 || mode==5 || mode==9) return backdropBilinear(saturate(u)*float(w-1),saturate(v)*float(h-1),w,h,base);
     return backdropSample(u,v,w,h,base,mode==2);
+}
+float3 backdropSample(float u,float v,uint w,uint h,uint base,float mode) {
+    return backdropSample(u,v,w,h,base,mode,float3(0,.3125f,.54f));
 }

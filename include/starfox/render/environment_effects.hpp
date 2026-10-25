@@ -7,8 +7,11 @@
 #include "starfox/render/cloud_limb_atlas.hpp"
 #include "starfox/render/moon_landscape_atlas.hpp"
 #include "starfox/render/row_workers.hpp"
+#include "starfox/render/lava_surface.hpp"
+#include "starfox/render/water_receiver.hpp"
 #include "starfox/simulation/snes_ppu.hpp"
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <optional>
 #include <string_view>
@@ -97,7 +100,7 @@ inline std::optional<unsigned> gameplay_landscape_backdrop(std::string_view name
     if(ex && name=="BG_5_4") return 17; // Rocky coast; native twin planets stay visible.
     if(ex && name=="BG_6_4") return 2;  // Night storm; retain the two native moons.
     if(ex && name=="BG_6_5") return 27; // Open ember sky behind native fire sprites.
-    if(ex && name=="BG_6_6") return 16; // Red cloud front, not a repeated planet.
+    if(ex && name=="BG_6_6") return 37; // Low volcanic hills, not the cloud-only band.
     if(ex && name=="BG_6_7B") return 31; // Final boss's single fire ribbon.
     if(name=="BG_2_2" || name=="BG_3_6" || name=="BG_2_5"
         || (ex && name=="BG_6_7C")
@@ -136,6 +139,16 @@ inline std::optional<unsigned> gameplay_landscape_origin(std::string_view name,b
     if(ex && name=="BG_6_5") return 248;
     if(ex && (name=="BG_6_7B" || name=="BG_6_7C")) return 0;
     return std::nullopt;
+}
+// Name-based defaults shared by the presenter and route audit. Positional
+// indexes in the application's background list must not change calibration.
+inline unsigned resolved_landscape_origin(std::string_view name,bool ex) noexcept {
+    unsigned fallback=232;
+    if(name=="BG_1_7B") fallback=224;
+    else if(name=="BG_5_5" || name=="BG_7_5" || name=="BG_5_2") fallback=248;
+    else if(name=="BG_6_2" || name=="BG_6_4" || name=="BG_6_6") fallback=240;
+    else if(name=="BG_3_5") fallback=ex?16:272;
+    return gameplay_landscape_origin(name,ex).value_or(fallback);
 }
 // The cloud/fire atlases place sky and terrain in distinct palette banks,
 // but distribute small highlights too sparsely for the generic tile-count
@@ -203,6 +216,35 @@ inline unsigned environment_landscape_scroll_y(std::string_view name,bool ex,
 inline float environment_horizon_slope(const std::array<std::int16_t,9>& view) noexcept {
     return view[4] ? -float(view[3])/float(view[4]) : 0.f;
 }
+// Use the presentation PPU's bank table, not the independently interpolated
+// 3D camera. BG2's authored roll can lag or scale that camera deliberately.
+inline std::optional<std::array<float,2>> environment_raster_horizon(
+    const simulation::SnesPpuState& p,float source_horizon,unsigned scroll_x) {
+    if(p.background_mode!=2 || !p.bg2_vertical_offsets_enabled || p.tunnel_scene) return std::nullopt;
+    const float period=float(((p.bg2_screen_size&2)?64:32)*(p.bg2_tile_size_16?16:8));
+    double sx=0,sy=0,sxx=0,sxy=0,n=0;float previous=0;
+    for(unsigned i=0;i<32;++i) {
+        const unsigned at=(0x2fa0+i)*2;
+        const unsigned word=p.vram[at]|(unsigned(p.vram[at+1])<<8);
+        if(!(word&0x4000)) continue;
+        float y=float(word&(unsigned(period)-1U));
+        if(n) {
+            // Use the native background fitter's atlas period and tie rule,
+            // including 8px atlases and vertically doubled tilemaps.
+            float delta=y-previous;
+            delta-=period*std::floor((delta+period*.5f)/period);
+            y=previous+delta;
+        }
+        previous=y;const double x=8.0*(i+1);
+        sx+=x;sy+=y;sxx+=x*x;sxy+=x*y;++n;
+    }
+    if(!n) return std::nullopt;
+    const double d=n*sxx-sx*sx;
+    const double slope=d?(n*sxy-sx*sy)/d:0;
+    const double center=(sy-slope*sx)/n+slope*(128+(scroll_x&7));
+    const float offset=float(center+period*std::round((source_horizon-112-center)/period));
+    return std::array<float,2>{source_horizon-offset,float(-slope)};
+}
 // Independent from model materials: these decorate authored landscape fills.
 // They never replace scene geometry or claim to ray trace reflected objects.
 inline constexpr std::array<std::string_view,6> environment_labels{
@@ -256,7 +298,12 @@ struct EnvironmentEffects {
     const BackdropImage* backdrop{}; // immutable, borrowed throughout presentation
     bool water_reflections{}; // Reflective Surfaces controls even the fallback.
     bool ray_water{}; // Actual ray output is composited separately, never SSR.
-    std::array<float,4> scroll_fraction{}; // presentation-only BG2 remainder, logical pixels
+    const shadows::Scene* cpu_water_scene{};
+    WaterCaustics cpu_water;
+    std::array<Rgba8,256> cpu_water_palette{};
+    // XY: presentation-only BG2 remainder; Z: stereo sky source-X offset.
+    // All values are logical pixels. Z affects backdrop sampling, never ground/HUD.
+    std::array<float,4> scroll_fraction{};
     bool active() const {return modes[0] || modes[2] || scroll_fraction[0] || scroll_fraction[1];}
 };
 inline std::array<std::uint32_t,16> authored_cloud_ramp(std::span<const std::uint16_t> palette,
@@ -393,6 +440,67 @@ inline std::array<std::uint8_t,256> environment_palette_regions(const simulation
     }
     return regions;
 }
+struct SourceGroundRamp {
+    std::array<bool,256> inks{};
+    unsigned far_index{},near_index{},sampled_rows{};
+    bool valid() const noexcept {return far_index && near_index && sampled_rows>1;}
+};
+// Read the authored row order, not palette-index order or brightness extrema.
+// This is atlas metadata: callers cache it with the tiles, while CGRAM remains
+// live so weather transitions and black fades never latch an old colour.
+inline SourceGroundRamp source_ground_ramp(const simulation::SnesPpuState& p,unsigned horizon,
+    const std::array<std::uint8_t,256>* regions=nullptr) {
+    SourceGroundRamp ramp;
+    if((p.background_mode!=1 && p.background_mode!=2) || p.tunnel_scene) return ramp;
+    const unsigned edge=p.bg2_tile_size_16?16:8;
+    const unsigned width=((p.bg2_screen_size&1)?64:32)*edge;
+    const unsigned height=((p.bg2_screen_size&2)?64:32)*edge;
+    const unsigned pages_wide=(p.bg2_screen_size&1)?2:1;
+    std::array<bool,8> ground_banks{};
+    if(regions) for(unsigned index=1;index<128;++index)
+        if((*regions)[index]&1) ground_banks[index/16]=true;
+    const auto word=[&](unsigned a){return unsigned(p.vram[a&65535])|(unsigned(p.vram[(a+1)&65535])<<8);};
+    for(unsigned y=horizon;y<height;++y) {
+        std::array<unsigned,128> counts{};
+        for(unsigned x=0;x<width;x+=4) {
+            const unsigned tx=x/edge,ty=y/edge;
+            const unsigned entry=(tx/32+(ty/32)*pages_wide)*1024+(ty%32)*32+tx%32;
+            const unsigned tile=word(p.bg2_screen_base*2+entry*2);
+            const unsigned px=(tile&0x4000)?edge-1-x%edge:x%edge;
+            const unsigned py=(tile&0x8000)?edge-1-y%edge:y%edge;
+            const unsigned character=((tile&1023)+(px/8)+(py/8)*16)&1023;
+            const unsigned a=p.bg2_character_base*2+character*32+(py%8)*2;
+            const unsigned bits=word(a),high=word(a+16),mask=128>>(px%8);
+            const unsigned ink=((bits&mask)?1:0)+((bits&(mask<<8))?2:0)
+                +((high&mask)?4:0)+((high&(mask<<8))?8:0);
+            if(ink) ++counts[((tile>>10)&7)*16+ink];
+        }
+        const unsigned index=unsigned(std::max_element(counts.begin()+1,counts.end())-counts.begin());
+        if(counts[index]*400<width*95) continue; // Dots/objects are not a ground band.
+        // A native projection can begin a few rows above the actual ground.
+        // Do not latch its last full-width sky band and stop at the first real
+        // surface bank. Unclassified first ground shades remain eligible when
+        // their bank has actual terrain ownership in the atlas.
+        if(!ramp.far_index && regions
+            && ((*regions)[index]==2 || !ground_banks[index/16])) continue;
+        if(!ramp.far_index) ramp.far_index=index;
+        else if(index/16!=ramp.far_index/16) break; // Do not enter another atlas subject.
+        ramp.inks[index]=true;ramp.near_index=index;++ramp.sampled_rows;
+    }
+    return ramp;
+}
+inline void normalize_ground_ramp_classes(const SourceGroundRamp& ramp,
+    std::array<std::uint32_t,256>& classes) noexcept {
+    if(!ramp.valid()) return;
+    std::array<unsigned,6> population{};
+    for(unsigned ink=1;ink<classes.size();++ink)
+        if(ramp.inks[ink] && classes[ink]>=1 && classes[ink]<=5) ++population[classes[ink]];
+    const unsigned kind=unsigned(std::max_element(population.begin()+1,population.end())-population.begin());
+    if(kind>4 || !population[kind]) return; // Auto water stays a liquid.
+    for(unsigned ink=1;ink<classes.size();++ink)
+        if(ramp.inks[ink] && classes[ink]<=4) classes[ink]=kind;
+    // Sky, reflective water and explicitly protected detail are never promoted.
+}
 inline unsigned automatic_ground_material(std::uint16_t c) {
     const unsigned r=c&31,g=(c>>5)&31,b=(c>>10)&31;
     if(std::min({r,g,b})>17 && std::max({r,g,b})-std::min({r,g,b})<9) return 4;
@@ -411,11 +519,13 @@ inline unsigned titania_ground_material(std::uint16_t c) {
 }
 inline std::array<std::array<float,4>,2> source_ground_gradient(
     std::span<const std::uint16_t> palette,
-    const std::array<std::uint32_t,256>& classes) {
+    const std::array<std::uint32_t,256>& classes,bool include_water=false) {
     std::array<std::array<float,4>,2> result{};
-    std::array<unsigned,5> counts{};
+    // Ordinary flat gradient smoothing deliberately excludes reflective
+    // water. Native analytic receivers also need its authored endpoints.
+    std::array<unsigned,6> counts{};
     for(unsigned i=1;i<std::min<std::size_t>(palette.size(),256);++i)
-        if(classes[i]>=1 && classes[i]<=4 && (palette[i]&0x7fff)) ++counts[classes[i]];
+        if(classes[i]>=1 && classes[i]<=(include_water?5U:4U) && (palette[i]&0x7fff)) ++counts[classes[i]];
     const unsigned kind=unsigned(std::max_element(counts.begin()+1,counts.end())-counts.begin());
     if(!counts[kind]) return result;
     float low=1e9f,high=-1.f;
@@ -428,6 +538,26 @@ inline std::array<std::array<float,4>,2> source_ground_gradient(
         const float luminance=rgb[0]*.2126f+rgb[1]*.7152f+rgb[2]*.0722f;
         if(luminance<low) {low=luminance;result[1]={rgb[0],rgb[1],rgb[2],1.f};}
         if(luminance>high) {high=luminance;result[0]={rgb[0],rgb[1],rgb[2],float(kind)};}
+    }
+    return result;
+}
+inline std::array<std::array<float,4>,2> authored_ground_gradient(
+    std::span<const std::uint16_t> palette,const std::array<std::uint32_t,256>& classes,
+    const SourceGroundRamp& ramp,bool include_water=false) {
+    if(!ramp.valid() || ramp.far_index>=palette.size() || ramp.near_index>=palette.size()
+        || ramp.far_index>=classes.size() || ramp.near_index>=classes.size())
+        return source_ground_gradient(palette,classes,include_water);
+    const auto kind=classes[ramp.far_index];
+    if(kind<1 || kind>4 || classes[ramp.near_index]!=kind)
+        return source_ground_gradient(palette,classes,include_water);
+    std::array<std::array<float,4>,2> result{};
+    for(unsigned end=0;end<2;++end) {
+        const auto value=palette[end?ramp.near_index:ramp.far_index];
+        for(unsigned channel=0;channel<3;++channel) {
+            const unsigned raw=(value>>(channel*5))&31;
+            result[end][channel]=float((raw<<3)|(raw>>2));
+        }
+        result[end][3]=end?1.F:float(kind);
     }
     return result;
 }
@@ -466,11 +596,11 @@ inline std::array<float,3> environment_colour(std::array<float,3> c,unsigned kin
     float x,float y,const EnvironmentEffects& e) {
     const auto& m=e.modes;auto v=e.motion;v[0]+=e.plane[0]*x;
     const auto authored=c;
-    bool lava_surface=false;
+    bool is_lava=false;
     const float t=v[3];float detail=0;std::array<float,3> tint{1,1,1};
     if(kind<=5 && m[0]) {
         if(m[0]>1) kind=m[0]-1;
-        lava_surface=kind==9;
+        is_lava=kind==9;
         const float distance=std::max(kind==9?16.f:4.f,y-v[0]);
         float u=x*24.f/distance+v[1]*.015625f,z=2048.f/distance+v[2]*.015625f;
         if(m[1]==1) u+=std::sin(z*.17f+t)*.6f;
@@ -491,44 +621,13 @@ inline std::array<float,3> environment_colour(std::array<float,3> c,unsigned kin
             detail=broad*.025f;
         }
         if(kind==9) {
-            // Advect the crust through a low-frequency flow field. The fine
-            // eddies and wave highlights fade towards the horizon so the
-            // surface reads as liquid without shimmering at subpixel scale.
-            const float drift=z*.08f-t*.13f;
-            const float warp=environment_noise(u*.07f,drift)*2.f-1.f;
-            const float qx=u*.20f+warp*.95f+std::sin(drift*1.6f)*.40f;
-            const float qz=z*.16f-t*.30f+warp*.30f;
-            const float coarse=environment_noise(qx,qz);
-            const float fine=environment_noise(qx*2.8f+11.f,qz*2.8f-4.f);
-            // Follow the water material's travelling broad-wave projection.
-            // Noise only breaks up the crests; it must not turn the surface
-            // back into static, flat crust patches.
-            const float phase=z*.42f+std::sin(u*.09f)*2.f-t*.8f+warp*.22f;
-            const float swell=std::sin(phase);
-            const float cross=std::sin(z*.22f-u*.11f+t*.45f+warp*.18f);
-            const float hot=std::clamp(.49f+swell*.32f+cross*.13f
-                +(coarse-.5f)*.12f+(fine-.5f)*.04f*near,0.f,1.f);
-            const float horizon_blend=std::clamp((y-v[0])/48.f,0.f,1.f);
-            const float heat=std::lerp(.16f,hot*hot*(3.f-2.f*hot),horizon_blend);
-            const float ember=std::clamp((heat-.67f)*3.1f,0.f,1.f);
-            const float wave_highlight=(std::pow(std::max(0.f,swell),8.f)*.75f
-                +std::pow(std::max(0.f,cross),12.f)*.20f)*near*horizon_blend;
-            const float cell_x=std::floor(u*.11f),cell_z=std::floor(z*.11f);
-            const float seed=environment_hash(int(cell_x),int(cell_z));
-            float bubble=0.f;
-            if(seed>.94f) {
-                const float fx=u*.11f-cell_x-(.25f+.5f*environment_hash(int(cell_x)+19,int(cell_z)));
-                const float fz=z*.11f-cell_z-(.25f+.5f*environment_hash(int(cell_x),int(cell_z)+29));
-                const float phase=t*.18f+seed*5.f-std::floor(t*.18f+seed*5.f);
-                const float radius=.035f+phase*.18f;
-                bubble=(std::exp(-std::pow((std::hypot(fx,fz)-radius)*19.f,2.f))*.50f
-                    +std::exp(-(fx*fx+fz*fz)*65.f)*(1.f-phase)*.45f)*near;
-            }
-            const float authored=(c[0]*.3f+c[1]*.59f+c[2]*.11f)/150.f;
-            const float exposure=std::clamp(std::max(authored,e.plane[3]*.75f),.12f,1.35f);
-            c={exposure*(22.f+220.f*heat+28.f*ember+42.f*wave_highlight+100.f*bubble),
-                exposure*(4.f+38.f*heat+54.f*ember+43.f*wave_highlight+105.f*bubble),
-                exposure*(2.f+3.f*heat+13.f*ember+8.f*wave_highlight+42.f*bubble)};
+            const float footprint=std::max(384.f/distance,
+                (32768.f+std::abs(x)*384.f)/(distance*distance));
+            const auto surface=lava_surface(x*384.f/distance+v[1],
+                32768.f/distance+v[2],t,footprint);
+            const auto molten=lava_shade(surface,-x/256.f,-distance/256.f,-1.f);
+            const float exposure=255.f*std::clamp(e.plane[3],0.f,1.f);
+            c={molten.r*exposure,molten.g*exposure,molten.b*exposure};
         }
         { // Auto and an explicit selection share the same material response.
             const float light=(c[0]*.3f+c[1]*.59f+c[2]*.11f);
@@ -566,7 +665,7 @@ inline std::array<float,3> environment_colour(std::array<float,3> c,unsigned kin
     } else return c;
     // Multiplicative radiance preserves fades, black and authored brightness.
     for(unsigned i=0;i<3;++i) c[i]=std::clamp(c[i]*(tint[i]+detail),0.f,255.f);
-    if(lava_surface) {
+    if(is_lava) {
         // Match the GPU path: classified ground owns the lava, with just a
         // narrow seam at the sloped horizon rather than a half-screen fade.
         float edge=std::clamp((y-v[0])/8.f,0.f,1.f);
@@ -575,7 +674,11 @@ inline std::array<float,3> environment_colour(std::array<float,3> c,unsigned kin
     }
     return c;
 }
-inline void apply_environment(const EnvironmentEffects& e,const Framebuffer& frame,std::vector<std::uint8_t>& rgba,RowWorkers* workers=nullptr) {
+inline bool environment_screen_reflections(const EnvironmentEffects& e) noexcept {
+    return e.water_reflections && !e.ray_water && ((e.modes[0]>=6 && e.modes[0]<=8)
+        || (e.modes[0]==1 && std::find(e.classes.begin(),e.classes.end(),5)!=e.classes.end()));
+}
+inline void apply_environment(const EnvironmentEffects& e,const Framebuffer& frame,std::vector<std::uint8_t>& rgba,RowWorkers* workers=nullptr,double* water_grid_ms=nullptr) {
     if(!e.active() || frame.layer_tags().size()!=frame.pixels().size() || rgba.size()!=frame.pixels().size()*4) return;
     const auto width=frame.stored_width();const float scale=float(frame.draw_scale());
     if(e.scroll_fraction[0] || e.scroll_fraction[1]) {
@@ -590,7 +693,7 @@ inline void apply_environment(const EnvironmentEffects& e,const Framebuffer& fra
             for(unsigned c=0;c<3;++c) {
                 float value=0;
                 for(unsigned by=0;by<2;++by) for(unsigned bx=0;bx<2;++bx) {
-                    const auto n=std::size_t(std::min(ay+by,height-1))*width+std::min(ax+bx,width-1);
+                    const auto n=std::size_t(std::min<std::uint32_t>(ay+by,height-1))*width+std::min<std::uint32_t>(ax+bx,width-1);
                     const auto safe=frame.layer_tags()[n]==unsigned(PixelLayer::background)?n:i;
                     value+=source[safe*4+c]*(bx?sx-ax:1-(sx-ax))*(by?sy-ay:1-(sy-ay));
                 }
@@ -598,16 +701,36 @@ inline void apply_environment(const EnvironmentEffects& e,const Framebuffer& fra
             }
         }
     }
-    const bool water=e.water_reflections && !e.ray_water && ((e.modes[0]>=6 && e.modes[0]<=8)
-        || (e.modes[0]==1 && std::find(e.classes.begin(),e.classes.end(),5)!=e.classes.end()));
-    const auto reflection=water?rgba:std::vector<std::uint8_t>{};
+    const bool water=environment_screen_reflections(e);
+    std::optional<WaterCausticVisibility> water_visibility;
+    const auto grid_start=water_grid_ms?std::chrono::steady_clock::now():std::chrono::steady_clock::time_point{};
+    if(e.cpu_water_scene && !e.ray_water) water_visibility.emplace(*e.cpu_water_scene,e.cpu_water);
+    const unsigned water_step=std::max<std::uint32_t>(1U,frame.draw_scale())*(e.cpu_water.quality>=3?4U:e.cpu_water.quality==2?6U:8U);
+    const unsigned water_columns=(width+water_step-1)/water_step+1;
+    const unsigned water_rows=(frame.stored_height()+water_step-1)/water_step+1;
+    std::vector<std::optional<std::array<float,3>>> water_grid;
+    if(water_visibility) {
+        water_grid.resize(std::size_t(water_columns)*water_rows);
+        const auto sample_cells=[&](unsigned first,unsigned last) {
+            for(unsigned cell=first;cell<last;++cell)
+                water_grid[cell]=water_surface_sample(*e.cpu_water_scene,e.cpu_water,
+                    e.cpu_water_palette,float((cell%water_columns)*water_step),float((cell/water_columns)*water_step),float(water_step),*water_visibility);
+        };
+        // Grid rows are few but each ray is expensive. Partition independent
+        // cells so the pool's cheap-pixel row threshold does not serialize work.
+        const auto cells=unsigned(water_grid.size());
+        if(workers) workers->parallel_rows(cells,sample_cells);else sample_cells(0,cells);
+    }
     const bool smooth_ground=e.modes[0] && (e.modes[0]<=5 || e.modes[0]==9);
+    if(water_grid_ms) *water_grid_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-grid_start).count();
+    const auto backdrop_parameters=BackdropImage::orbital_parameters(e.backdrop_projection,e.plane[2]);
     const auto rows = [&](unsigned first, unsigned last) {
     for(std::size_t i=std::size_t(first)*width;i<std::size_t(last)*width;++i) {
         const unsigned source_kind=e.classes[frame.pixels()[i]];
         if(e.backdrop && e.modes[2] && (source_kind!=7 || e.backdrop_projection[3]==8)
             && frame.layer_tags()[i]==unsigned(PixelLayer::background)) {
-            const float x=(float(i%width)+.5f)/scale-float(width)/scale*.5f;
+            const float screen_x=(float(i%width)+.5f)/scale-float(width)/scale*.5f;
+            const float x=screen_x+e.scroll_fraction[2];
             const float y=(float(i/width)+.5f)/scale;
             // BG2's per-column offsets can move the real sky/ground boundary
             // away from a straight horizon when banking. The indexed source
@@ -618,17 +741,17 @@ inline void apply_environment(const EnvironmentEffects& e,const Framebuffer& fra
             const bool landscape=e.backdrop_projection[3]==0 || e.backdrop_projection[3]==6 || e.backdrop_projection[3]==8;
             const bool sky_owned=city_moon || (source_kind!=7 && (!landscape
                 || source_kind==6 || (source_kind==0
-                    && y<e.motion[0]+e.plane[0]*x)));
-            if(sky_owned && ((e.backdrop_projection[3]==6 && source_kind==6) || BackdropImage::covers(x,y,e.motion[0],e.plane[0],
+                    && y<e.motion[0]+e.plane[0]*screen_x)));
+            if(sky_owned && (((e.backdrop_projection[3]==6 || e.backdrop_projection[3]==8) && source_kind==6) || BackdropImage::covers(x,y,e.motion[0],e.plane[0],
                     e.backdrop_projection[3]==0 && source_kind==6
                         ?std::array<float,4>{e.backdrop_projection[0],e.backdrop_projection[1],
                             e.backdrop_projection[2],1.f}:e.backdrop_projection,
                     e.backdrop_keep))) {
                 const auto uv=backdrop_motion(BackdropImage::coordinates(x,y,e.motion[0],e.plane[0],e.plane[2],e.backdrop_projection,e.backdrop_keep),e.modes[3],e.motion[3]);
-                auto sky=backdrop_ramp_colour(backdrop_style(e.backdrop->sample_projected(uv[0],uv[1],e.backdrop_projection[3]),uv,e.modes[2],e.modes[3]?e.motion[3]:0.f),e.backdrop_ramp);
+                auto sky=backdrop_ramp_colour(backdrop_style(e.backdrop->sample_projected(uv[0],uv[1],e.backdrop_projection[3],backdrop_parameters),uv,e.modes[2],e.modes[3]?e.motion[3]:0.f),e.backdrop_ramp);
                 const bool cloud_limb=e.backdrop_projection[3]==9 && uv[1]>=320/512.f;
                 if(cloud_limb) sky=BackdropImage::limb_colour(sky,e.backdrop_ramp);
-                const bool moon_atlas=e.backdrop_projection[3]>=6 && e.backdrop_projection[3]<=8;
+                const bool moon_atlas=(e.backdrop_projection[3]>=6 && e.backdrop_projection[3]<=8) || e.backdrop_projection[3]==10;
                 if(moon_atlas && uv[1]>=2) {
                     if(e.backdrop_projection[3]!=8) sky=BackdropImage::moon_surface(sky,uv,e.backdrop_keep[1]);
                     sky=BackdropImage::moon_colour(sky,uv,e.backdrop_ramp);
@@ -643,7 +766,7 @@ inline void apply_environment(const EnvironmentEffects& e,const Framebuffer& fra
                 std::array<float,3> behind{};
                 if(opacity<1) {
                     const auto background_uv=backdrop_motion(BackdropImage::coordinates(x,y,e.motion[0],e.plane[0],e.plane[2],e.backdrop_projection,{}),e.modes[3],e.motion[3]);
-                    behind=backdrop_style(e.backdrop->sample_projected(background_uv[0],background_uv[1],6),background_uv,e.modes[2],e.modes[3]?e.motion[3]:0.f);
+                    behind=backdrop_style(e.backdrop->sample_projected(background_uv[0],background_uv[1],e.backdrop_projection[3]==10?10:6,backdrop_parameters),background_uv,e.modes[2],e.modes[3]?e.motion[3]:0.f);
                     for(unsigned k=0;k<3;++k) behind[k]=behind[k]*e.backdrop_palette[0][3]+255.f*e.backdrop_palette[0][k];
                 }
                 for(unsigned k=0;k<3;++k) {
@@ -696,17 +819,55 @@ inline void apply_environment(const EnvironmentEffects& e,const Framebuffer& fra
             for(unsigned k=0;k<3;++k) rgba[i*4+k]=std::uint8_t(base[k]+.5f);
             continue;
         }
-        const auto c=environment_colour(base,kind,x,y,e);
+        const bool sampled_water=!water_grid.empty() && ((e.modes[0]==6 && kind<=5) || (e.modes[0]==1 && kind==5));
+        // The transport result replaces the procedural water colour. Do not
+        // evaluate that discarded full-resolution shader for every pixel.
+        auto c=sampled_water?base:environment_colour(base,kind,x,y,e);
+        if(sampled_water) {
+            const unsigned gx=unsigned(i%width)/water_step,gy=unsigned(i/width)/water_step;
+            const float fx=float(i%width%water_step)/water_step,fy=float(i/width%water_step)/water_step;
+            std::array<float,3> sum{};float weight=0;
+            for(unsigned by=0;by<2;++by) for(unsigned bx=0;bx<2;++bx) {
+                const auto& sample=water_grid[(gy+by)*water_columns+gx+bx];
+                if(!sample) continue;
+                const float w=(bx?fx:1-fx)*(by?fy:1-fy);weight+=w;
+                for(unsigned k=0;k<3;++k) sum[k]+=(*sample)[k]*w;
+            }
+            if(weight>0) for(unsigned k=0;k<3;++k)
+                c[k]=255*std::sqrt(std::clamp(sum[k]/weight,0.f,1.f))*e.plane[3];
+            else c=environment_colour(base,kind,x,y,e);
+        }
         for(unsigned k=0;k<3;++k) rgba[i*4+k]=std::uint8_t(c[k]+.5f);
+    }
+    };
+    const auto run_rows=[&](const auto& pass) {
+        if(workers && frame.pixels().size()>=32768)
+            workers->parallel_rows(frame.stored_height(),pass);
+        else pass(0,frame.stored_height());
+    };
+    run_rows(rows);
+    if(!water) return;
+    // Only reflective fallback surfaces need this second pass. Finish the sky,
+    // its live palette/scroll and ground first; freeze that exact result before
+    // reflecting it. All row workers read one immutable, nonrecursive image.
+    const auto reflection=rgba;
+    const auto reflect_rows=[&](unsigned first,unsigned last) {
+    for(std::size_t i=std::size_t(first)*width;i<std::size_t(last)*width;++i) {
+        if(frame.layer_tags()[i]!=unsigned(PixelLayer::background)) continue;
+        const unsigned kind=e.classes[frame.pixels()[i]];
+        if(kind<1 || kind>5 || !((e.modes[0]>=6 && e.modes[0]<=8) || kind==5)) continue;
+        const float x=(float(i%width)+.5f)/scale-float(width)/scale*.5f;
+        const float y=(float(i/width)+.5f)/scale;
+        const std::array<float,3> c{float(reflection[i*4]),float(reflection[i*4+1]),float(reflection[i*4+2])};
         const float d=y-e.motion[0]-e.plane[0]*x;
-        if(water && kind<=5 && ((e.modes[0]>=6 && e.modes[0]<=8) || kind==5) && d>0) {
+        if(d>0) {
             const float offset=(e.modes[0]>=7?2.f:1.55f)*d/(1+e.plane[0]*e.plane[0]);
             const float sx=std::clamp(float(i%width)+offset*e.plane[0]*scale+(e.modes[0]>=7?0:std::sin(y*.12f+e.motion[3])*(2*scale)),0.f,float(width-1));
             const float sy=std::clamp((y-offset)*scale-.5f,0.f,float(frame.stored_height()-1));
             const unsigned x0=unsigned(sx),y0=unsigned(sy);const float fx=sx-x0,fy=sy-y0;
             std::array<float,3> reflected{};float weight=0;
             for(unsigned dy=0;dy<2;++dy) for(unsigned dx=0;dx<2;++dx) {
-                const auto sample=std::size_t(std::min(y0+dy,frame.stored_height()-1))*width+std::min(x0+dx,width-1);
+                const auto sample=std::size_t(std::min<std::uint32_t>(y0+dy,frame.stored_height()-1))*width+std::min<std::uint32_t>(x0+dx,width-1);
                 if(frame.layer_tags()[sample]==unsigned(PixelLayer::two_d)) continue;
                 const float w=(dx?fx:1-fx)*(dy?fy:1-fy);weight+=w;
                 for(unsigned k=0;k<3;++k) reflected[k]+=float(reflection[sample*4+k])*w;
@@ -714,15 +875,16 @@ inline void apply_environment(const EnvironmentEffects& e,const Framebuffer& fra
             if(weight>0) {
                 const float amount=e.modes[0]>=7?.8f:.15f+.20f*std::clamp(1-d/200.f,0.f,1.f);
                 constexpr float gold[3]{1,.875f,.58f};
-                for(unsigned k=0;k<3;++k) rgba[i*4+k]=std::uint8_t(c[k]*(1-amount)+reflected[k]/weight*(e.modes[0]==8?gold[k]:1)*amount+.5f);
+                // Keep bilinear coverage when HUD taps are excluded. A tiny
+                // remaining tap must not be normalized into a full-strength
+                // reflection: at exact HUD edges float roundoff otherwise
+                // produces a large flash instead of a subpixel contribution.
+                for(unsigned k=0;k<3;++k) rgba[i*4+k]=std::uint8_t(c[k]*(1-amount*weight)
+                    +reflected[k]*(e.modes[0]==8?gold[k]:1)*amount+.5f);
             }
         }
     }
     };
-    // Reuse the presentation pool; no per-frame thread creation. Reflection
-    // reads the immutable pre-pass snapshot, so row partitions cannot race.
-    if(workers && frame.pixels().size()>=32768)
-        workers->parallel_rows(frame.stored_height(), rows);
-    else rows(0,frame.stored_height());
+    run_rows(reflect_rows);
 }
 }

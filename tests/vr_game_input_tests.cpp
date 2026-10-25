@@ -12,7 +12,17 @@
 #include "starfox/vr/pause_sandbox.hpp"
 #include <algorithm>
 #include <iostream>
+#include <iterator>
+#include <optional>
 #include <stdexcept>
+
+namespace {
+template<class T,std::size_t N>
+bool equal_elements(const T (&left)[N],const T (&right)[N]) noexcept {
+    return std::equal(std::begin(left),std::end(left),std::begin(right));
+}
+}
+
 int main(int argc,char** argv) try {
     {
         using namespace starfox::input;
@@ -39,6 +49,25 @@ int main(int argc,char** argv) try {
     if(argc!=3) throw std::runtime_error("Usage: starfox_vr_game_input_check ROM SYMBOLS");
     const auto rom=starfox::assets::RomImage::load(argv[1]);
     const auto symbols=starfox::assets::SymbolMap::load(argv[2]);
+    {
+        starfox::simulation::GameSimulation raster_game(rom,symbols,"LEVEL1_1",{},true);
+        std::vector<bool> logic_ready_at_raster;
+        starfox::vr::GameFrameDriver raster_driver(raster_game,
+            [](auto,auto) {return std::array<uint8_t,4>{};},nullptr,[&] {
+                logic_ready_at_raster.push_back(raster_game.logic_tick_ready());
+            });
+        static_cast<void>(raster_driver.advance(0,{},true));
+        const auto first=raster_driver.advance(50'000'000,{},true);
+        if(first.video_phases!=3 || first.logic_ticks!=1
+            || logic_ready_at_raster!=std::vector<bool>{false,false,true})
+            throw std::runtime_error("Source-raster callback did not run once after present and before its logic tick");
+        const auto callback_count=logic_ready_at_raster.size();
+        const auto duplicate=raster_driver.advance(50'000'000,{},true);
+        static_cast<void>(raster_driver.advance(100'000'000,{},false));
+        if(!duplicate.duplicate || logic_ready_at_raster.size()!=callback_count)
+            throw std::runtime_error("Duplicate eyes or unfocused frames advanced source-raster work");
+        std::cout<<"VR source-raster callback order and duplicate/focus suppression passed\n";
+    }
     {
         starfox::simulation::GameSimulation selected(rom,symbols,"INTROMAP",{},true);
         const auto initial=selected.save_state();
@@ -155,6 +184,11 @@ int main(int argc,char** argv) try {
                 :(row>=2 && row<=9?0x8000U>>(row<=5?row-2:9-row):0);
             if(actual!=expected) throw std::runtime_error("Host punctuation uses a cartridge alias");
         }
+        // ( ) + are drawn only for the Frame menu. The original menu text is untouched.
+        const auto frame_brackets=starfox::vr::source_ui_text_packet(rom,symbols,"()+",0,0,240,1,palette,15,false,true);
+        const auto original_brackets=starfox::vr::source_ui_text_packet(rom,symbols,"()+",0,0,240,1,palette);
+        if(frame_brackets.geometry.texels==original_brackets.geometry.texels)
+            throw std::runtime_error("The Frame punctuation reached the original menu text");
     }
     {
         starfox::simulation::Wdc65816 cpu(rom,&symbols);
@@ -289,6 +323,67 @@ int main(int argc,char** argv) try {
     if(minimum_x==maximum_x) throw std::runtime_error("Input fixture never moved the player");
     std::cout<<"40 gameplay ticks: VR and native-pad complete states match; player X range "<<minimum_x<<".."<<maximum_x<<'\n';
     const auto before_scene=vr_game.save_state();
+    if(vr_game.peek_meter_state().extended) {
+        // Replay the real EX Down+Select view toggle. Corneria may emit no
+        // visible shell; actual shell strategies are covered independently
+        // below. Do not manufacture objects or write cartridge variables here.
+        starfox::simulation::GameSimulation cockpit_game(rom,symbols,"LEVEL1_1",{},true);
+        starfox::audio::Spc700Audio audio;
+        cockpit_game.set_god_mode(true);
+        cockpit_game.set_timing_mode(starfox::simulation::TimingMode::unlocked_20_fps);
+        unsigned ready_ticks=0;
+        while(ready_ticks<3000 && cockpit_game.map().read_native_word(restarts.front())==0) {
+            advance(cockpit_game,audio,{});++ready_ticks;
+        }
+        if(cockpit_game.map().read_native_word(restarts.front())==0)
+            throw std::runtime_error("EX cockpit fixture never reached playable flight");
+        const auto mode_address=symbols.find("COCKPITMODE").at(0);
+        const auto initial_mode=cockpit_game.map().read_native_byte(mode_address);
+        const auto shape=static_cast<uint16_t>(symbols.find("COCKPIT").at(0));
+        std::array<uint32_t,4> strategies{};
+        unsigned i=0;
+        for(const auto* name:{"COCKPIT_ISTRAT","COCKPIT_STRAT","COCKPITOUT_ISTRAT","COCKPITOUT_STRAT"})
+            strategies[i++]=symbols.find(name).at(0);
+        unsigned visible_shell_frames=0,active_shell_frames=0;bool mode_changed=false;
+        starfox::vr::VrGameInput input;
+        for(unsigned tick=0;tick<240;++tick) {
+            starfox::vr::VrControls controls;
+            if(tick<=1 || tick==120 || tick==121) controls.steer={0,-1};
+            if(tick==1 || tick==121) controls.select=controls.select_pressed=true;
+            input.sample(controls);
+            const auto buttons=input.consume();
+            if((tick==1 || tick==121) && ((buttons.held&(down|starfox::input::select))!=(down|starfox::input::select)))
+                throw std::runtime_error("EX cockpit controller command lost Down+Select");
+            advance(cockpit_game,audio,buttons);
+            mode_changed|=cockpit_game.map().read_native_byte(mode_address)!=initial_mode;
+            const auto saved=cockpit_game.save_state();
+            starfox::vr::GameSceneHistory console(cockpit_game,rom,symbols,starfox::vr::SceneCameraPolicy::source);
+            starfox::vr::GameSceneHistory headset(cockpit_game,rom,symbols);
+            const auto is_shell=[&](const auto& item) {
+                const auto& object=cockpit_game.objects().at(item.handle);
+                return object.shape==shape || std::ranges::find(strategies,object.strategy_address)!=strategies.end();
+            };
+            for(const auto handle:cockpit_game.objects().active_handles()) {
+                const auto& object=cockpit_game.objects().at(handle);
+                if(object.shape==shape || std::ranges::find(strategies,object.strategy_address)!=strategies.end()) {
+                    ++active_shell_frames;break;
+                }
+            }
+            if(std::ranges::any_of(console.current()->objects,is_shell)) ++visible_shell_frames;
+            if(std::ranges::any_of(headset.current()->objects,is_shell) || cockpit_game.save_state()!=saved)
+                throw std::runtime_error("Authored EX cockpit lifecycle leaked a shell or changed the VM");
+        }
+        if(!mode_changed
+            || cockpit_game.map().read_native_byte(mode_address)!=initial_mode)
+            throw std::runtime_error("EX Down+Select fixture did not enter/leave an authored cockpit: changed="
+                +std::to_string(mode_changed)+" shells="+std::to_string(visible_shell_frames)
+                +" active="+std::to_string(active_shell_frames)
+                +" mode="+std::to_string(cockpit_game.map().read_native_byte(mode_address))
+                +" initial="+std::to_string(initial_mode));
+        std::cout<<"Real EX Down+Select view entered/exited with source state preserved: "<<visible_shell_frames
+            <<" visible / "<<active_shell_frames<<" active console shell observations. "
+            <<"Zero observations are not authored shell-lifecycle acceptance; separate policy fixtures follow.\n";
+    }
     {
         // Exercise real cartridge pause/resume and real player geometry, not
         // only an artificial bounding box and an isolated object pool.
@@ -418,6 +513,55 @@ int main(int argc,char** argv) try {
     starfox::vr::GameSceneHistory scenes(vr_game,rom,symbols);
     if(vr_game.save_state()!=before_scene) throw std::runtime_error("Scene capture changed CPU or game state");
     const auto retained_scene=scenes.current();
+    {
+        const auto lists=symbols.find("BGLISTS").at(0);
+        unsigned identified=0;
+        for(const auto* name:{"BG_3_7C","BG_6_6C","BG_6_6D","BG_6_6E"}) {
+            const auto& addresses=symbols.find(name);
+            if(addresses.empty()) continue;
+            const auto id=static_cast<uint16_t>(addresses.front()-lists);++identified;
+            for(unsigned mode=0;mode<5;++mode)
+                if(scenes.is_final_vortex_sky(id,mode)!=(mode==1 || mode==2))
+                    throw std::runtime_error("Final-room source identity/mode policy diverged");
+        }
+        if(!identified || scenes.is_final_vortex_sky(0,1) || scenes.is_final_vortex_sky(0,2)
+            || vr_game.save_state()!=before_scene)
+            throw std::runtime_error("Vortex sky policy guessed an unknown background or changed source state");
+    }
+    {
+        auto clone=vr_game.restored_state(before_scene);
+        const auto cockpit=symbols.find("COCKPIT").at(0);
+        auto& object=clone->objects().at(clone->player());
+        object.shape=static_cast<uint16_t>(cockpit);
+        object.strategy_flags[3]&=static_cast<uint8_t>(~8U);
+        constexpr std::array names{"COCKPIT_ISTRAT","COCKPIT_STRAT","COCKPITOUT_ISTRAT","COCKPITOUT_STRAT"};
+        for(const auto* name:names) {
+            object.strategy_address=symbols.find(name).at(0);
+            const auto source=clone->save_state();
+            starfox::vr::GameSceneHistory console(*clone,rom,symbols,starfox::vr::SceneCameraPolicy::source);
+            starfox::vr::GameSceneHistory headset(*clone,rom,symbols);
+            const auto contains=[&](const auto& history) {
+                return std::any_of(history.current()->objects.begin(),history.current()->objects.end(),
+                    [&](const auto& item){return item.handle==clone->player();});
+            };
+            if(!contains(console) || contains(headset)==clone->peek_meter_state().extended
+                || clone->save_state()!=source)
+                throw std::runtime_error("EX headset cockpit policy changed cartridge/console or retained the cockpit shell");
+            if(clone->peek_meter_state().extended) {
+                starfox::vr::SourceModels models(rom,symbols,true,true);
+                const auto packets=models.assemble(*headset.current());
+                for(const auto key:packets.handles) if((key&65535U)==clone->player())
+                    throw std::runtime_error("Hidden cockpit leaked into model/shadow/compute packets");
+            }
+        }
+        object.shape=vr_game.objects().at(vr_game.player()).shape;
+        object.strategy_address=vr_game.objects().at(vr_game.player()).strategy_address;
+        starfox::vr::GameSceneHistory restored(*clone,rom,symbols);
+        if(std::none_of(restored.current()->objects.begin(),restored.current()->objects.end(),
+            [&](const auto& item){return item.handle==clone->player();}))
+            throw std::runtime_error("Cockpit presentation policy hid the ordinary player model");
+        std::cout<<"EX headset cockpit entry/exit shells excluded from model passes; console and VM unchanged\n";
+    }
     if(retained_scene->native_ex_bitmap!=(vr_game.peek_meter_state().extended
         && (vr_game.flow_state()==starfox::simulation::GameFlowState::gameplay
             || vr_game.flow_state()==starfox::simulation::GameFlowState::training
@@ -951,9 +1095,9 @@ int main(int argc,char** argv) try {
                 const auto actual=alternate.packets[0].geometry.vertex_view();
                 if(expected.size()!=actual.size()) throw std::runtime_error("NAN material changed reticle geometry");
                 for(size_t vertex=0;vertex<expected.size();++vertex)
-                    if(expected[vertex].position!=actual[vertex].position
-                        || expected[vertex].color!=actual[vertex].color
-                        || expected[vertex].texture!=actual[vertex].texture)
+                    if(!equal_elements(expected[vertex].position,actual[vertex].position)
+                        || !equal_elements(expected[vertex].color,actual[vertex].color)
+                        || !equal_elements(expected[vertex].texture,actual[vertex].texture))
                         throw std::runtime_error("NAN mode changed reticle appearance");
             }
             intro.colour_table_override.reset();
@@ -981,10 +1125,10 @@ int main(int argc,char** argv) try {
                 const auto actual=alternate.packets[0].geometry.vertex_view();
                 if(expected.size()!=actual.size()) throw std::runtime_error("NAN mode changed reticle sprite size");
                 for(size_t vertex=0;vertex<expected.size();++vertex)
-                    if(expected[vertex].position!=actual[vertex].position
-                        || expected[vertex].color!=actual[vertex].color
-                        || expected[vertex].texture!=actual[vertex].texture
-                        || expected[vertex].group_b!=actual[vertex].group_b)
+                    if(!equal_elements(expected[vertex].position,actual[vertex].position)
+                        || !equal_elements(expected[vertex].color,actual[vertex].color)
+                        || !equal_elements(expected[vertex].texture,actual[vertex].texture)
+                        || !equal_elements(expected[vertex].group_b,actual[vertex].group_b))
                         throw std::runtime_error("NAN mode changed reticle sprite appearance/orientation");
             }
             intro.colour_table_override.reset();
@@ -1187,6 +1331,7 @@ int main(int argc,char** argv) try {
     const auto after_failure=vr_game.save_state();failed=false;
     try {static_cast<void>(failing.advance(100'000'000,{},true));} catch(const std::runtime_error&) {failed=true;}
     if(!failed || vr_game.save_state()!=after_failure) throw std::runtime_error("Failed tick was partially replayed");
+
     std::cout<<"90 Hz stereo pacing: 120 rasters, 40 logic/audio ticks; duplicate eyes, focus resume and partial audio-block preservation verified\n";
     std::cout<<"Live scene snapshots: ordered objects, generations, palettes, retained ownership and catch-up history verified\n";
 } catch(const std::exception& e) {std::cerr<<e.what()<<'\n';return 1;}

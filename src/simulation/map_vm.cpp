@@ -1,4 +1,5 @@
 #include "starfox/simulation/map_vm.hpp"
+#include "starfox/compat/bit_cast.hpp"
 #include "starfox/assets/bps.hpp"
 #include "starfox/state/archive.hpp"
 #include "starfox/state/container.hpp"
@@ -62,7 +63,7 @@ std::uint32_t symbol_or(const assets::SymbolMap* symbols,
 }
 
 std::int8_t signed_byte(std::uint8_t value) noexcept {
-    return std::bit_cast<std::int8_t>(value);
+    return starfox::bit_cast<std::int8_t>(value);
 }
 
 } // namespace
@@ -244,7 +245,7 @@ std::int8_t MapVm::dots_mode() const noexcept {
     // a background declares ground, space, or neither. Reading the shared
     // source byte keeps those native transitions visible to the host renderer
     // instead of observing only explicit map-stream override controls.
-    return std::bit_cast<std::int8_t>(read_native_byte(dots_flag_address_));
+    return starfox::bit_cast<std::int8_t>(read_native_byte(dots_flag_address_));
 }
 
 void MapVm::write_native_byte(std::uint32_t address, std::uint8_t value) {
@@ -258,7 +259,7 @@ void MapVm::write_native_word(std::uint32_t address, std::uint16_t value) {
 }
 
 void MapVm::sync_display_from_cpu() noexcept {
-    fade_direction_ = std::bit_cast<std::int8_t>(cpu_.read8(fade_direction_address_));
+    fade_direction_ = starfox::bit_cast<std::int8_t>(cpu_.read8(fade_direction_address_));
     fade_value_ = static_cast<std::uint8_t>(cpu_.read8(fade_address_) & 0x0fU);
     const auto display = cpu_.read8(display_address_);
     screen_enabled_ = (display & 0x80U) == 0U;
@@ -268,7 +269,7 @@ void MapVm::sync_display_from_cpu() noexcept {
 
 void MapVm::sync_display_to_cpu() {
     write_native_byte(fade_direction_address_,
-                      std::bit_cast<std::uint8_t>(fade_direction_));
+                      starfox::bit_cast<std::uint8_t>(fade_direction_));
     write_native_byte(fade_address_, fade_value_);
     display_brightness_ = screen_enabled_ ? fade_value_ : 0U;
     write_native_byte(display_address_,
@@ -306,8 +307,8 @@ std::optional<std::array<std::int16_t, 2>> MapVm::background_scroll_override() c
         || background_scroll_requested_x_ == 0U || background_scroll_requested_y_ == 0U
         || read_native_byte(background_scroll_override_address_) == 0U) return std::nullopt;
     return std::array{
-        std::bit_cast<std::int16_t>(read_native_word(background_scroll_requested_x_)),
-        std::bit_cast<std::int16_t>(read_native_word(background_scroll_requested_y_))};
+        starfox::bit_cast<std::int16_t>(read_native_word(background_scroll_requested_x_)),
+        starfox::bit_cast<std::int16_t>(read_native_word(background_scroll_requested_y_))};
 }
 
 std::optional<std::array<std::int16_t, 2>> MapVm::peek_background_scroll_override() const noexcept {
@@ -316,7 +317,7 @@ std::optional<std::array<std::int16_t, 2>> MapVm::peek_background_scroll_overrid
     if(!enabled || !*enabled) return std::nullopt;
     const auto x=peek_ram_word(background_scroll_requested_x_),y=peek_ram_word(background_scroll_requested_y_);
     if(!x || !y) return std::nullopt;
-    return std::array{std::bit_cast<std::int16_t>(*x),std::bit_cast<std::int16_t>(*y)};
+    return std::array{starfox::bit_cast<std::int16_t>(*x),starfox::bit_cast<std::int16_t>(*y)};
 }
 
 void MapVm::refresh_background_metadata() {
@@ -393,12 +394,12 @@ void MapVm::complete_background_request() {
 }
 
 void MapVm::sync_map_state_to_cpu() {
-    write_native_word(map_count_address_, std::bit_cast<std::uint16_t>(countdown_));
+    write_native_word(map_count_address_, starfox::bit_cast<std::uint16_t>(countdown_));
     write_native_word(map_pointer_address_,
                       static_cast<std::uint16_t>(cursor_ & 0x7fffU));
     write_native_byte(map_bank_address_, static_cast<std::uint8_t>(cursor_ >> 16U));
     write_native_word(last_player_z_address_,
-                      std::bit_cast<std::uint16_t>(last_player_z_));
+                      starfox::bit_cast<std::uint16_t>(last_player_z_));
     write_native_word(last_map_object_address_,
                       original_object_pointer(last_spawned_));
 
@@ -451,8 +452,8 @@ void MapVm::sync_map_state_to_cpu() {
 void MapVm::restore_map_state_from_native() {
     cursor_ = (static_cast<std::uint32_t>(read_native_byte(map_bank_address_)) << 16U)
         | 0x8000U | (read_native_word(map_pointer_address_) & 0x7fffU);
-    countdown_ = std::bit_cast<std::int16_t>(read_native_word(map_count_address_));
-    last_player_z_ = std::bit_cast<std::int16_t>(
+    countdown_ = starfox::bit_cast<std::int16_t>(read_native_word(map_count_address_));
+    last_player_z_ = starfox::bit_cast<std::int16_t>(
         read_native_word(last_player_z_address_));
     last_spawned_ = object_handle(read_native_word(last_map_object_address_));
     if (!objects_->is_active(last_spawned_)) last_spawned_ = 0;
@@ -692,16 +693,17 @@ void MapVm::sync_objects_to_cpu() {
             ? original_object_pointer(active[index + 1U]) : 0U);
         cpu_.write16(base + 2U, index != 0
             ? original_object_pointer(active[index - 1U]) : 0U);
-        for (std::uint16_t offset = 4; offset < object_size_; ++offset) {
-            cpu_.write8(base + offset, read_native_object_byte(handle, offset));
-        }
+        std::array<std::uint8_t, 57> record;
+        const auto bytes = std::span{record}.first(object_size_);
+        objects_->read_base_record(handle, bytes);
+        // Preserve sequential bus effects and the later reference fixups.
+        // Ordinary mapped pages need only one adapter/page lookup per record.
+        cpu_.write_bytes(base + 4U, bytes.subspan(4));
         const auto& object = objects_->at(handle);
         cpu_.write16(base + 6U, original_object_pointer(object.attached));
         cpu_.write16(base + 25U, original_object_pointer(object.immune_object));
         cpu_.write16(base + 27U, original_object_pointer(object.collision_object));
-        for (std::size_t offset = 0; offset < extended_object_bytes_; ++offset) {
-            cpu_.write8(extended_base + offset, object.extended[offset]);
-        }
+        cpu_.write_bytes(extended_base, std::span{object.extended}.first(extended_object_bytes_));
         cpu_.write16(extended_base + 19U, original_object_pointer(object.fire_object));
     }
     for (std::size_t index = 0; index < free.size(); ++index) {
@@ -734,21 +736,21 @@ void MapVm::sync_objects_from_cpu() {
         throw std::runtime_error{"native active/free lists do not cover the object pool"};
     }
     objects_->restore_lists(active, free);
-    for (const auto handle : objects_->active_handles()) {
+    for (const auto handle : active) {
         const auto base = static_cast<std::uint32_t>(original_object_pointer(handle));
         const auto extended_base = extended_object_base_
             + static_cast<std::uint32_t>(handle - 1U) * object_size_;
-        for (std::uint16_t offset = 4; offset < object_size_; ++offset) {
-            write_native_object_byte(handle, offset, cpu_.read8(base + offset));
-        }
+        std::array<std::uint8_t, 57> record;
+        const auto bytes = std::span{record}.first(object_size_);
+        cpu_.read_bytes(base + 4U, bytes.subspan(4));
+        objects_->write_base_record(handle, bytes);
         auto& object = objects_->at(handle);
         object.attached = object_handle(cpu_.read16(base + 6U));
         object.immune_object = object_handle(cpu_.read16(base + 25U));
         object.collision_object = object_handle(cpu_.read16(base + 27U));
-        for (std::size_t offset = 0; offset < extended_object_bytes_; ++offset) {
-            objects_->write_path_byte(handle, static_cast<std::uint8_t>(0x80U + offset),
-                                      cpu_.read8(extended_base + offset));
-        }
+        const auto extended_bytes = std::span{record}.first(extended_object_bytes_);
+        cpu_.read_bytes(extended_base, extended_bytes);
+        objects_->write_extended_record(handle, extended_bytes);
         object.fire_object = object_handle(cpu_.read16(extended_base + 19U));
     }
 }
@@ -795,6 +797,12 @@ bool MapVm::execute_native_condition(std::uint32_t address) {
 
 ObjectHandle MapVm::allocate_map_object() {
     const auto handle = objects_->allocate_after(objects_->first_active());
+    // MOTHER.ASM initializes every map object to ATZREMOVE, including the
+    // direct and compact/table encodings. Only the attached-object opcode
+    // used to set it here. Unflagged exterior ships survived behind the view
+    // and eventually wrapped back into Space Armada's final corridor (#32).
+    // A native strategy may still replace this type (e.g. persistent ground).
+    if (handle != 0) objects_->at(handle).type = 0x08U;
     last_spawned_ = handle;
     return handle;
 }
@@ -1198,7 +1206,7 @@ void MapVm::execute_ready_records() {
             const auto address = read_pointer24(cursor_ + 1U);
             const auto left = read_native_byte(address);
             const auto right = rom_->read8(cursor_ + 4U);
-            const auto difference = std::bit_cast<std::int8_t>(
+            const auto difference = starfox::bit_cast<std::int8_t>(
                 static_cast<std::uint8_t>(left - right));
             const auto take = opcode == 124 ? difference < 0
                 : opcode == 126 ? difference > 0

@@ -16,6 +16,21 @@ namespace starfox::render {
 // BMP decoding keeps the embedded asset usable on every target without an
 // OS image decoder. Returned pixels are little-endian RGBA words.
 struct BackdropImage {
+    // Cover one view with photographic panoramas instead of showing another
+    // copy in a wide/banked corner. One uniform zoom preserves artwork shape;
+    // the canvas diagonal makes it independent of the current bank angle.
+    // Preserve scroll phase across source atlas wraps. Explicitly tileable
+    // space patterns and separately registered celestial sprites are exempt.
+    static float fit_canvas(std::array<float,4>& projection,float& scroll,unsigned width,unsigned height) {
+        const auto mode=projection[3];
+        if(mode!=0 && mode!=1 && mode!=6 && mode!=7 && mode!=8 && mode!=10) return 1;
+        const float factor=std::max(1.f,std::hypot(float(width),float(height))*projection[0]);
+        projection[0]/=factor;projection[1]/=factor;scroll*=factor;
+        return factor;
+    }
+    static std::array<float,3> orbital_parameters(const std::array<float,4>& projection,float scroll) {
+        return {scroll*projection[0],projection[1]?projection[0]/projection[1]:1.f,projection[2]};
+    }
     static std::array<float,3> limb_colour(const std::array<float,3>& surface,
         const std::array<std::uint32_t,16>& ramp) {
         const float shade=1+14*(1-std::clamp(surface[0]/255.f,0.f,1.f));
@@ -97,7 +112,7 @@ struct BackdropImage {
     }
     static bool covers(float x,float y,float horizon,float slope,const std::array<float,4>& projection,
         const std::array<std::array<float,4>,2>& keep) {
-        if(projection[3]==7) return true; // Orbital atlas includes the lower surface.
+        if(projection[3]==7 || projection[3]==10) return true; // Orbital atlas includes the lower surface.
         if(projection[3]==6 || projection[3]==8) return y<horizon+slope*x;
         if(projection[3]==5) return face_planet_coordinates(x,y,keep[1]).has_value();
         if(projection[3]==9) return cloud_limb_coordinates(x,y,keep[1]).has_value();
@@ -137,7 +152,7 @@ struct BackdropImage {
             const auto source=cloud_limb_coordinates(x,y,keep[1]).value_or(std::array<float,2>{});
             return {source[0]/512.f,source[1]/512.f};
         }
-        if(projection[3]==6 || projection[3]==7) for(unsigned i=0;i<keep.size();++i) {
+        if(projection[3]==6 || projection[3]==7 || projection[3]==10) for(unsigned i=0;i<keep.size();++i) {
             const auto& body=keep[i];
             if(body[2]<=0 || body[3]<=0) continue;
             const float dx=(x-body[0])/body[2],dy=(y-body[1])/body[3];
@@ -153,15 +168,22 @@ struct BackdropImage {
         }
         const float inverse=1/std::sqrt(1+slope*slope),dy=y-horizon;
         const float v=projection[2]+inverse*(dy-slope*x)*projection[1];
+        // Keep panorama/surface coordinates below the moon tag (2), without
+        // clamping distant lower views back onto a single stretched row.
+        if(projection[3]==10) {
+            const float depth=std::max(0.f,v-.8f);
+            return {(inverse*(x+slope*dy)+scroll)*projection[0],v<=.8f?v:.8f+depth/(1+depth)};
+        }
         // In packed orbital atlases, v>=2 identifies a moon slot. Clamp the
         // panorama before tagging so a steep bank cannot select a moon tile.
-        return {(inverse*(x+slope*dy)+scroll)*projection[0],projection[3]>=7?std::clamp(v,0.f,1.f):v};
+        return {(inverse*(x+slope*dy)+scroll)*projection[0],
+            projection[3]>=6 && projection[3]<=8?std::clamp(v,0.f,1.f):v};
     }
     // Repeat the panorama through a small overlap, not a hard image seam.
     // Vertical coordinates clamp to the authored zenith/horizon, never wrap
     // mountains above the camera or create a separate fallback-colour wedge.
-    std::array<float,3> sample_region(float u,float v,unsigned height) const {
-        if(!width || !height || height>this->height || pixels.size()!=std::size_t(width)*this->height || !std::isfinite(u) || !std::isfinite(v)) return {};
+    std::array<float,3> sample_region(float u,float v,unsigned height,unsigned base_y=0) const {
+        if(!width || !height || base_y>this->height || height>this->height-base_y || pixels.size()!=std::size_t(width)*this->height || !std::isfinite(u) || !std::isfinite(v)) return {};
         const unsigned overlap=std::max(1u,width/32),period=std::max(1u,width-overlap);
         const float x=(u-std::floor(u))*float(period),y=std::clamp(v,0.f,1.f)*float(height-1);
         const auto bilinear=[&](float sx) {
@@ -170,7 +192,7 @@ struct BackdropImage {
             const float fx=sx-std::floor(sx),fy=y-float(y0);
             std::array<float,3> c{};
             for(unsigned k=0;k<3;++k) {
-                const auto at=[&](unsigned a,unsigned b){return float((pixels[std::size_t(b)*width+a]>>(k*8))&255u);};
+                const auto at=[&](unsigned a,unsigned b){return float((pixels[std::size_t(b+base_y)*width+a]>>(k*8))&255u);};
                 c[k]=std::lerp(std::lerp(at(x0,y0),at(x1,y0),fx),std::lerp(at(x0,y1),at(x1,y1),fx),fy);
             }
             return c;
@@ -198,7 +220,29 @@ struct BackdropImage {
         }
         return c;
     }
-    std::array<float,3> sample_projected(float u,float v,float mode) const {
+    std::array<float,3> sample_projected(float u,float v,float mode,
+        std::array<float,3> orbital={0,.3125f,.54f}) const {
+        if(mode==10) {
+            if(!height || height%3 || !std::isfinite(u) || !std::isfinite(v)) return {};
+            const unsigned rows=height/3;
+            if(v>=2) return sample_projected(u,(float(rows*2)+std::clamp(v-2,0.f,1.f)*float(rows-1))/float(height-1),3);
+            const float encoded=std::max(0.f,v-.8f);
+            const float depth=encoded/std::max(.0001f,1-encoded);
+            auto colour=sample_region(u,v<=.8f?v:.8f+depth,rows);
+            if(!depth) return colour;
+            // Match the VR renderer's conformal stereographic disk, not an
+            // unwrapped longitude/radius fan (which stretches radial detail).
+            const float x=(u-orbital[0])/orbital[1],y=.8f+depth-orbital[2];
+            const float denominator=std::max(.001f,std::sqrt(1+x*x+y*y)+y);
+            const float dx=x/denominator,dz=1/denominator;
+            const float angle=(orbital[0]-std::floor(orbital[0]))*6.283185307179586f;
+            const float cosine=std::cos(angle),sine=std::sin(angle);
+            const float sx=.5f+.45f*(dx*cosine-dz*sine),sy=.5f+.45f*(dx*sine+dz*cosine);
+            const auto surface=sample_projected(sx,(float(rows)+sy*float(rows-1))/float(height-1),3);
+            float blend=std::clamp(depth*4,0.f,1.f);blend=blend*blend*(3-2*blend);
+            for(unsigned c=0;c<3;++c) colour[c]=std::lerp(colour[c],surface[c],blend);
+            return colour;
+        }
         if(mode==6 || mode==7 || mode==8) {
             if(v<2) return sample_region(u,v,height/2);
             if(height<2) return {};
@@ -227,7 +271,8 @@ struct BackdropImage {
         if(u16(0)!=0x4d42 || u32(14)<40 || u16(26)!=1 || u32(30)!=0)
             throw std::runtime_error("Unsupported backdrop BMP");
         const auto w=std::int32_t(u32(18)),h=std::int32_t(u32(22));
-        const auto bits=u16(28),offset=u32(10);
+        const auto bits=u16(28);
+        const auto offset=u32(10);
         if(w<=0 || w>8192 || h==0 || h < -8192 || h>8192 || (bits!=24 && bits!=32))
             throw std::runtime_error("Invalid backdrop BMP dimensions");
         BackdropImage image;image.width=unsigned(w);image.height=unsigned(h<0?-h:h);

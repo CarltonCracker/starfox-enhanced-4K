@@ -1,8 +1,11 @@
 #pragma once
 #include "starfox/vr/draw_packet.hpp"
+#include <vulkan/vulkan.h>
+#include "starfox/vr/vulkan_scene_pipeline.hpp"
 #include <memory>
 
 namespace starfox::vr {
+class VulkanPipelineCache;
 // Immutable GPU geometry with replaceable model transforms. Keep alive until
 // both eyes' fences complete. Successful
 // replacement/close also requires completed GPU use; failed initialization
@@ -20,11 +23,16 @@ public:
     VulkanDrawPackets& operator=(const VulkanDrawPackets&)=delete;
     // Borrowed render-thread cache; must outlive initialization calls.
     void set_pipeline_cache(VulkanPipelineCache* cache) noexcept {cache_=cache;}
+    // MODERN: also compile painter pipelines (depth test always passes,
+    // depth still written) at the next initialize, for record_range(painter).
+    void set_painter_pipelines(bool enabled) noexcept {painter_=enabled;}
     bool initialize(VkDevice,PFN_vkGetDeviceProcAddr,const VkPhysicalDeviceMemoryProperties&,
         VkRenderPass,std::span<const DrawPacket>,std::span<const uint32_t> object_keys={},
-        bool depth_test=true);
+        bool depth_test=true,bool depth_write=true);
     // depth_test=false is an ordered layer pass: neither reads nor writes
-    // scene depth. Geometry reuse is independent of this pipeline policy.
+    // scene depth. depth_write=false with testing retains ordered coplanar HUD
+    // composition while still allowing cabin geometry to occlude it.
+    // Geometry reuse is independent of this pipeline policy.
     // Optional unique keys cover every packet, including empty packets. Keys
     // may encode a source handle plus a draw-pass identity. They only locate
     // reuse candidates: exact geometry comparison is still required,
@@ -38,7 +46,9 @@ public:
     // Draw a contiguous range of nonempty uploaded items, allowing resident
     // compute models to be interleaved without changing painter/pass order.
     // Bounds and transforms are checked before recording any commands.
-    bool record_range(VkCommandBuffer,VkExtent2D,const EyeCamera&,std::size_t first,std::size_t count) const;
+    // painter: draw with the painter pipelines (set_painter_pipelines; depth-
+    // tested packets only), for scenery the cartridge paints in list order.
+    bool record_range(VkCommandBuffer,VkExtent2D,const EyeCamera&,std::size_t first,std::size_t count,bool painter=false) const;
     // After prior eye fences complete, update only nonempty packets' model
     // matrices in submission order. Caller must establish identical geometry.
     // Transactional validation; no Vulkan calls, uploads or allocations.
@@ -54,6 +64,7 @@ public:
     const std::string& status() const noexcept {return status_;}
 private:
     VulkanPipelineCache* cache_{};
+    bool painter_{};
     struct State;
     std::unique_ptr<State> state_;
     std::string status_{"Draw packets not initialized"};

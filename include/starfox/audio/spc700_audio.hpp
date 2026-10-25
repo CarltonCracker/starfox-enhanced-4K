@@ -1,6 +1,7 @@
 #pragma once
 
 #include "starfox/simulation/wdc65816.hpp"
+#include "starfox/audio/stem_executor.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -46,6 +47,13 @@ public:
     [[nodiscard]] std::vector<std::int16_t> render_logic_tick(
         std::span<const simulation::ApuPortWrite> writes);
 
+    // Advances the same two SPC drivers for exactly one 50 ms block, retaining
+    // native-rate music/effect stems without allocating a discarded unity mix.
+    // Use this when the caller applies its own volumes or substitutes MSU music.
+    // After the first block, the stem buffers are reused until state replacement.
+    void render_stems_logic_tick(std::span<const simulation::ApuPortWrite> writes,
+        StemExecutor* executor = nullptr);
+
     // BGM commands (CPU port 0) and effect commands (continuous engine and
     // positional audio on ports 1/2 plus queued effects on port 3) run on
     // independent SPC700 instances. Exposing the most recent stems makes it
@@ -66,6 +74,8 @@ public:
 
     [[nodiscard]] bool driver_loaded() const noexcept;
     [[nodiscard]] std::size_t uploaded_bytes() const noexcept;
+    // The music SPC's 64 KB ARAM as it stands (driver, BRR samples, songs).
+    [[nodiscard]] std::vector<std::uint8_t> music_ram() const;
     [[nodiscard]] std::array<std::uint8_t, 4> output_ports() const noexcept;
     [[nodiscard]] State state() const;
     [[nodiscard]] std::vector<std::uint8_t> save_state() const;

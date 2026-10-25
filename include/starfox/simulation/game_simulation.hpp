@@ -1,7 +1,9 @@
 #pragma once
 
 #include "starfox/assets/rom.hpp"
+#include "starfox/render/asteroid_models.hpp"
 #include "starfox/render/effect_types.hpp"
+#include "starfox/render/global_enhancement_options.hpp"
 #include "starfox/input/input_latch.hpp"
 #include "starfox/simulation/map_vm.hpp"
 #include "starfox/simulation/irq_palette.hpp"
@@ -20,6 +22,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <utility>
 
 namespace starfox::simulation {
 
@@ -64,12 +67,24 @@ enum class DisplayMode {
     widescreen_16_10,
     ultrawide_21_9,
     super_ultrawide_32_9,
+    fit_screen,
 };
 
 enum class RendererMode : std::uint8_t {
     gpu,
     software,
 };
+
+// Which GPU path draws the scene while renderer_mode is gpu. This is a host
+// preference: it is saved as the optional pregame.cfg key GPU_RENDERER and
+// is deliberately absent from save states.
+enum class GpuRenderer : std::uint8_t {
+    accurate, // the original per-model GPU path, the parity reference
+    fast,     // the GPU FAST paths; output must match accurate exactly
+    modern,   // MODERN: whole frames from the shared VR scene code (desktop
+              // builds with MODERN only; others load it as accurate)
+};
+inline constexpr std::size_t gpu_renderer_count = 3U;
 
 // Internal supersampling of the host-rendered 3D layer. Cartridge 2D art is
 // unaffected and keeps its source raster.
@@ -78,9 +93,27 @@ enum class RenderScale : std::uint8_t {
     scale_2x,
     scale_3x,
     scale_4x,
+    // GPU FAST only, desktop only: native-resolution 3D at 4K (16:9, 10x =
+    // 4000x2240) and 7680x2160 (32:9, 10x = 8000x2240).
+    scale_5x,
+    scale_6x,
+    scale_7x,
+    scale_8x,
+    scale_9x,
+    scale_10x,
 };
 
-inline constexpr std::size_t render_scale_count = 4U;
+inline constexpr std::size_t render_scale_count = 10U;
+// SOFTWARE and GPU ACCURATE keep the upstream 4x ceiling.
+inline constexpr std::size_t standard_render_scale_count = 4U;
+#if defined(STARFOX_IOS_RUNTIME)
+inline constexpr unsigned platform_render_scale_limit = 2U;
+#elif defined(__ANDROID__) || defined(__SWITCH__) || defined(STARFOX_UWP) \
+    || defined(SDL_PLATFORM_VITA) || defined(STARFOX_PS5)
+inline constexpr unsigned platform_render_scale_limit = 4U;
+#else
+inline constexpr unsigned platform_render_scale_limit = 10U;
+#endif
 
 enum class PregamePage {
     main,
@@ -88,25 +121,37 @@ enum class PregamePage {
     two_d,
     three_d,
     cheats,
+    global,
+    stereo,
+    updates,
 };
 
-inline constexpr std::array<std::uint8_t, 12> main_menu_order{
-    0,1,2,3,4,5,6,20,21,14,15,16};
-inline constexpr std::array<std::uint8_t, 11> two_d_menu_order{8,18,36,37,38,39,40,41,13,24,23};
-inline constexpr std::array<std::uint8_t, 17> three_d_menu_order{7,11,9,30,17,19,10,28,29,32,27,12,22,35,33,34,23};
-inline constexpr std::array<std::uint8_t, 18> neural_three_d_menu_order{7,11,9,30,31,17,19,10,28,29,32,27,12,22,35,33,34,23};
-#if defined(__ANDROID__) || defined(STARFOX_IOS_RUNTIME)
-inline constexpr std::array<std::uint8_t, 13> options_menu_order{9,0,1,2,3,4,13,5,6,7,8,12,11};
+inline constexpr std::array<std::uint8_t, 14> main_menu_order{
+    0,1,2,3,43,4,5,6,20,21,47,14,15,16};
+inline constexpr std::array<std::uint8_t, 13> two_d_menu_order{8,18,36,37,38,39,40,41,13,24,44,46,23};
+inline constexpr std::array<std::uint8_t, 17> three_d_menu_order{42,7,11,9,30,78,17,79,80,81,12,22,35,33,34,45,23};
+inline constexpr std::array<std::uint8_t, 32> global_menu_order{
+    29,72,32,71,76,77,10,65,66,28,70,27,73,74,61,62,67,63,68,48,49,50,52,53,54,55,56,57,69,59,60,23};
+#if defined(__3DS__)
+inline constexpr std::array<std::uint8_t, 15> options_menu_order{16,15,9,0,1,2,3,4,5,6,7,8,12,14,11};
+#elif defined(__ANDROID__) || defined(STARFOX_IOS_RUNTIME)
+inline constexpr std::array<std::uint8_t, 16> options_menu_order{16,15,9,0,1,2,3,4,13,5,6,7,8,12,17,11};
 #else
-inline constexpr std::array<std::uint8_t, 12> options_menu_order{9,0,1,2,3,4,5,6,7,8,12,11};
+inline constexpr std::array<std::uint8_t, 16> options_menu_order{16,15,9,0,1,2,3,4,5,6,7,8,12,14,17,11};
 #endif
 inline constexpr std::array<std::uint8_t, 8> cheats_menu_order{0,1,2,3,4,5,7,6};
-inline std::span<const std::uint8_t> pregame_menu_order(PregamePage page, bool neural_available=false) {
+// Keep BACK's saved selection 5 stable. Native Leia is a host-owned option 6.
+inline constexpr std::array<std::uint8_t, 7> stereo_menu_order{0,1,2,3,4,6,5};
+inline constexpr std::array<std::uint8_t, 4> updates_menu_order{0,1,2,3};
+inline std::span<const std::uint8_t> pregame_menu_order(PregamePage page) {
     switch (page) {
     case PregamePage::two_d: return two_d_menu_order;
-    case PregamePage::three_d: return neural_available ? std::span<const std::uint8_t>{neural_three_d_menu_order} : std::span<const std::uint8_t>{three_d_menu_order};
+    case PregamePage::three_d: return three_d_menu_order;
     case PregamePage::options: return options_menu_order;
     case PregamePage::cheats: return cheats_menu_order;
+    case PregamePage::global: return global_menu_order;
+    case PregamePage::stereo: return stereo_menu_order;
+    case PregamePage::updates: return updates_menu_order;
     default: return main_menu_order;
     }
 }
@@ -223,6 +268,7 @@ struct StageResultsState {
     std::uint16_t total_percentage{};
     std::array<std::uint8_t, 3> teammate_health{};
     bool visible{};
+    bool credit_bonus{};
 };
 
 struct BriefingState {
@@ -330,7 +376,7 @@ public:
         pregame_page_ = PregamePage::main;
     }
     [[nodiscard]] bool boss_roll_active() const {
-        const auto transfer = map_.read_native_byte(0U);
+        const auto transfer = map_.peek_ram_byte(0U).value_or(0);
         return ending_task_active_ && transfer >= 26U && transfer <= 32U;
     }
     [[nodiscard]] bool final_score_active() const noexcept {
@@ -379,8 +425,14 @@ public:
     // Stable route/stage code (route * 10 + stage), zero means ordinary boot.
     [[nodiscard]] std::uint8_t selected_level() const noexcept { return selected_level_; }
     [[nodiscard]] std::uint8_t stereo_output() const noexcept { return stereo_output_; }
+    [[nodiscard]] std::uint16_t stereo_separation() const noexcept {return stereo_separation_;}
+    [[nodiscard]] std::uint16_t stereo_convergence() const noexcept {return stereo_convergence_;}
+    [[nodiscard]] std::uint16_t stereo_crosshair_depth() const noexcept {return stereo_crosshair_depth_;}
+    void set_stereo_crosshair_depth(std::uint16_t value) noexcept {stereo_crosshair_depth_=value?std::max<std::uint16_t>(16,value):0;}
+    void set_stereo_separation(std::uint16_t value) noexcept {stereo_separation_=std::clamp<std::uint16_t>(value,1,512);}
+    void set_stereo_convergence(std::uint16_t value) noexcept {stereo_convergence_=std::max<std::uint16_t>(value,16);}
     void set_stereo_output(std::uint8_t value) noexcept {
-        stereo_output_ = value <= 2U ? value : 0U;
+        stereo_output_ = value <= 9U ? value : 0U;
     }
     void set_selected_level(std::uint8_t value);
     [[nodiscard]] std::vector<std::uint8_t> selectable_levels() const;
@@ -443,9 +495,19 @@ public:
     void set_bloom(std::uint8_t value) noexcept { bloom_ = value < 4U ? value : 0U; }
     [[nodiscard]] std::uint8_t bloom_2d() const noexcept { return bloom_2d_; }
     void set_bloom_2d(std::uint8_t value) noexcept { bloom_2d_ = value < 4U ? value : 0U; }
-    [[nodiscard]] std::uint8_t model_smoothing() const noexcept { return model_smoothing_; }
+    [[nodiscard]] std::uint8_t model_smoothing() const noexcept { return 0; } // Retired; old states cannot re-enable it.
+    [[nodiscard]] render::AsteroidModels asteroid_models() const noexcept { return asteroid_models_; }
+    // HIGH POLY ARWINGS (MODERN): the ending model replaces the flight Arwings.
+    [[nodiscard]] bool hipoly_arwings() const noexcept { return hipoly_arwings_; }
+    void set_hipoly_arwings(bool value) noexcept { hipoly_arwings_ = value; }
+    // DYNAMIC LIGHTING (MODERN): ray-traced shadows, coloured lights from
+    // shots and explosions, and the engine glow on the ground.
+    [[nodiscard]] bool dynamic_lighting() const noexcept { return dynamic_lighting_; }
+    void set_dynamic_lighting(bool value) noexcept { dynamic_lighting_ = value; }
     [[nodiscard]] std::uint8_t language() const noexcept { return language_; }
     [[nodiscard]] bool ray_tracing() const noexcept { return ray_tracing_; }
+    [[nodiscard]] std::uint8_t ray_tracing_quality() const noexcept { return ray_tracing_?ray_tracing_quality_:0; }
+    void set_ray_tracing_quality(std::uint8_t value) noexcept { set_ray_tracing(value!=0); if(value) ray_tracing_quality_=value<=3?value:2; }
     [[nodiscard]] bool enhanced_shadows() const noexcept { return enhanced_shadows_; }
     void set_enhanced_shadows(bool value) noexcept { enhanced_shadows_ = value; }
     [[nodiscard]] bool reflections_available() const noexcept { return renderer_mode_ == RendererMode::software || ray_tracing_; }
@@ -454,26 +516,65 @@ public:
     void set_reflective_surfaces(std::uint8_t value) noexcept {
         reflective_surfaces_ = std::min<std::uint8_t>(value,3U);
     }
+    [[nodiscard]] std::uint8_t aa_type() const noexcept { return aa_type_; }
+    [[nodiscard]] bool integer_scaling() const noexcept { return integer_scaling_; }
+    void set_integer_scaling(bool value) noexcept { integer_scaling_=value; }
+    void set_aa_type(std::uint8_t value) noexcept { aa_type_ = value < 7 ? value : 0; }
+    [[nodiscard]] RenderScale effective_render_scale() const noexcept {
+        if(aa_type_ != 3 || !anti_aliasing()) return render_scale_;
+        auto scale=std::max(unsigned(render_scale_),unsigned(anti_aliasing_mode_));
+#if defined(STARFOX_IOS_RUNTIME)
+        scale=std::min(scale,1U);
+#endif
+        return static_cast<RenderScale>(scale);
+    }
     [[nodiscard]] std::uint8_t dlss_mode() const noexcept { return dlss_mode_; }
+    [[nodiscard]] std::uint8_t dlss45_mode() const noexcept { return dlss45_mode_; }
     [[nodiscard]] std::uint8_t fsr1_mode() const noexcept { return fsr1_mode_; }
     [[nodiscard]] bool fsr1_menu() const noexcept { return fsr1_menu_; }
     void set_fsr1_menu(bool enabled) noexcept { fsr1_menu_ = enabled; }
     void set_fsr1_mode(std::uint8_t value) noexcept { fsr1_mode_ = value <= 4 ? value : 0; }
-    void set_dlss_mode(std::uint8_t value) noexcept { dlss_mode_ = value <= 4 ? value : 0; }
-    bool neural_filter_available() const noexcept {return neural_filter_available_;}
-    bool neural_filter_requested() const noexcept {return neural_filter_requested_;}
-    void configure_neural_filter(bool available, bool requested) noexcept {
-        neural_filter_available_=available;neural_filter_requested_=available && requested;
-    }
+    void set_dlss_mode(std::uint8_t value) noexcept { dlss_mode_ = value <= 4 ? value : 0; if(dlss_mode_) dlss45_mode_=0; }
+    void set_dlss45_mode(std::uint8_t value) noexcept { dlss45_mode_ = value <= 4 ? value : 0; if(dlss45_mode_) dlss_mode_=0; }
     void set_ray_tracing(bool value) noexcept { ray_tracing_ = value; if(!value && renderer_mode_ == RendererMode::gpu) reflective_surfaces_=0; }
     [[nodiscard]] std::uint8_t chromatic_aberration() const noexcept { return chromatic_aberration_; }
     void set_chromatic_aberration(std::uint8_t value) noexcept { chromatic_aberration_ = value <= 3 ? value : 0; }
     [[nodiscard]] std::uint8_t hdr_effect() const noexcept { return hdr_effect_; }
     void set_hdr_effect(std::uint8_t value) noexcept { hdr_effect_ = value <= 3 ? value : 0; }
     void set_language(std::uint8_t value);
-    void set_model_smoothing(std::uint8_t value) noexcept { model_smoothing_ = value < 4U ? value : 0U; }
+    void set_model_smoothing(std::uint8_t) noexcept { model_smoothing_ = 0; }
+    void set_asteroid_models(std::uint8_t value) noexcept {
+        asteroid_models_ = value < render::asteroid_model_mode_count
+            ? static_cast<render::AsteroidModels>(value) : render::AsteroidModels::sprite;
+    }
     [[nodiscard]] std::uint8_t effect_intensity() const noexcept { return effect_intensity_; }
     [[nodiscard]] std::uint8_t manipulation() const noexcept { return manipulation_; }
+    [[nodiscard]] const std::array<std::uint8_t,3>& extra_effects() const noexcept {return extra_effects_;}
+    [[nodiscard]] std::uint32_t global_enhancements() const noexcept {return global_enhancements_;}
+    [[nodiscard]] std::uint8_t scene_enhancements() const noexcept {return scene_enhancements_;}
+    [[nodiscard]] std::uint8_t depth_enhancements() const noexcept {return depth_enhancements_;}
+    void set_depth_enhancements(std::uint8_t value) noexcept {depth_enhancements_=value&15;}
+    [[nodiscard]] std::uint8_t particle_enhancements() const noexcept {return particle_enhancements_;}
+    void set_particle_enhancements(std::uint8_t value) noexcept {particle_enhancements_=value&15;}
+    [[nodiscard]] std::uint8_t phosphor_persistence() const noexcept {return phosphor_persistence_;}
+    void set_phosphor_persistence(std::uint8_t value) noexcept {phosphor_persistence_=value&3;}
+    [[nodiscard]] std::uint8_t adaptive_exposure() const noexcept {return adaptive_exposure_;}
+    void set_adaptive_exposure(std::uint8_t value) noexcept {adaptive_exposure_=value&3;}
+    [[nodiscard]] std::uint8_t water_caustics() const noexcept {return water_caustics_;}
+    void set_water_caustics(std::uint8_t value) noexcept {water_caustics_=value&3;}
+    [[nodiscard]] std::uint8_t shadow_softness() const noexcept {return shadow_softness_;}
+    void set_shadow_softness(std::uint8_t value) noexcept {shadow_softness_=value&3;}
+    [[nodiscard]] std::uint8_t camera_response() const noexcept {return camera_response_;}
+    void set_camera_response(std::uint8_t value) noexcept {camera_response_=value&render::camera_response_mask;}
+    [[nodiscard]] std::uint8_t volumetric_fog() const noexcept {return volumetric_fog_;}
+    void set_volumetric_fog(std::uint8_t value) noexcept {volumetric_fog_=std::min<std::uint8_t>(value,3);}
+    [[nodiscard]] std::uint8_t motion_blur() const noexcept {return motion_blur_;}
+    void set_motion_blur(std::uint8_t value) noexcept {motion_blur_=std::min<std::uint8_t>(value,3);}
+    void set_scene_enhancements(std::uint8_t value) noexcept {scene_enhancements_=value&render::scene_enhancement_mask;}
+    void set_global_enhancements(std::uint32_t value) noexcept {global_enhancements_=value&render::global_enhancement_mask;}
+    void set_extra_effects(std::array<std::uint8_t,3> values) noexcept {
+        for(unsigned i=0;i<3;++i) extra_effects_[i]=(i==0?render::valid_manipulation(values[i]) && !render::persistence_mode(static_cast<render::Effect>(values[i])):render::valid_special_fx(values[i]))?values[i]:0;
+    }
     [[nodiscard]] std::uint8_t material() const noexcept { return material_; }
     [[nodiscard]] const std::array<std::uint8_t,6>& environment() const noexcept { return environment_; }
     void set_environment(const std::array<std::uint8_t,6>& value) noexcept;
@@ -496,8 +597,55 @@ public:
     [[nodiscard]] RendererMode renderer_mode() const noexcept {
         return renderer_mode_;
     }
+    // Platforms without a CPU presentation path (the PS5's only renderer is
+    // SDL GPU on RADV) keep the hardware renderer whatever is requested.
+    [[nodiscard]] static constexpr RendererMode constrain_renderer_mode(
+        RendererMode requested, bool hardware_only) noexcept {
+        return hardware_only ? RendererMode::gpu : requested;
+    }
+#if defined(STARFOX_PS5)
+    static constexpr bool hardware_renderer_only = true;
+#else
+    static constexpr bool hardware_renderer_only = false;
+#endif
     void set_renderer_mode(RendererMode mode) noexcept {
-        renderer_mode_ = mode;
+        renderer_mode_ = constrain_renderer_mode(mode, hardware_renderer_only);
+    }
+    [[nodiscard]] static constexpr std::pair<RendererMode,GpuRenderer> next_renderer_selection(
+        RendererMode mode,GpuRenderer gpu,bool backward,bool hardware_only,bool modern=false) noexcept {
+        if(hardware_only) return {RendererMode::gpu,
+            gpu==GpuRenderer::fast?GpuRenderer::accurate:GpuRenderer::fast};
+        // SOFTWARE -> GPU -> GPU FAST [-> MODERN], wrapping.
+        const unsigned count=modern?4U:3U;
+        const unsigned position=mode==RendererMode::software?0U
+            :gpu==GpuRenderer::fast?2U:gpu==GpuRenderer::modern && modern?3U:1U;
+        const unsigned next=(position+(backward?count-1U:1U))%count;
+        return {next==0U?RendererMode::software:RendererMode::gpu,
+            next==0U?gpu:next==3U?GpuRenderer::modern:next==2U?GpuRenderer::fast:GpuRenderer::accurate};
+    }
+    [[nodiscard]] GpuRenderer gpu_renderer() const noexcept {
+        return gpu_renderer_;
+    }
+    void set_gpu_renderer(GpuRenderer renderer) noexcept {
+        gpu_renderer_ = renderer==GpuRenderer::modern && !modern_available_
+            ? GpuRenderer::accurate : renderer;
+    }
+    // GPU FAST paths (and their 5x-10x scales). MODERN includes them: any
+    // frame MODERN does not draw falls back to GPU FAST.
+    [[nodiscard]] bool gpu_fast() const noexcept {
+        return renderer_mode_ == RendererMode::gpu
+            && gpu_renderer_ != GpuRenderer::accurate;
+    }
+    // The host offers MODERN (desktop builds with STARFOX_MODERN). Set before
+    // the saved renderer is applied.
+    void set_modern_available(bool available) noexcept {
+        modern_available_ = available;
+        if(!available && gpu_renderer_ == GpuRenderer::modern) gpu_renderer_ = GpuRenderer::accurate;
+    }
+    [[nodiscard]] bool modern_available() const noexcept { return modern_available_; }
+    [[nodiscard]] bool modern_renderer() const noexcept {
+        return renderer_mode_ == RendererMode::gpu
+            && gpu_renderer_ == GpuRenderer::modern;
     }
     [[nodiscard]] bool msu1_music() const noexcept { return msu1_music_; }
     void set_msu1_music(bool enabled) noexcept {
@@ -545,14 +693,20 @@ public:
     [[nodiscard]] RenderScale render_scale() const noexcept {
         return render_scale_;
     }
+    [[nodiscard]] static constexpr RenderScale constrain_render_scale(RenderScale scale) noexcept {
+        return static_cast<RenderScale>(std::min(static_cast<unsigned>(scale),platform_render_scale_limit-1U));
+    }
     void set_render_scale(RenderScale scale) noexcept {
-#if defined(STARFOX_IOS_RUNTIME)
-        if (scale > RenderScale::scale_2x) scale = RenderScale::scale_2x;
-#endif
-        render_scale_ = scale;
+        // Also constrain config/test/archive entry, not only menu cycling.
+        render_scale_ = constrain_render_scale(scale);
     }
     void set_secondary_inputs(
         std::span<const input::TickInput> controllers) noexcept;
+    // Host input policy, not cartridge state: keep raw menu buttons intact
+    // while fixing native Y=fire/B=brake across all control types.
+    void set_fixed_native_fire_brake(bool enabled) noexcept {
+        fixed_native_fire_brake_ = enabled;
+    }
     void set_mouse_input(MouseInputState mouse) noexcept {
         mouse_input_ = mouse;
     }
@@ -630,6 +784,7 @@ private:
     void calculate_meters();
     void draw_ex_transfer_overlay(GameTickResult& result);
     void service_audio_irq(std::vector<std::uint8_t>& commands);
+    void advance_msu_fade();
     void stop_music_on_player_death();
     void configure_route_for_map(const std::string& symbol);
     [[nodiscard]] std::uint32_t resolve_route_stage(std::uint16_t stage);
@@ -666,6 +821,7 @@ private:
         const input::TickInput& input);
     [[nodiscard]] GameTickResult tick_continue_screen(const input::TickInput& input);
     [[nodiscard]] GameTickResult tick_stage_results(const input::TickInput& input);
+    void advance_retail_stage_tally();
     void finish_stage_results();
     void begin_special_exit(bool fade_to_white);
     void update_special_exit();
@@ -1032,6 +1188,8 @@ private:
     std::uint32_t credits_music_original_{};
     std::uint32_t credits_music_ex_{};
     std::uint32_t msu_play_{};
+    std::uint32_t msu_fade_flag_{};
+    std::uint32_t msu_volume_{};
     std::uint32_t previous_view_position_{};
     std::uint32_t view_position_{};
     std::uint32_t view_shake_{};
@@ -1161,6 +1319,8 @@ private:
     bool god_mode_{};
     bool show_fps_{};
     AntiAliasingMode anti_aliasing_mode_{AntiAliasingMode::off};
+    std::uint8_t aa_type_{};
+    bool integer_scaling_{};
     bool enhanced_graphics_{};
     bool smooth_polys_{};
     std::uint8_t rtx_lighting_{};
@@ -1168,6 +1328,18 @@ private:
     std::uint8_t effect_{};
     std::uint8_t effect_intensity_{100U};
     std::uint8_t manipulation_{};
+    std::array<std::uint8_t,3> extra_effects_{}; // World distortion, model FX, world FX.
+    std::uint32_t global_enhancements_{};
+    std::uint8_t scene_enhancements_{};
+    std::uint8_t depth_enhancements_{};
+    std::uint8_t particle_enhancements_{};
+    std::uint8_t phosphor_persistence_{};
+    std::uint8_t adaptive_exposure_{};
+    std::uint8_t water_caustics_{};
+    std::uint8_t shadow_softness_{2};
+    std::uint8_t camera_response_{};
+    std::uint8_t volumetric_fog_{};
+    std::uint8_t motion_blur_{};
     std::uint8_t manipulation_intensity_{100};
     std::uint8_t material_{};
     std::array<std::uint8_t,6> environment_{};
@@ -1178,11 +1350,15 @@ private:
     std::uint8_t language_{};
     bool enhanced_shadows_{}; // Software renderer only; GPU uses ray_tracing_.
     bool ray_tracing_{};
+    std::uint8_t ray_tracing_quality_{2};
     std::uint8_t reflective_surfaces_{};
+    render::AsteroidModels asteroid_models_{};
+    bool hipoly_arwings_{};
+    bool dynamic_lighting_{};
     std::uint8_t dlss_mode_{}; // Host quality preference, not emulated game state.
+    std::uint8_t dlss45_mode_{};
     std::uint8_t fsr1_mode_{}; // Host quality preference; preserve across state loads.
     bool fsr1_menu_{}; // Current adapter selection, never serialized into cartridge state.
-    bool neural_filter_available_{}, neural_filter_requested_{}; // Optional PC add-on; host owns persistence.
     bool infinite_bombs_{};
     bool infinite_lives_{};
     bool planet_select_cheat_{},planet_cheat_active_{};
@@ -1191,6 +1367,8 @@ private:
     std::uint8_t default_laser_{};
     std::uint8_t selected_level_{};
     std::uint8_t stereo_output_{};
+    std::uint16_t stereo_separation_{16},stereo_convergence_{1024};
+    std::uint16_t stereo_crosshair_depth_{};
     bool default_laser_pending_{true};
     std::uint8_t chromatic_aberration_{};
     std::uint8_t hdr_effect_{};
@@ -1200,6 +1378,8 @@ private:
     bool preview_start_requested_{};
     bool vsync_{};
     RendererMode renderer_mode_{RendererMode::gpu};
+    GpuRenderer gpu_renderer_{GpuRenderer::accurate};
+    bool modern_available_{};
     bool msu1_music_{};
     bool msu1_available_{true};
     bool rumble_{true};
@@ -1238,6 +1418,7 @@ private:
     ColourMathEffectState colour_math_effect_{};
     std::uint8_t wipe_logic_snapshot_{};
     std::array<input::TickInput, 4> secondary_inputs_{};
+    bool fixed_native_fire_brake_{};
     MouseInputState mouse_input_{};
     std::uint16_t ntt_input_{};
     std::uint8_t background_music_hold_phases_{};

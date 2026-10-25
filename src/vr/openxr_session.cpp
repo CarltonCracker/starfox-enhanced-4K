@@ -19,7 +19,7 @@ void OpenXrSession::close() noexcept {
     if(space_!=XR_NULL_HANDLE) api_.destroy_space(space_);
     if(session_!=XR_NULL_HANDLE) api_.destroy_session(session_);
     instance_=XR_NULL_HANDLE;session_=XR_NULL_HANDLE;space_=XR_NULL_HANDLE;
-    running_=exit_=frame_active_=renderable_=false;
+    running_=exit_=frame_active_=renderable_=exit_asked_=false;
     state_=XR_SESSION_STATE_UNKNOWN;frame_time_=0;
     origin_changes_.clear();
 }
@@ -79,7 +79,21 @@ bool OpenXrSession::poll_events() {
         }
     } catch(const std::exception& e) {status_=e.what();return false;}
 }
-std::optional<StereoFrame> OpenXrSession::begin_frame() {
+bool OpenXrSession::request_exit() {
+    if(session_==XR_NULL_HANDLE) {status_="OpenXR session not initialized";return false;}
+    if(exit_asked_ || exit_) return true;
+    exit_asked_=true;
+    if(!running_) {exit_=true;return true;} // Never began or already stopped.
+    const auto result=api_.request_exit(session_);
+    if(XR_FAILED(result)) {
+        status_="Request OpenXR session exit: OpenXR result "+std::to_string(result);
+        exit_=true;running_=false; // Nothing more the runtime will do for us.
+        return false;
+    }
+    status_="OpenXR session exit requested";
+    return true;
+}
+std::optional<StereoFrame> OpenXrSession::begin_frame(const void* locate_chain,void* view_state_chain) {
     if(!running_ || exit_ || frame_active_) return {};
     try {
         XrFrameWaitInfo wait{XR_TYPE_FRAME_WAIT_INFO};XrFrameState timing{XR_TYPE_FRAME_STATE};
@@ -96,9 +110,11 @@ std::optional<StereoFrame> OpenXrSession::begin_frame() {
         });
         if(timing.shouldRender) {
             XrViewLocateInfo locate{XR_TYPE_VIEW_LOCATE_INFO};
+            locate.next=locate_chain;
             locate.viewConfigurationType=XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
             locate.displayTime=frame_time_;locate.space=space_;
             XrViewState view_state{XR_TYPE_VIEW_STATE};uint32_t count{};
+            view_state.next=view_state_chain;
             check(api_.locate_views(session_,&locate,&view_state,2,&count,frame.views.data()),"Locate stereo eyes");
             const auto valid=XR_VIEW_STATE_ORIENTATION_VALID_BIT|XR_VIEW_STATE_POSITION_VALID_BIT;
             renderable_=count==2 && (view_state.viewStateFlags&valid)==valid;

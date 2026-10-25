@@ -14,6 +14,7 @@ std::vector<ContinuousTransformPose> pack_continuous_fragments(PackedProjection&
         if(polygon[0]>faces.corners.size() || graph.faces[f].vertex_indices.size()>faces.corners.size()-polygon[0])
             throw std::runtime_error("Fragment corners exceed source storage");
     }
+    vertices.own_source(); // Fragment expansion must never edit a shared source packet.
     auto normal_pose=pose;normal_pose.scale=1;normal_pose.x=normal_pose.y=normal_pose.z=0;
     const auto normal_projection=pack_projection(assets::Shape{},normal_pose,settings);
     const auto original=std::move(vertices.continuous_vertices);
@@ -99,6 +100,7 @@ static PackedFaces pack_faces_impl(const assets::Shape& shape,const PackedBsp& b
             +" for model "+shape.name+" (address "+std::to_string(shape.header.address)+")");
     PackedFaces result;const auto shading=source_shading(pose);
     std::unordered_map<const assets::TextureImage*,std::uint32_t> textures;
+    std::unordered_map<std::uint32_t,std::uint32_t> override_offsets;
     for(const auto& face:bsp.faces) {
         auto primitive=face.sprite?PackedPrimitive::sprite:face.vertex_indices.size()==2?PackedPrimitive::line
             :face.vertex_indices.size()>=3?PackedPrimitive::polygon:PackedPrimitive::empty;
@@ -135,6 +137,30 @@ static PackedFaces pack_faces_impl(const assets::Shape& shape,const PackedBsp& b
             }
             command.textured=1;command.texture_offset=found->second;command.u_mask=texture.u_mask;command.v_mask=texture.v_mask;
             command.colour_base=settings.colour_index_base;command.reserved0=std::uint32_t(pose.texture_scroll_x);command.reserved1=std::uint32_t(pose.texture_scroll_y);
+            // Replacement artwork: RGBA words after the source bytes. u holds
+            // one plus its word offset, v its width | height << 16 (both unused
+            // by textured model materials otherwise).
+            if(settings.texture_overrides) {
+                const auto image=settings.texture_overrides->find(texture_override_key(texture));
+                if(image!=settings.texture_overrides->end() && image->second.width && image->second.height
+                    && image->second.width<65536U && image->second.height<65536U
+                    && image->second.rgba.size()==std::size_t(image->second.width)*image->second.height) {
+                    auto placed=override_offsets.find(image->first);
+                    if(placed==override_offsets.end()) {
+                        const auto bytes=image->second.rgba.size()*4U;
+                        result.texels.resize((result.texels.size()+3U)&~std::size_t(3),0);
+                        if(bytes>16U*1024*1024 || result.texels.size()>16U*1024*1024-bytes)
+                            throw std::runtime_error("GPU model replacement texture budget exceeded");
+                        placed=override_offsets.emplace(image->first,std::uint32_t(result.texels.size()/4U)).first;
+                        const auto start=result.texels.size();
+                        result.texels.resize(start+bytes);
+                        for(std::size_t i=0;i<image->second.rgba.size();++i)
+                            for(unsigned b=0;b<4;++b) result.texels[start+i*4U+b]=std::uint8_t(image->second.rgba[i]>>(b*8U));
+                    }
+                    command.u=std::int32_t(placed->second+1U);
+                    command.v=std::int32_t(image->second.width|(image->second.height<<16U));
+                }
+            }
             command.tag=std::uint32_t(primitive==PackedPrimitive::sprite?PixelLayer::two_d:primitive==PackedPrimitive::line?PixelLayer::three_d:PixelLayer::textured_geometry);
         }
         const auto first=std::uint32_t(result.corners.size());
@@ -160,5 +186,70 @@ PackedFaces pack_faces(const assets::Shape& shape,const PackedBsp& bsp,const Ren
 }
 PackedFaces pack_warp_faces(const assets::Shape& shape,const PackedBsp& bsp,const RenderPose& pose,const RenderSettings& settings) {
     return pack_faces_impl(shape,bsp,pose,settings,true);
+}
+bool PreparedFacesSource::supported(const RenderPose& pose) noexcept {
+    return !pose.explosion_progress && !pose.simple_scaled_sprite && !pose.collapse_to_axis_line
+        && (!pose.colour_warp || pose.force_colour);
+}
+PreparedFacesSource::State PreparedFacesSource::state(const RenderPose& pose,const RenderSettings& settings) noexcept {
+    const auto shading=source_shading(pose);
+    State result;
+    result.colour_frame=pose.colour_frame;result.depth_band=shading.depth_band;result.light=shading.light;
+    result.depth_tables=pose.has_depth_colour_tables;
+    if(result.depth_tables) result.depth_colours=pose.depth_colour_tables;
+    result.palette_override=pose.palette_override;
+    result.scroll_x=pose.texture_scroll_x;result.scroll_y=pose.texture_scroll_y;
+    result.wave_offset=pose.wave_offset;result.wave_frame=pose.animation_frame&15U;
+    result.wireframe=pose.wireframe_mode;result.wobble=pose.wobble_mode;
+    result.force_colour=pose.force_colour;result.forced_colour=pose.forced_colour;
+    result.terrain=pose.terrain_geometry;result.world=pose.world_geometry;
+    result.cel=pose.cel_mode;result.wave=pose.wave_mode;
+    result.colour_base=settings.colour_index_base;result.cull=settings.backface_culling;
+    return result;
+}
+PreparedFacesSource::PreparedFacesSource(const assets::Shape& shape,const PreparedBspSource& topology,
+    const RenderPose& pose,const RenderSettings& settings):shape_(&shape),topology_(&topology),state_(state(pose,settings)) {
+    if(!supported(pose) || !topology.matches(shape,false))
+        throw std::runtime_error("Prepared faces require matching immutable ordinary topology");
+    faces_=pack_faces(shape,topology.graph(),pose,settings);
+}
+bool PreparedFacesSource::matches(const assets::Shape& shape,const PreparedBspSource& topology,
+    const RenderPose& pose,const RenderSettings& settings) const noexcept {
+    return shape_==&shape && topology_==&topology && supported(pose)
+        && topology.matches(shape,false) && state_==state(pose,settings);
+}
+std::uint64_t PreparedFacesSource::storage_bytes() const noexcept {
+    return sizeof(*this)+faces_.corners.capacity()*sizeof(faces_.corners[0])
+        +faces_.polygons.capacity()*sizeof(faces_.polygons[0])
+        +faces_.materials.capacity()*sizeof(RasterCommand)+faces_.texels.capacity()
+        +faces_.primitives.capacity()*sizeof(PackedPrimitive);
+}
+PreparedRayTopology::PreparedRayTopology(const PreparedFacesSource& source,bool materials)
+    :faces_(&source),materials_(materials) {
+    const auto& faces=source.faces();
+    if(faces.primitives.size()!=faces.polygons.size())
+        throw std::runtime_error("Ray topology primitive count differs from faces");
+    std::size_t count=0;
+    for(std::size_t face=0;face<faces.polygons.size();++face) {
+        if(faces.primitives[face]!=PackedPrimitive::polygon) continue;
+        const auto first=faces.polygons[face][0],corners=faces.polygons[face][1];
+        if(first>faces.corners.size() || corners>faces.corners.size()-first)
+            throw std::runtime_error("Ray topology exceeds source corners");
+        if(corners>=3) count+=corners-2;
+        if(count>1'000'000) throw std::runtime_error("Ray topology exceeds source budget");
+    }
+    triangles_.reserve(count);if(materials) topology_.reserve(count);
+    for(std::size_t face=0;face<faces.polygons.size();++face) {
+        if(faces.primitives[face]!=PackedPrimitive::polygon) continue;
+        const auto first=faces.polygons[face][0],corners=faces.polygons[face][1];
+        for(std::uint32_t corner=1;corner+1<corners;++corner) {
+            triangles_.push_back({faces.corners[first][0],faces.corners[first+corner][0],
+                faces.corners[first+corner+1][0],std::uint32_t(face)});
+            if(materials) topology_.push_back({first,first+corner,first+corner+1,std::uint32_t(face)});
+        }
+    }
+}
+std::uint64_t PreparedRayTopology::storage_bytes() const noexcept {
+    return sizeof(*this)+(triangles_.capacity()+topology_.capacity())*sizeof(triangles_[0]);
 }
 }

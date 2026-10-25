@@ -8,6 +8,8 @@
 
 namespace starfox::render {
 
+class RowWorkers;
+
 // Center-height left wall, including source HDMA scroll. Transparent wall
 // texels fall back to the darkest palette entry, never the backdrop color.
 [[nodiscard]] std::uint8_t tunnel_wall_index(
@@ -40,6 +42,9 @@ struct BackgroundUniqueRegion {
 
 class BackgroundRenderer {
 public:
+    // Borrow an existing, joined presentation pool. Command recording stays
+    // serial; ground history is preserved in column strips. Null is serial.
+    RowWorkers* row_workers{};
     void draw_bg1(
         const simulation::SnesPpuState& ppu,
         Framebuffer& target,
@@ -65,7 +70,12 @@ public:
         std::uint32_t single_occurrence_top_rows = 0U,
         std::span<const BackgroundUniqueRegion> unique_regions = {},
         bool ending_star_extension = false, bool game_over_star_extension = false,
-        std::uint32_t sky_source_min = 0) const noexcept;
+        std::uint32_t sky_source_min = 0,
+        // Starfields/orbital art have no local floor to continue after wrap.
+        bool continue_ground = true,
+        // Full-height tunnel presentation also fills the source's hidden
+        // ten-line top guard; native scene pixels below it remain unchanged.
+        bool extend_tunnel_diagonals = false) const noexcept;
     void draw_bg3(
         const simulation::SnesPpuState& ppu,
         Framebuffer& target,

@@ -1,0 +1,38 @@
+# MODERN renderer: the shared VR scene (starfox_scene) drawn through SDL_GPU
+# for flat-screen targets. Needs SDL3::SDL3 from the runtime build. Desktop
+# Windows/Linux only for now; other targets keep their existing renderers.
+if((WIN32 AND NOT WINDOWS_STORE) OR (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT ANDROID))
+    set(STARFOX_MODERN_DEFAULT ON)
+else()
+    set(STARFOX_MODERN_DEFAULT OFF)
+endif()
+option(STARFOX_ENABLE_MODERN "Build the MODERN renderer (VR scene code on SDL_GPU)" ${STARFOX_MODERN_DEFAULT})
+if(NOT STARFOX_ENABLE_MODERN)
+    return()
+endif()
+if(NOT TARGET starfox_scene)
+    include("${CMAKE_CURRENT_LIST_DIR}/Scene.cmake")
+endif()
+add_library(starfox_modern STATIC src/modern/sdl_scene_packets.cpp src/modern/sdl_layer_filter.cpp src/modern/sdl_source_scene.cpp src/modern/sdl_frame.cpp src/modern/sdl_ray_shadows.cpp src/modern/modern_runtime.cpp
+    src/modern/texture_dump.cpp)
+target_include_directories(starfox_modern PUBLIC include PRIVATE src)
+target_compile_features(starfox_modern PUBLIC cxx_std_20)
+target_link_libraries(starfox_modern PUBLIC starfox_scene SDL3::SDL3)
+if(STARFOX_BUILD_TESTS)
+    add_executable(starfox_modern_safety_tests tests/modern_safety_tests.cpp)
+    target_include_directories(starfox_modern_safety_tests PRIVATE include)
+    target_compile_features(starfox_modern_safety_tests PRIVATE cxx_std_20)
+    target_link_libraries(starfox_modern_safety_tests PRIVATE SDL3::SDL3)
+    add_test(NAME starfox_modern_safety_tests COMMAND starfox_modern_safety_tests)
+endif()
+if(STARFOX_BUILD_TESTS)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME starfox_modern_shader_freshness
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/../tools/generate_modern_shaders.py" --check)
+    set_tests_properties(starfox_modern_shader_freshness PROPERTIES LABELS modern TIMEOUT 30)
+endif()
+if(TARGET starfox_vr_game)
+    # M1 harness (fork-local): SDL_GPU packets vs starfox_vr_scene_route_bench captures.
+    add_executable(starfox_modern_scene_check EXCLUDE_FROM_ALL tools/check_modern_scene.cpp)
+    target_link_libraries(starfox_modern_scene_check PRIVATE starfox_modern starfox_vr_game SDL3::SDL3)
+endif()

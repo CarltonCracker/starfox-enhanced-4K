@@ -178,7 +178,10 @@ ShapeHeader ShapeDecoder::decode_header(std::uint32_t address) const {
 Shape ShapeDecoder::decode(
     std::uint32_t header_address,
     std::string name,
-    std::uint16_t colour_pointer_override) const {
+    std::uint16_t colour_pointer_override,
+    std::uint16_t minimum_colour_count) const {
+    if (minimum_colour_count > 256U)
+        throw std::invalid_argument("Shape colour count exceeds byte index range");
     Shape shape;
     shape.name = std::move(name);
     if (null_shape_address_ != 0U && header_address == null_shape_address_) {
@@ -194,7 +197,7 @@ Shape ShapeDecoder::decode(
     }
     decode_points(shape);
     decode_faces(shape);
-    decode_colours(shape);
+    decode_colours(shape, minimum_colour_count);
     return shape;
 }
 
@@ -209,17 +212,18 @@ std::uint16_t ShapeDecoder::select_lod_pointer(
 Shape ShapeDecoder::decode_lod(
     const ShapeHeader& parent,
     std::uint16_t header_pointer,
-    std::uint16_t colour_pointer_override) const {
+    std::uint16_t colour_pointer_override,
+    std::uint16_t minimum_colour_count) const {
     const auto address = (parent.address & 0xff0000U) | header_pointer;
     if (address == parent.address) {
-        return decode(address, {}, colour_pointer_override);
+        return decode(address, {}, colour_pointer_override, minimum_colour_count);
     }
     // Resolve the inherited material before decoding. Compact headers do not
     // own a colour table; parsing an unrelated fallback first can fail even
     // when the parent/override table is valid.
     const auto colour_pointer = colour_pointer_override != 0U
         ? colour_pointer_override : parent.colour_pointer;
-    auto shape = decode(address, {}, colour_pointer);
+    auto shape = decode(address, {}, colour_pointer, minimum_colour_count);
     if (shape.header.compact) {
         // Compact headers contain only points, bank and faces.
         shape.header.sort_z = parent.sort_z;
@@ -398,6 +402,11 @@ void ShapeDecoder::decode_faces(Shape& shape) const {
             const auto vertex_index = rom_.read8(face_cursor++);
             face.vertex_indices.push_back(vertex_index);
         }
+        // MOBJ.MC msh_faces branches two-point faces to misline before its
+        // m_vistab lookup: lines are never culled by their face number. The
+        // HYPER warp streaks name visibility 0, which faces away once their
+        // strategy turns them 180 degrees.
+        if (vertex_count == 2U) face.visibility_index = -1;
         return face;
     };
 
@@ -546,19 +555,22 @@ void ShapeDecoder::decode_faces(Shape& shape) const {
     throw std::runtime_error{"face command stream did not terminate"};
 }
 
-void ShapeDecoder::decode_colours(Shape& shape) const {
+void ShapeDecoder::decode_colours(Shape& shape, std::uint16_t minimum_count) const {
     shape.diffuse_shade_tables = diffuse_shade_tables_;
     shape.has_diffuse_shade_tables = has_diffuse_shade_tables_;
-    if (shape.faces.empty()) {
+    if (shape.faces.empty() && minimum_count == 0U) {
         return;
     }
-    const auto maximum = std::max_element(shape.faces.begin(), shape.faces.end(), [](const Face& a, const Face& b) {
+    const auto face_count = shape.faces.empty() ? 0U : 1U + std::max_element(shape.faces.begin(), shape.faces.end(), [](const Face& a, const Face& b) {
         return a.colour_id < b.colour_id;
     })->colour_id;
-    shape.colour_words.reserve(static_cast<std::size_t>(maximum) + 1U);
+    // MSSPRITE selects AL_DEPTHOFFSET at runtime, independently of the
+    // polygon face colours (e.g. Dancing Insector's trailing flame is #1).
+    const auto count = std::max<unsigned>(face_count, minimum_count);
+    shape.colour_words.reserve(count);
     const auto base = (static_cast<std::uint32_t>(colour_table_bank_) << 16U)
         | shape.header.colour_pointer;
-    for (std::uint16_t index = 0; index <= maximum; ++index) {
+    for (std::uint16_t index = 0; index < count; ++index) {
         const auto word = rom_.read16(base + index * 2U);
         shape.colour_words.push_back(word);
         ColourMaterial material;
@@ -585,14 +597,20 @@ void ShapeDecoder::decode_colours(Shape& shape) const {
 }
 
 void ShapeDecoder::decode_texture(Shape& shape, std::uint16_t descriptor) const {
-    if ((descriptor & 0xc000U) != 0x4000U || texture_address_table_ == 0U
-        || texture_coordinate_table_ == 0U) {
-        return;
-    }
     if (std::any_of(shape.textures.begin(), shape.textures.end(), [descriptor](const auto& texture) {
             return texture.descriptor == descriptor;
         })) {
         return;
+    }
+    if (auto decoded = texture(descriptor)) {
+        shape.textures.push_back(std::move(*decoded));
+    }
+}
+
+std::optional<TextureImage> ShapeDecoder::texture(std::uint16_t descriptor) const {
+    if ((descriptor & 0xc000U) != 0x4000U || texture_address_table_ == 0U
+        || texture_coordinate_table_ == 0U) {
+        return std::nullopt;
     }
 
     const auto texture_index = static_cast<std::uint8_t>(descriptor);
@@ -604,7 +622,7 @@ void ShapeDecoder::decode_texture(Shape& shape, std::uint16_t descriptor) const 
     // table can coincidentally have bit 14 set; only descriptors valid against
     // both canonical lookup tables are textures.
     if (coordinate_index >= 9U || texture_index >= texture_count) {
-        return;
+        return std::nullopt;
     }
     const auto address_entry = texture_address_table_
         + static_cast<std::uint32_t>(texture_index) * 3U;
@@ -646,7 +664,7 @@ void ShapeDecoder::decode_texture(Shape& shape, std::uint16_t descriptor) const 
                 : static_cast<std::uint8_t>(packed & 0x0fU));
         }
     }
-    shape.textures.push_back(std::move(texture));
+    return texture;
 }
 
 } // namespace starfox::assets

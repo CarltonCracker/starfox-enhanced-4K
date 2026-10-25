@@ -11,7 +11,7 @@ cbuffer Settings : register(b0,space2) {
     uint tag,enabled,transparentBlack,flags;
     uint singleRows,regionCount;int registerX,registerY;
     uint terrainFirst,terrainLast,logicalWidth,logicalHeight;
-    float2 rasterJitter;uint skySourceMin,jitterPadding;
+    float2 rasterJitter;uint skySourceMin;float stereoSkySourceX;
 };
 uint readByte(uint address) {address&=65535u;return (memory[address>>2]>>((address&3u)*8u))&255u;}
 uint readWord(uint address) {address=(address&32767u)*2u;return readByte(address)|(readByte(address+1u)<<8u);}
@@ -33,7 +33,11 @@ int truncNumber(Sf64 x) {
 int roundNumber(Sf64 x) {
     bool negative=(x.hi>>31)!=0;x.hi&=0x7fffffff;
     int integer=truncNumber(x);
-    if(!sf_less(sf_sub(x,number(integer)),sf_from_float_bits(asuint(0.5)))) ++integer;
+    Sf64 fraction=sf_sub(x,number(integer)),half=sf_from_float_bits(asuint(0.5));
+    // Ordinary landscape ties round toward +infinity, so a whole atlas
+    // period never changes the sampled row. Retain the old tunnel/star rule.
+    bool up=negative && !(flags&416u)?sf_less(half,fraction):!sf_less(fraction,half);
+    if(up) ++integer;
     return negative?-integer:integer;
 }
 uint tileAt(uint x,uint y) {
@@ -65,10 +69,15 @@ void prepare() {
     int first=-1,last=-1,firstRaw=0,lastRaw=0;
     if(flags&4u) for(int i=0;i<32;++i) {
         uint word=readWord(0x2fa0u+uint(i));if(!(word&0x4000u)) continue;
-        int raw=int(word&8191u);unwrapped=count?unwrapped+difference(raw,prev):raw;
+        // Bank tables can wrap at the atlas height before the 13-bit scroll
+        // register wraps. Fit the same texture-space continuation as the CPU.
+        int period=(flags&416u)?8192:int(tilesHigh*tileEdge);
+        int raw=int(word&uint(period-1));
+        int delta=(raw-prev)&(period-1);if(delta>period/2-1) delta-=period;
+        unwrapped=count?unwrapped+delta:raw;
         Sf64 x=number(i+1),y=number(unwrapped);
         sx=sf_add(sx,x);sy=sf_add(sy,y);sxx=sf_add(sxx,sf_mul(x,x));sxy=sf_add(sxy,sf_mul(x,y));
-        if(!count) {first=i;firstRaw=raw;}last=i;lastRaw=raw;prev=raw;++count;
+        if(!count) {first=i;firstRaw=int(word&8191u);}last=i;lastRaw=int(word&8191u);prev=raw;++count;
     }
     Sf64 slope=number(0),intercept=slope;
     if(count) {
@@ -81,10 +90,14 @@ void prepare() {
     prepared[7]=asuint(first>=0 && last!=first?difference(lastRaw,firstRaw):0);
     prepared[8]=uint(first>=0 && last!=first?last-first:1);
 }
-int columnScroll(int screenX,bool expanded) {
+// A Mode 2 offset-per-tile column is one BG2 tile as it lies on the screen:
+// its edges follow the fine scroll of the row being drawn (phase), which HDMA
+// changes per scanline. A frame-wide phase split tiles between two offsets,
+// a one-line step every 8 pixels (vertical seams in the clouds while steering).
+int columnScroll(int screenX,bool expanded,int phase) {
     if(!(flags&4u)) return -2147483647;
     int sampleX=clamp(mosaicAt(screenX-originX)+originX,clipLeft,clipRight-1);
-    int coordinate=sampleX-originX+(scrollX&7);
+    int coordinate=sampleX-originX+phase;
     if(expanded && prepared[4]) {
         Sf64 at=sf_div(number(coordinate),number(8));
         return roundNumber(sf_add(sf_make(prepared[0],prepared[1]),sf_mul(sf_make(prepared[2],prepared[3]),at)))&8191;
@@ -114,11 +127,12 @@ void main(uint3 id:SV_DispatchThreadID) {
     if(!phase) {if(!id.x) prepare();return;}
     uint x=id.x;if(x>=logicalWidth) return;
     bool extend=(flags&1u)!=0,wrapX=(flags&2u)!=0,tunnel=(flags&32u)!=0;
-    bool expanded=extend && logicalWidth>256 && (flags&4u),ground=expanded && logicalHeight>192;
-    int logicalX=int(x)-originX,sampleX=mosaicAt(tunnel && extend && priority!=2u?clamp(logicalX,0,255):logicalX);
+    bool expanded=extend && logicalWidth>256 && (flags&4u),ground=expanded && logicalHeight>192 && !(flags&1024u);
+    bool authoredTunnel=(flags&4096u)!=0;
+    int logicalX=int(x)-originX,sampleX=mosaicAt(tunnel && extend && priority!=2u && !authoredTunnel?clamp(logicalX,0,255):logicalX);
     bool outside=logicalX<0 || logicalX>=256;
     uint mapWidth=tilesWide*tileEdge,mapHeight=tilesHigh*tileEdge;
-    int columnY=columnScroll(tunnel && extend?sampleX+originX:int(x),expanded),previous=-1;uint lastGround=0;bool wrapped=false,lastTerrain=false;
+    int columnX=tunnel && extend && !authoredTunnel?sampleX+originX:int(x),columnY=-2147483647,columnPhase=-1,previous=-1;uint lastGround=0;bool wrapped=false,lastTerrain=false;
     for(uint y=0;y<logicalHeight;++y) {
         put(x,y,0,false);
         if(!enabled || int(x)<clipLeft || int(x)>=clipRight) continue;
@@ -127,6 +141,29 @@ void main(uint3 id:SV_DispatchThreadID) {
         int sampleY=mosaicAt(int(y));
         int rowX=(flags&8u) && sampleY>=0 && sampleY<224?asint(memory[16640u+uint(sampleY)]):scrollX;
         int rowY=(flags&16u)?asint(memory[16864u+uint(clamp(sampleY,0,223))]):scrollY;
+        if((flags&8192u) && sampleY>=0 && sampleY<10) rowY=asint(memory[16864u+10u]);
+        // Preserve real tile edges outside the viewport before extrapolating
+        // past the atlas. A fitted diagonal can disagree by an entire tile.
+        int atlasScroll=((rowX+128)&int(mapWidth-1))-128;
+        int atlasX=logicalX+atlasScroll;
+        bool movingTunnelAtlas=false;
+        if((flags&2048u) && mapWidth>256 && atlasX>=0 && atlasX<int(mapWidth)
+            && sampleY>=0 && sampleY<224 && ((rowY&511)==24 || (rowY&511)==280)) {
+            uint part=((rowY&511)==280?2u:0u)+(sampleY>=112?1u:0u);
+            movingTunnelAtlas=(memory[17600u]&(1u<<part))!=0;
+        }
+        if((rowX&7)!=columnPhase) {columnPhase=rowX&7;columnY=columnScroll(columnX,expanded,columnPhase);}
+        if((flags&2048u) && !movingTunnelAtlas && outside && priority!=2u && sampleY>=0 && sampleY<224
+            && ((rowY&511)==24 || (rowY&511)==280)) {
+            uint page=(rowY&511)==280?1u:0u,part=page*2u+(sampleY>=112?1u:0u),base=17600u;
+            if(memory[base]&(1u<<part)) {
+                uint colour=memory[base+40u+page*224u+uint(sampleY)];
+                float dx=abs(float(logicalX+atlasScroll)-255.5),dy=abs(float(sampleY)+.5-(sampleY<112?112.5:111.5));
+                for(uint z=0;z<memory[base+1u+part];++z)
+                    if(dx>=asfloat(memory[base+8u+part*8u+z*2u])*dy) colour=memory[base+9u+part*8u+z*2u];
+                put(x,y,colour,true);continue;
+            }
+        }
         uint sourceY=uint(sampleY+(columnY!=-2147483647?columnY:rowY))&(mapHeight-1);
         if(expanded && y<144 && outside && skySourceMin<mapHeight) sourceY=max(sourceY,skySourceMin);
         if(ground) {
@@ -135,6 +172,26 @@ void main(uint3 id:SV_DispatchThreadID) {
             if(wrapped) {if(lastGround) put(x,y,lastGround,true,lastTerrain);continue;}
         }
         int unwrappedX=sampleX+rowX;
+        if(movingTunnelAtlas && outside) unwrappedX=atlasX;
+        if(authoredTunnel && outside) {
+            int centredScroll=((rowX+128)&int(mapWidth-1))-128;
+            unwrappedX=clamp(sampleX+centredScroll,0,int(mapWidth)-1);
+        }
+        // Move sky texture coordinates, not the assembled frame. Ground rows,
+        // tunnel walls, scanline horizon and foreground/HUD ownership stay put.
+        if(!tunnel && stereoSkySourceX!=0 && !(terrainLast>terrainFirst && sourceY>=terrainFirst && sourceY<terrainLast)) {
+            int shift=int(round(stereoSkySourceX));
+            unwrappedX+=shift;
+            // Banked BG2 uses per-column vertical offsets. Sample the shifted
+            // column too, otherwise each eye acquires vertical disparity.
+            int skyColumnY=columnScroll(int(x)+shift,expanded,rowX&7);
+            uint shiftedY=uint(sampleY+(skyColumnY!=-2147483647?skyColumnY:rowY))&(mapHeight-1);
+            // Do not pull ground ink across the unchanged authored horizon.
+            if(terrainLast>terrainFirst && shiftedY>=terrainFirst && shiftedY<terrainLast)
+                shiftedY=sourceY<terrainFirst?(terrainFirst+mapHeight-1)&(mapHeight-1):terrainLast&(mapHeight-1);
+            sourceY=shiftedY;
+            if(expanded && y<144 && outside && skySourceMin<mapHeight) sourceY=max(sourceY,skySourceMin);
+        }
         bool outMap=unwrappedX<0 || unwrappedX>=int(mapWidth);
         if((flags&384u) && extend && outside && (outMap || (flags&256u))) {
             uint cellX=uint(unwrappedX)>>5u;

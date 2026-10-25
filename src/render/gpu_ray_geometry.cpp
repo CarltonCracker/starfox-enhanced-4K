@@ -1,7 +1,9 @@
 #include "starfox/render/gpu_ray_geometry.hpp"
+#include "starfox/render/gpu_scene_counters.hpp"
 #include <cmath>
 #if defined(STARFOX_SDL_GPU_EFFECTS)
 #include <SDL3/SDL.h>
+#include "starfox/render/gpu_preparation.hpp"
 #include "shaders/generated/ray_geometry_portable.hpp"
 #include "shaders/generated/ray_materials_portable.hpp"
 #include <cstring>
@@ -38,7 +40,7 @@ struct GpuRayGeometry::Impl {
         info.entrypoint=(spv||dxil)?"main":"main0";
         info.num_readonly_storage_buffers=3;info.num_readwrite_storage_buffers=1;info.num_uniform_buffers=1;
         info.threadcount_x=64;info.threadcount_y=info.threadcount_z=1;
-        pipeline=SDL_CreateGPUComputePipeline(device,&info);require(pipeline);
+        pipeline=create_gpu_compute_pipeline(device,&info);require(pipeline);
     }
 #endif
 };
@@ -75,7 +77,7 @@ void* GpuRayGeometry::enqueue_materials(void* device,void* command,void* topolog
             info.entrypoint=(spv||dxil)?"main":"main0";
             info.num_readonly_storage_buffers=5;info.num_readwrite_storage_buffers=1;info.num_uniform_buffers=1;
             info.threadcount_x=64;info.threadcount_y=info.threadcount_z=1;
-            impl_->material_pipeline=SDL_CreateGPUComputePipeline(impl_->device,&info);Impl::require(impl_->material_pipeline);
+            impl_->material_pipeline=create_gpu_compute_pipeline(impl_->device,&info);Impl::require(impl_->material_pipeline);
         }
         const auto bytes=triangles*64U;
         if(!target && impl_->material_capacity<bytes) {
@@ -88,7 +90,7 @@ void* GpuRayGeometry::enqueue_materials(void* device,void* command,void* topolog
         const std::uint32_t settings[]{triangles,corner_count,material_count,texel_count,texel_base,target?target->byte_offset/16U:0U,reject_all?1U:0U,lookup?lookup->face_count:0U};
         SDL_PushGPUComputeUniformData(cmd,0,settings,sizeof(settings));
         SDL_GPUStorageBufferReadWriteBinding out{};out.buffer=target?static_cast<SDL_GPUBuffer*>(target->buffer):impl_->material_output;out.cycle=target?target->cycle:true;
-        auto* pass=SDL_BeginGPUComputePass(cmd,nullptr,0,&out,1);Impl::require(pass);
+        auto* pass=scene_counters::begin_compute_pass(cmd,nullptr,0,&out,1);Impl::require(pass);
         SDL_BindGPUComputePipeline(pass,impl_->material_pipeline);
         SDL_GPUBuffer* inputs[]{static_cast<SDL_GPUBuffer*>(topology),static_cast<SDL_GPUBuffer*>(corners),
             static_cast<SDL_GPUBuffer*>(polygons),static_cast<SDL_GPUBuffer*>(materials),static_cast<SDL_GPUBuffer*>(lookup?lookup->buffer:topology)};
@@ -133,7 +135,7 @@ void* GpuRayGeometry::enqueue(void* device,void* command,void* points,void* resi
         SDL_GPUStorageBufferReadWriteBinding output{};
         output.buffer=target?static_cast<SDL_GPUBuffer*>(target->buffer):impl_->output;
         output.cycle=target?target->cycle:true;
-        auto* pass=SDL_BeginGPUComputePass(cmd,nullptr,0,&output,1);Impl::require(pass);
+        auto* pass=scene_counters::begin_compute_pass(cmd,nullptr,0,&output,1);Impl::require(pass);
         SDL_BindGPUComputePipeline(pass,impl_->pipeline);
         SDL_GPUBuffer* input[]{static_cast<SDL_GPUBuffer*>(points),static_cast<SDL_GPUBuffer*>(residuals?residuals:points),static_cast<SDL_GPUBuffer*>(triangles)};
         SDL_BindGPUComputeStorageBuffers(pass,0,input,3);

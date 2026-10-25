@@ -1,13 +1,16 @@
 #include "starfox/assets/rom.hpp"
+#include "starfox/compat/bit_cast.hpp"
 #include "starfox/assets/shape_decoder.hpp"
 #include "starfox/input/buttons.hpp"
 #include "starfox/render/framebuffer.hpp"
+#include "starfox/render/asteroid_models.hpp"
 #include "starfox/render/background_renderer.hpp"
 #include "starfox/render/dust_renderer.hpp"
 #include "starfox/render/palette.hpp"
 #include "starfox/render/particle_renderer.hpp"
 #include "starfox/render/scaled_text_renderer.hpp"
 #include "starfox/render/software_renderer.hpp"
+#include "starfox/render/source_sprite_material.hpp"
 #include "starfox/render/sprite_renderer.hpp"
 #include "starfox/simulation/game_simulation.hpp"
 #include "starfox/simulation/math.hpp"
@@ -126,8 +129,8 @@ int main(int argc, char** argv) {
         const starfox::render::SpriteRenderer sprite_renderer;
         const starfox::assets::ShapeDecoder decoder{rom, symbols};
         const auto trigonometry = starfox::simulation::TrigTables::load(rom, symbols);
-        std::unordered_map<std::uint32_t, starfox::assets::Shape> cache;
-        std::unordered_set<std::uint32_t> invalid;
+        std::unordered_map<std::uint64_t, starfox::assets::Shape> cache;
+        std::unordered_set<std::uint64_t> invalid;
         const auto ram_symbol = [&symbols](const char* name) {
             for (const auto address : symbols.find(name)) {
                 if ((address >> 16U) == 0 || (address >> 16U) == 0x7eU) return address;
@@ -378,14 +381,15 @@ int main(int argc, char** argv) {
             const auto& object = game.objects().at(handle);
             if ((object.strategy_flags[3] & 0x08U) != 0U || object.shape == 0U) continue;
             const auto colour_table = effective_colour_table(object);
-            const auto base_shape_key = (static_cast<std::uint32_t>(object.shape) << 16U)
-                | colour_table;
+            const auto base_shape_key = starfox::render::source_shape_material_key(
+                object.shape, colour_table, object);
             if (invalid.contains(base_shape_key)) continue;
             auto base = cache.find(base_shape_key);
             if (base == cache.end()) {
                 try {
                     base = cache.emplace(base_shape_key,
-                        decoder.decode(object.shape, {}, colour_table)).first;
+                        decoder.decode(object.shape, {}, colour_table,
+                            starfox::render::source_sprite_colour_count(object))).first;
                 } catch (const std::exception&) {
                     invalid.insert(base_shape_key);
                     continue;
@@ -458,22 +462,20 @@ int main(int argc, char** argv) {
                 const auto& object = game.objects().at(item.handle);
                 if ((object.strategy_flags[0] & 0x0cU) == 0U) continue;
                 const auto colour_table = effective_colour_table(object);
-                const auto base_shape_key =
-                    (static_cast<std::uint32_t>(object.shape) << 16U)
-                    | colour_table;
+                const auto base_shape_key = starfox::render::source_shape_material_key(
+                    object.shape, colour_table, object);
                 const auto base = cache.find(base_shape_key);
                 if (base == cache.end()) continue;
                 const auto shadow_pointer = base->second.header.shadow_pointer;
-                const auto shape_key =
-                    (static_cast<std::uint32_t>(shadow_pointer) << 16U)
-                    | colour_table;
+                const auto shape_key = starfox::render::source_shape_material_key(
+                    shadow_pointer, colour_table, object);
                 if (invalid.contains(shape_key)) continue;
                 auto found = cache.find(shape_key);
                 if (found == cache.end()) {
                     try {
                         found = cache.emplace(shape_key, decoder.decode_lod(
                             base->second.header, shadow_pointer,
-                            colour_table)).first;
+                            colour_table, starfox::render::source_sprite_colour_count(object))).first;
                     } catch (const std::exception&) {
                         invalid.insert(shape_key);
                         continue;
@@ -488,8 +490,8 @@ int main(int argc, char** argv) {
             const auto& object = game.objects().at(handle);
             if ((object.strategy_flags[0] & 0x04U) != 0U) continue;
             const auto colour_table = effective_colour_table(object);
-            const auto base_shape_key = (static_cast<std::uint32_t>(object.shape) << 16U)
-                | colour_table;
+            const auto base_shape_key = starfox::render::source_shape_material_key(
+                object.shape, colour_table, object);
             const auto base = cache.find(base_shape_key);
             if (base == cache.end()) continue;
             if ((object.strategy_flags[0] & 0x10U) != 0U) {
@@ -500,7 +502,7 @@ int main(int argc, char** argv) {
             }
             if ((object.strategy_flags[0] & 0x40U) != 0U) {
                 text_renderer.draw(object.colour_table, object.extended[21],
-                    std::bit_cast<std::int8_t>(object.texture_scroll_x),
+                    starfox::bit_cast<std::int8_t>(object.texture_scroll_x),
                     make_pose(item, false), framebuffer);
                 ++rendered;
                 continue;
@@ -509,13 +511,14 @@ int main(int argc, char** argv) {
             const auto base_header = base->second.header;
             const auto selected_pointer = starfox::assets::ShapeDecoder::select_lod_pointer(
                 base_header, relative_z);
-            const auto shape_key = (static_cast<std::uint32_t>(selected_pointer) << 16U)
-                | colour_table;
+            const auto shape_key = starfox::render::source_shape_material_key(
+                selected_pointer, colour_table, object);
             auto found = cache.find(shape_key);
             if (found == cache.end()) {
                 try {
                     found = cache.emplace(shape_key, decoder.decode_lod(
-                        base_header, selected_pointer, colour_table)).first;
+                        base_header, selected_pointer, colour_table,
+                        starfox::render::source_sprite_colour_count(object))).first;
                 } catch (const std::exception&) {
                     invalid.insert(shape_key);
                     continue;
@@ -524,7 +527,7 @@ int main(int argc, char** argv) {
             auto pose = make_pose(item, false);
             if ((object.strategy_flags[0] & 0x20U) != 0U) {
                 auto size_adjustment = static_cast<std::int16_t>(
-                    std::bit_cast<std::int8_t>(object.texture_scroll_x));
+                    starfox::bit_cast<std::int8_t>(object.texture_scroll_x));
                 for (std::uint8_t shift = 0; shift < base_header.shift; ++shift) {
                     size_adjustment = starfox::simulation::add16(
                         size_adjustment, size_adjustment);
@@ -550,7 +553,7 @@ int main(int argc, char** argv) {
                           << static_cast<unsigned>(object.strategy_flags[0]) << std::dec
                           << " depth=" << static_cast<unsigned>(object.extended[21])
                           << " tx=" << static_cast<int>(
-                              std::bit_cast<std::int8_t>(object.texture_scroll_x))
+                              starfox::bit_cast<std::int8_t>(object.texture_scroll_x))
                           << " size=" << found->second.header.size
                           << " textures=" << found->second.textures.size()
                           << " velocity=(" << object.velocity_x << ',' << object.velocity_y
@@ -576,7 +579,14 @@ int main(int argc, char** argv) {
                     std::cout << '\n';
                 }
             }
-            renderer.draw(found->second, pose, framebuffer, false);
+            const auto* drawn = &found->second;
+            if (const auto* mode = std::getenv("STARFOX_ASTEROID_MODELS"); mode != nullptr) {
+                if (const auto* model = starfox::render::substitute_asteroid_model(found->second, pose,
+                        static_cast<starfox::render::AsteroidModels>(std::atoi(mode)))) {
+                    drawn = model;
+                }
+            }
+            renderer.draw(*drawn, pose, framebuffer, false);
             ++rendered;
         }
         if (continue_scene) {

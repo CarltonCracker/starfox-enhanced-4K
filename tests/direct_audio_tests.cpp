@@ -1,5 +1,6 @@
 #include "starfox/assets/rom.hpp"
 #include "starfox/audio/spc700_audio.hpp"
+#include "starfox/audio/parallel_stem_executor.hpp"
 #include "starfox/input/buttons.hpp"
 #include "starfox/simulation/game_simulation.hpp"
 #include "starfox/state/container.hpp"
@@ -11,6 +12,7 @@
 #include <memory>
 #include <numeric>
 #include <span>
+#include <string_view>
 
 namespace {
 
@@ -156,6 +158,189 @@ void check_original_selected_level_bank(const starfox::assets::RomImage& rom,
     require(heard_e_laser, "level 3-5 shortcut silenced the e-laser effect");
 }
 
+void check_original_batched_music_banks(const starfox::assets::RomImage& rom,
+    const starfox::assets::SymbolMap& symbols) {
+    auto game = std::make_unique<starfox::simulation::GameSimulation>(rom, symbols, "BOOT");
+    starfox::audio::Spc700Audio batched, separate, settled;
+    const auto boot = game->map().take_apu_port_writes();
+    (void)batched.prime_upload_sequence(boot);
+    (void)separate.prime_upload_sequence(boot);
+    (void)settled.prime_upload_sequence(boot);
+    std::vector<starfox::simulation::ApuPortWrite> combined;
+    for (const auto* name : {"DO_BGM_30", "DO_BGM_31", "DO_BGM_32", "DO_BGM_33", "DO_BGM_34", "DO_BGM_35"}) {
+        starfox::simulation::Wdc65816Registers registers;
+        registers.status = 0x24U;
+        game->map().call_native_routine(symbols.find(name).front(), registers, 50'000'000U, true);
+        const auto writes = game->map().take_apu_port_writes();
+        combined.insert(combined.end(), writes.begin(), writes.end());
+        (void)separate.render_logic_tick(writes);
+        (void)settled.render_logic_tick(writes);
+        if (std::string_view{name} != "DO_BGM_35")
+            for (unsigned tick = 0; tick < 30; ++tick) (void)settled.render_logic_tick({});
+    }
+    (void)batched.render_logic_tick(combined);
+    require(batched.save_state() == separate.save_state(),
+        "Real level-select SPC banks differ from separately initialized route banks");
+    const std::array start_music{starfox::simulation::ApuPortWrite{0, 3, 0}};
+    for (unsigned tick = 0; tick < 60; ++tick) {
+        const auto commands = tick == 0 ? std::span<const starfox::simulation::ApuPortWrite>{start_music}
+            : std::span<const starfox::simulation::ApuPortWrite>{};
+        (void)batched.render_logic_tick(commands);
+        (void)settled.render_logic_tick(commands);
+        require(std::equal(batched.last_music_samples().begin(), batched.last_music_samples().end(),
+            settled.last_music_samples().begin()), "Level-select music differs from settled route progression");
+    }
+}
+
+void check_selected_orchestra_bank(const starfox::assets::RomImage& rom,
+    const starfox::assets::SymbolMap& symbols, std::uint8_t level) {
+    using Write = starfox::simulation::ApuPortWrite;
+    // Native PLANETSEQ installs orchestra instruments before each mission.
+    // The asteroid bank supplies a score, not those instruments. Compare the
+    // actual shortcut PCM against that independent source-bank prerequisite.
+    auto bank_source = std::make_unique<starfox::simulation::GameSimulation>(rom, symbols, "BOOT");
+    (void)bank_source->map().take_apu_port_writes();
+    starfox::simulation::Wdc65816Registers registers;
+    registers.status = 0x24U;
+    bank_source->map().call_native_routine(symbols.find("DO_BGM_MAP").front(), registers, 50'000'000U, true);
+    const auto orchestra = bank_source->map().take_apu_port_writes();
+    auto game = std::make_unique<starfox::simulation::GameSimulation>(rom, symbols, "BOOT");
+    game->set_selected_level(level);
+    starfox::audio::Spc700Audio actual, expected;
+    const auto boot = game->map().take_apu_port_writes();
+    (void)actual.prime_upload_sequence(boot);
+    (void)expected.prime_upload_sequence(boot);
+    bool inserted = false, heard_music = false;
+    for (unsigned tick = 0; tick < 150; ++tick) {
+        for (unsigned phase = 0; phase < 3; ++phase) game->present_frame();
+        const auto result = game->tick(tick == 0
+            ? starfox::input::TickInput{0, starfox::input::start, 0} : starfox::input::TickInput{});
+        auto reference_writes = result.audio_port_writes;
+        const auto restart = std::find_if(reference_writes.rbegin(), reference_writes.rend(),
+            [](const Write& write) { return write.port == 0 && write.value == 0xff; });
+        if (!inserted && restart != reference_writes.rend()) {
+            reference_writes.insert(restart.base() - 1, orchestra.begin(), orchestra.end());
+            inserted = true;
+        }
+        (void)actual.render_logic_tick(result.audio_port_writes);
+        (void)expected.render_logic_tick(reference_writes);
+        game->synchronize_apu_output_ports(actual.output_ports());
+        if (!inserted) continue;
+        const auto music = actual.last_music_samples();
+        heard_music |= std::any_of(music.begin(), music.end(), [](auto sample) { return sample != 0; });
+        require(std::equal(music.begin(), music.end(), expected.last_music_samples().begin()),
+            "Level-select score uses the wrong orchestra instruments/pitch");
+    }
+    require(inserted && heard_music, "Orchestra shortcut fixture never exercised stage music");
+}
+
+void check_parallel_spc(const starfox::assets::RomImage& rom,
+    const starfox::assets::SymbolMap& symbols) {
+    starfox::audio::ParallelStemExecutor executor(true);
+    require(executor.parallel_available(), "Real-driver audio test did not start the worker");
+    for(const auto* level:{"LEVEL1_1","LEVEL3_5"}) {
+        auto game=std::make_unique<starfox::simulation::GameSimulation>(
+            rom,symbols,level,std::span<const std::uint8_t>{},true);
+        game->set_god_mode(true);
+        starfox::audio::Spc700Audio serial,parallel;
+        const auto boot=game->map().take_apu_port_writes();
+        (void)serial.prime_upload_sequence(boot);
+        (void)parallel.prime_upload_sequence(boot);
+        game->synchronize_apu_output_ports(serial.output_ports());
+        bool audible{};
+        for(unsigned tick=0;tick<240;++tick) {
+            const auto result=game->tick({});
+            serial.render_stems_logic_tick(result.audio_port_writes);
+            parallel.render_stems_logic_tick(result.audio_port_writes,&executor);
+            require(std::equal(serial.last_music_samples().begin(),serial.last_music_samples().end(),
+                parallel.last_music_samples().begin(),parallel.last_music_samples().end()),
+                "Threaded real SPC music differs from serial");
+            require(std::equal(serial.last_effect_samples().begin(),serial.last_effect_samples().end(),
+                parallel.last_effect_samples().begin(),parallel.last_effect_samples().end()),
+                "Threaded real SPC effects differ from serial");
+            require(serial.output_ports()==parallel.output_ports(),"Threaded real SPC handshake changed");
+            audible|=std::any_of(serial.last_music_samples().begin(),serial.last_music_samples().end(),
+                [](auto sample){return sample!=0;});
+            if(tick%24==0) require(serial.save_state()==parallel.save_state(),"Threaded real SPC machine state changed");
+            if(tick==120) {
+                starfox::audio::Spc700Audio restored;
+                restored.load_state(parallel.save_state());
+                parallel=std::move(restored);
+            }
+            game->synchronize_apu_output_ports(serial.output_ports());
+        }
+        require(audible,"Real-driver parallel audio fixture remained silent");
+    }
+}
+
+void check_selected_level_map_samples(const starfox::assets::RomImage& rom,
+    const starfox::assets::SymbolMap& symbols) {
+    // Every stage bank leaves instrument samples to the planet map's bank
+    // (orchestra's tail and sound6, ARAM $dac0-$dd0d). LEVEL SELECT skips the
+    // map, so it must rebuild that state: compare with a start from the map.
+    const auto music_at_gameplay = [](starfox::simulation::GameSimulation& game,
+            bool press_every_tick) {
+        starfox::audio::Spc700Audio audio;
+        (void)audio.prime_upload_sequence(game.map().take_apu_port_writes());
+        for (int tick = 0; tick < 30; ++tick) (void)audio.render_logic_tick({});
+        game.synchronize_apu_output_ports(audio.output_ports());
+        for (int tick = 0; tick < 2000
+                && game.flow_state() != starfox::simulation::GameFlowState::gameplay; ++tick) {
+            for (int phase = 0; phase < 3; ++phase) game.present_frame();
+            const auto result = game.tick(press_every_tick || tick == 0
+                ? starfox::input::TickInput{0, starfox::input::start, 0}
+                : starfox::input::TickInput{});
+            (void)audio.render_logic_tick(result.audio_port_writes);
+            game.synchronize_apu_output_ports(audio.output_ports());
+        }
+        require(game.flow_state() == starfox::simulation::GameFlowState::gameplay,
+            "map-sample fixture did not reach gameplay");
+        for (int tick = 0; tick < 20; ++tick) {
+            const auto result = game.tick({});
+            (void)audio.render_logic_tick(result.audio_port_writes);
+            game.synchronize_apu_output_ports(audio.output_ports());
+        }
+        return audio.music_ram();
+    };
+    auto normal = std::make_unique<starfox::simulation::GameSimulation>(
+        rom, symbols, "PLANETSELECT", std::span<const std::uint8_t>{}, true);
+    const auto expected = music_at_gameplay(*normal, true);
+    auto selected = std::make_unique<starfox::simulation::GameSimulation>(
+        rom, symbols, "BOOT");
+    selected->set_selected_level(11U);
+    const auto actual = music_at_gameplay(*selected, false);
+    require(expected.size() == 0x10000U && actual.size() == 0x10000U,
+        "music ARAM unavailable");
+    require(std::equal(expected.begin() + 0xdac0, expected.begin() + 0xdd0e,
+                actual.begin() + 0xdac0),
+        "LEVEL SELECT left the planet map's instrument samples out of ARAM");
+    // Later stages follow a return to the map, whose orchestra instruments
+    // (directory $3c60-$3c9f, samples $b360-$dcef) replace stage 1's band.
+    // Asteroid (1-2) uploads neither region: it must match the map screen.
+    auto map_screen = std::make_unique<starfox::simulation::GameSimulation>(
+        rom, symbols, "PLANETSELECT", std::span<const std::uint8_t>{}, true);
+    std::vector<std::uint8_t> map_ram;
+    {
+        starfox::audio::Spc700Audio audio;
+        (void)audio.prime_upload_sequence(map_screen->map().take_apu_port_writes());
+        map_screen->synchronize_apu_output_ports(audio.output_ports());
+        for (int tick = 0; tick < 120; ++tick) {
+            for (int phase = 0; phase < 3; ++phase) map_screen->present_frame();
+            const auto result = map_screen->tick({});
+            (void)audio.render_logic_tick(result.audio_port_writes);
+            map_screen->synchronize_apu_output_ports(audio.output_ports());
+        }
+        map_ram = audio.music_ram();
+    }
+    auto second = std::make_unique<starfox::simulation::GameSimulation>(
+        rom, symbols, "BOOT");
+    second->set_selected_level(12U);
+    const auto stage_two = music_at_gameplay(*second, false);
+    require(std::equal(map_ram.begin() + 0x3c60, map_ram.begin() + 0x3ca0, stage_two.begin() + 0x3c60)
+            && std::equal(map_ram.begin() + 0xb360, map_ram.begin() + 0xdcf0, stage_two.begin() + 0xb360),
+        "LEVEL SELECT 1-2 kept stage 1's band instead of the map's orchestra");
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -165,13 +350,18 @@ int main(int argc, char** argv) {
     }
     const auto rom = starfox::assets::RomImage::load(argv[1]);
     const auto symbols = starfox::assets::SymbolMap::load(argv[2]);
+    check_parallel_spc(rom,symbols);
     {
         starfox::audio::Spc700Audio fresh;
         check_audio_restore(fresh);
     }
     check_good_luck_tail(rom, symbols);
     if (symbols.find("BGMPLAYLIST").empty()) {
+        check_original_batched_music_banks(rom, symbols);
+        for (const auto level : {12U, 13U, 22U, 24U, 32U, 34U, 35U, 36U, 37U})
+            check_selected_orchestra_bank(rom, symbols, static_cast<std::uint8_t>(level));
         check_original_selected_level_bank(rom, symbols);
+        check_selected_level_map_samples(rom, symbols);
     }
     auto effect = std::make_unique<starfox::simulation::GameSimulation>(
         rom, symbols, "LEVEL1_1", std::span<const std::uint8_t>{}, true);

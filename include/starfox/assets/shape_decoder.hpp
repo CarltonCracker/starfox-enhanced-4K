@@ -4,6 +4,7 @@
 #include "starfox/assets/shape.hpp"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 
 namespace starfox::assets {
@@ -13,24 +14,31 @@ public:
     explicit ShapeDecoder(const RomImage& rom);
     ShapeDecoder(const RomImage& rom, const SymbolMap& symbols);
 
+    // Whole-object sprites select colours independently of polygon faces.
+    // Request only the runtime-selected prefix; do not scan unrelated tables.
     [[nodiscard]] Shape decode(
         std::uint32_t header_address,
         std::string name = {},
-        std::uint16_t colour_pointer_override = 0) const;
+        std::uint16_t colour_pointer_override = 0,
+        std::uint16_t minimum_colour_count = 0) const;
     [[nodiscard]] Shape decode_lod(
         const ShapeHeader& parent,
         std::uint16_t header_pointer,
-        std::uint16_t colour_pointer_override = 0) const;
+        std::uint16_t colour_pointer_override = 0,
+        std::uint16_t minimum_colour_count = 0) const;
     [[nodiscard]] static std::uint16_t select_lod_pointer(
         const ShapeHeader& header, double camera_z) noexcept;
     [[nodiscard]] Shape decode_by_name(const SymbolMap& symbols, const std::string& name) const;
     [[nodiscard]] bool looks_like_shape_header(std::uint32_t address) const noexcept;
+    // Resolves one colour word to its texture, or nothing for flat colours
+    // and words that are not valid against both texture tables.
+    [[nodiscard]] std::optional<TextureImage> texture(std::uint16_t descriptor) const;
 
 private:
     [[nodiscard]] ShapeHeader decode_header(std::uint32_t address) const;
     void decode_points(Shape& shape) const;
     void decode_faces(Shape& shape) const;
-    void decode_colours(Shape& shape) const;
+    void decode_colours(Shape& shape, std::uint16_t minimum_count) const;
     void decode_texture(Shape& shape, std::uint16_t descriptor) const;
 
     const RomImage& rom_;

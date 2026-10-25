@@ -56,7 +56,111 @@ struct PhotographicBody {
     const PhotographicLandscape& options={},bool srgb=false);
 // Opaque enclosure with a 256x224 source-window opening. Draw after world
 // geometry with depth disabled, before HUD; caller supplies source placement.
+// Space Armada-style chequered tunnels as a real 3D corridor. The cartridge
+// fakes the corridor with two BG2 art pages chosen per scanline by
+// CHEQUERED_TABLES (indexed by camera Z). Fitted to those tables: ceiling and
+// floor 60 units from the eye (focal 256), bands repeating every 256 units of
+// world Z, ceiling lit rings over [2,66) and a floor chequer over [184,312).
+// The packet is a closed box (source units; place it with
+// tunnel_corridor_model): ceiling and floor half_width wide (the authored
+// bounds, e.g. MTUNNEL +-90) and the two side walls. Ceiling and floor are
+// coloured from the cartridge art per depth row, with the art's tile-stepped
+// edge strips fitted to straight lines and scaled so its wall line meets the
+// walls; the walls carry what the art paints beyond that line, at its true
+// depth. Empty when no page shows a fitted strip; callers then keep the
+// native layer.
+[[nodiscard]] DrawPacket tunnel_corridor_packet(const simulation::SnesPpuState&,unsigned brightness=15,bool srgb=false,
+    float half_width=90.F);
+[[nodiscard]] bool is_tunnel_corridor(const DrawPacket&) noexcept;
+// Planet landscapes as a sky dome plus a ground plane (one packet), coloured
+// by view direction from the BG2 art exactly as the native screen maps it at
+// the current tick: horizon art row from the Mode 2 offset line (or BG2
+// vertical scroll) at the screen centre, centre column from BG2 horizontal
+// scroll. Roll and camera height are applied per frame with
+// landscape_world_model, so the horizon rotates as geometry instead of
+// 8-pixel offset columns. Model units are camera heights (ground at Y=-1).
+// BG2 art (the whole tile map, wrapping): size in pixels, palette index of
+// one pixel (0 transparent), and an RGBA rectangle (red low byte) for dumps.
+[[nodiscard]] std::array<unsigned,2> bg2_art_size(const simulation::SnesPpuState&) noexcept;
+[[nodiscard]] unsigned bg2_art_index(const simulation::SnesPpuState&,int x,int y) noexcept;
+[[nodiscard]] std::vector<uint32_t> bg2_art_image(const simulation::SnesPpuState&,int x,int y,unsigned width,unsigned height);
+[[nodiscard]] DrawPacket landscape_world_packet(const simulation::SnesPpuState&,
+    const BackgroundTileOptions&,float vanishing_y=112,bool srgb=false,bool classic_ground_scroll=false,
+    std::optional<float> level_horizon={},std::optional<uint32_t> ground_dot_colour={});
+// Art row of the true horizon this tick (vanishing row + Mode 2 offset line
+// at the centre column, or BG2 vertical scroll), including the cartridge's
+// pitch shift.
+[[nodiscard]] float landscape_art_horizon(const simulation::SnesPpuState&,float vanishing_y=112);
+[[nodiscard]] bool is_landscape_world(const DrawPacket&) noexcept;
+// Placement: roll and pitch (radians; the camera's own rotation applied as
+// geometry) and camera height above the ground (source units).
+[[nodiscard]] Matrix4 landscape_world_model(double roll,double pitch,double height) noexcept;
+// The world-fixed ground plane for a landscape_world_packet (same art and
+// mapping; plane Y = 0 in source units). With classic_ground_scroll the
+// art's stepped bands are anchored to world Z every 256 units (the dot grid's
+// cell) and stream past like the dots; otherwise they stay fixed on screen.
+[[nodiscard]] DrawPacket landscape_ground_packet(const DrawPacket& world);
+[[nodiscard]] bool is_landscape_ground(const DrawPacket&) noexcept;
+[[nodiscard]] Matrix4 landscape_ground_model(double roll,double pitch,double height,double camera_x,double camera_z) noexcept;
+// The same placements from the source view rotation (model axes: X = source
+// X, Y up, Z = -source Z; the rotation objects are drawn with, yaw included),
+// so the ground, its dots and stripes stay fixed to the world the objects
+// stand in. The dome keeps the camera heading (its art column comes from the
+// BG2 scroll) and shares the ground's up vector, so both horizons agree.
+[[nodiscard]] Matrix4 landscape_ground_view_model(const Matrix4& rotation,double height,double camera_x,double camera_z) noexcept;
+[[nodiscard]] Matrix4 landscape_dome_view_model(const Matrix4& rotation,double height) noexcept;
+
+// Replacement artwork (RGBA words, r in the low byte) for a landscape.
+// Sky: replaces the art above the horizon, mapped like the BG2 strip: the
+// image's width spans `art_width` art columns (wrapping) and its height the
+// `rows_above` native rows above the horizon, its bottom edge on the horizon.
+// Place with landscape_world_model; the horizon row and centre column come
+// per draw (SdlFrameRenderer packs them into camera.effects.z).
+// Ground: tiles the world-fixed ground every `tile` source units; place with
+// landscape_ground_model.
+enum class LandscapeTexture {sky,ground};
+[[nodiscard]] DrawPacket landscape_texture_packet(LandscapeTexture,std::span<const uint32_t> rgba,
+    unsigned width,unsigned height,float art_width,float rows_above,float tile,bool srgb=false);
+[[nodiscard]] bool is_landscape_texture(const DrawPacket&,LandscapeTexture) noexcept;
+// Headset views: map a landscape world, ground, replacement-art or corridor packet by
+// direction (cylindrical: art column from the heading angle, row from the
+// tangent of the elevation; seamless all round) instead of the flat screen's
+// planar projection, which only holds within 90 degrees of the view axis.
+// The ground's art columns then follow the source camera heading passed in
+// camera.effects.z (ModernFrame::landscape_heading), not the eye's. A 3D
+// tunnel corridor colours its rows by distance along the corridor instead of
+// the eye's view depth, and extends behind the seat.
+void set_headset_mapping(DrawPacket&) noexcept;
+// Placement for a camera at world X/Y/Z (source units, Y down; fractional for
+// display-rate motion): the box stays fixed in the world, centred on
+// centre_x/centre_y (the authored bounds' middle, e.g. MTUNNEL 0 / -60).
+[[nodiscard]] Matrix4 tunnel_corridor_model(double camera_z,double camera_x,double camera_y,
+    double centre_y=-60.,double centre_x=0.) noexcept;
 [[nodiscard]] DrawPacket tunnel_surround_packet(const std::array<float,4>& colour);
+// Space Armada's boss room as a real room around the reactor. The cartridge
+// paints it as one fixed BG2 picture (ceiling and floor bands, a dark far
+// wall); the 3D room puts that wall on the ring the BOSS_8_4 wall panels
+// rotate on, an ellipse radius wide and 2*radius deep about the model origin
+// (the ring's centre at world Y 0; source units, +Y up, forward -Z), with the
+// ceiling at world Y top and the floor at bottom (Y down), coloured as the
+// painting's far wall (nucleus_floor_packet draws the ceiling and floor; the
+// eye sits camera_offset units behind the ring's centre at height eye_y).
+// Draw it like the layer it replaces: behind every object.
+// Empty when the art has no wall band at its centre.
+[[nodiscard]] DrawPacket nucleus_room_packet(const simulation::SnesPpuState&,unsigned brightness,bool srgb,
+    float radius,float top,float bottom,float eye_y,float camera_offset);
+[[nodiscard]] bool is_nucleus_room(const DrawPacket&) noexcept;
+// The room's ceiling and floor, in nucleus_room_packet's model space and
+// placed as it is: sectors about the reactor's axis (model reactor_x,
+// reactor_z), turned by its spin (radians), alternating two of the
+// painting's shades and clipped to the drum's ellipse. Draw it before the
+// room.
+[[nodiscard]] DrawPacket nucleus_floor_packet(const simulation::SnesPpuState&,unsigned brightness,bool srgb,
+    float radius,float top,float bottom,float eye_y,float camera_offset,float reactor_x,float reactor_z,double turn,unsigned sectors);
+[[nodiscard]] bool is_nucleus_floor(const DrawPacket&) noexcept;
+// Placement for a camera at world X/Y/Z (source units, Y down): the room is
+// fixed in the world around the ring centre at world Z centre_z.
+[[nodiscard]] Matrix4 nucleus_room_model(double camera_x,double camera_y,double camera_z,double centre_z) noexcept;
 [[nodiscard]] DrawPacket tunnel_surround_packet(const std::array<float,4>& wall,
     const std::array<float,4>& ceiling,const std::array<float,4>& floor);
 // Opaque CGRAM-zero backdrop, with source integer fading followed by target
@@ -72,6 +176,9 @@ struct BackgroundTileOptions {
     unsigned brightness{15}; // source display brightness, 0..15
     unsigned colour_subtract{}; // BG2-only native HALFFADE, 0..31.
     bool expanded_horizontal{};
+    // Tunnels with expanded_horizontal: repeat each row's edge pixel outward
+    // (desktop renderer) instead of the closed side-wall colour (VR).
+    bool clamp_tunnel_edges{};
     bool transparent_black{}; // Test source palette before brightness fading.
     bool wrap_horizontal{true}; // False: expose only one authored tilemap occurrence.
     unsigned single_occurrence_top_rows{}; // 0..224: unique top band; 512: one complete atlas in both axes.
@@ -82,7 +189,17 @@ struct BackgroundTileOptions {
     bool ex_city_planets{}; // BG_5_2: unique planets/palace, surrounding stars/city.
     unsigned guard_inset{}; // Native pixel columns omitted from each side.
     std::array<int32_t,2> horizontal_bounds{0,256}; // Logical pixels, not stretched UVs.
+    // Source pixels the quad reaches past every edge, sampling the first row
+    // above and the last 12 rows mirrored below (the wrapped tilemap at the
+    // sides): a layer rolled as geometry (space horizons) still covers the
+    // view's corners.
+    unsigned overscan{};
     std::optional<std::array<int16_t,2>> scroll_override;
+    // Flat presentation only: fractional scroll (source pixels) added to the
+    // integer scroll, and a display-rate Mode 2 horizon line (intercept,
+    // slope per 8-pixel column) replacing the VRAM offset-table fit.
+    std::optional<std::array<float,2>> scroll_fraction;
+    std::optional<std::array<float,2>> mode2_horizon;
 };
 // Encode source data only: no CPU pixel decoding, projection, or layer order.
 // Caller supplies brightness and owns screen enables, clipping and composition.
@@ -97,7 +214,8 @@ struct BackgroundTileOptions {
 // Original intro DEMO atlas: its upper 256 rows contain stars only.
 [[nodiscard]] DrawPacket intro_star_sphere_packet(const simulation::SnesPpuState&,
     unsigned brightness=15,bool srgb=false,bool full_atlas=false,bool upper_left_only=false,
-    bool retain_source_scroll=false);
+    bool retain_source_scroll=false,std::optional<std::array<float,2>> scroll_fraction={},
+    std::optional<std::array<float,2>> mode2_horizon={});
 [[nodiscard]] DrawPacket game_over_star_sphere_packet(const simulation::SnesPpuState&,
     unsigned brightness=15,unsigned colour_subtract=0,bool srgb=false);
 // Cut out only exterior black ink; enclosed black facial details stay opaque.

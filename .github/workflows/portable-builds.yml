@@ -12,6 +12,16 @@ on:
         type: boolean
         required: false
         default: false
+      source_checks_only:
+        description: Run desktop and shared VR source tests only; no platform packages or release
+        type: boolean
+        required: false
+        default: false
+      source_check_os:
+        description: Select source checks without rebuilding or releasing other platforms
+        type: choice
+        options: [both, windows, linux, macos, vita-package]
+        default: both
   push:
     tags:
       - 'v*'
@@ -20,18 +30,183 @@ permissions:
   contents: write
 
 jobs:
+  source-checks:
+    if: ${{ inputs.source_checks_only && inputs.source_check_os != 'vita-package' && inputs.source_check_os != 'macos' }}
+    name: Source checks (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(inputs.source_check_os == 'windows' && '["windows-2022"]' || inputs.source_check_os == 'linux' && '["ubuntu-22.04"]' || '["ubuntu-22.04", "windows-2022"]') }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        id: msys2
+        if: runner.os == 'Windows'
+        with:
+          msystem: UCRT64
+          update: true
+          install: mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-ninja
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxss-dev libxtst-dev libasound2-dev libudev-dev libgl1-mesa-dev
+      - name: Configure source-only desktop and shared VR graph
+        shell: bash
+        env:
+          MSYS2_ROOT: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          compiler=()
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            toolchain_dir="${MSYS2_ROOT//\\//}/ucrt64/bin"
+            compiler=("-DCMAKE_C_COMPILER=$toolchain_dir/gcc.exe" "-DCMAKE_CXX_COMPILER=$toolchain_dir/g++.exe" "-DCMAKE_MAKE_PROGRAM=$toolchain_dir/ninja.exe")
+            export PATH="$(cygpath -u "$toolchain_dir"):$PATH"
+            echo "$toolchain_dir" >> "$GITHUB_PATH"
+          fi
+          cmake -S . -B build/source-checks -G Ninja "${compiler[@]}" \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON -DSTARFOX_BUILD_TESTS=ON \
+            -DSTARFOX_BUILD_RUNTIME=ON -DSTARFOX_BUILD_VR=ON \
+            -DSTARFOX_ENABLE_LEIASR=OFF -DSTARFOX_EMBED_RUNTIME_ASSETS=OFF \
+            -DSTARFOX_PACKAGE_MSU1_MUSIC=OFF -DSTARFOX_EMBED_MSU1_MUSIC=OFF \
+            -DSTARFOX_ROM_FILE=source-only-no-rom.sfc \
+            -DSTARFOX_EX_ROM_FILE=source-only-no-ex-rom.sfc \
+            -DSTARFOX_RETAIL_V12_FILE=source-only-no-retail.sfc
+      - name: Build desktop and VR targets
+        run: cmake --build build/source-checks --parallel 2
+      - name: Run source regression tests
+        # SDL fixtures select their own dummy drivers. Global driver environment
+        # variables override their SDL_SetHint calls and make setup fail.
+        # Hardware/debug-layer tests run separately on an actual GPU, not on
+        # these headless source-only runners. Their targets are still built.
+        run: ctest --test-dir build/source-checks --output-on-failure --parallel 2 --exclude-regex starfox_3ds --label-exclude native_gpu
+      - name: Exercise safe Windows updater in an asset-free sandbox
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          STARFOX_UPDATE_TEST_FIXTURE: build/source-checks/starfox_update_exit_fixture.exe
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          if (!(Test-Path -LiteralPath $env:STARFOX_UPDATE_TEST_FIXTURE)) { throw 'Update restart fixture missing' }
+          python tests/test_app_update.py -v
+          if ($LASTEXITCODE -ne 0) { throw 'Updater safety tests failed' }
+      - name: Preserve compact test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-check-results-${{ matrix.os }}
+          path: build/source-checks/Testing/Temporary/LastTest.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  macos-source-check:
+    if: ${{ inputs.source_checks_only && inputs.source_check_os == 'macos' }}
+    name: macOS source-only Metal preparation check
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check exact ARC and dispatch preparation before the full build
+        shell: bash
+        run: |
+          mkdir -p build/metal-preparation
+          xcrun clang++ -std=c++20 -fobjc-arc -Iinclude -Isrc/render \
+            tests/metal_pipeline_preparation_tests.mm -framework Metal -framework Foundation \
+            -o build/metal-preparation/check
+          build/metal-preparation/check
+      - name: Configure real universal Apple runtime without private assets
+        shell: bash
+        run: |
+          cmake -S . -B build/source-checks -G Xcode \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON \
+            '-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64' -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
+            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
+            -DSTARFOX_BUILD_TESTS=ON -DSTARFOX_BUILD_RUNTIME=ON -DSTARFOX_BUILD_VR=OFF \
+            -DSTARFOX_ENABLE_LEIASR=OFF -DSTARFOX_EMBED_RUNTIME_ASSETS=OFF \
+            -DSTARFOX_PACKAGE_MSU1_MUSIC=OFF -DSTARFOX_EMBED_MSU1_MUSIC=OFF \
+            -DSTARFOX_ROM_FILE=source-only-no-rom.sfc \
+            -DSTARFOX_EX_ROM_FILE=source-only-no-ex-rom.sfc \
+            -DSTARFOX_RETAIL_V12_FILE=source-only-no-retail.sfc
+      - name: Compile actual runtime and preparation regressions
+        run: >-
+          cmake --build build/source-checks --config Release --parallel 2 --target
+          starfox_pc starfox_metal_pipeline_preparation_tests
+          starfox_responsive_preparation_tests starfox_gpu_preparation_tests
+          starfox_sdl_gpu_preparation_check starfox_update_tests
+      - name: Test ARC lifetime, async publication and event preparation
+        run: |
+          ctest --test-dir build/source-checks -C Release --output-on-failure \
+            -R '^starfox_(metal_pipeline_preparation|responsive_preparation|gpu_preparation|update)_tests$'
+          python3 tests/test_metal_shader_sources.py
+      - name: Preserve compact results only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-metal-preparation-source-check-results
+          path: build/source-checks/Testing/Temporary/LastTest.log
+          if-no-files-found: ignore
+          retention-days: 7
+      # No ROM/BIN, executable/package artifact, release or 3DS job is published.
+
+  vita-package-check:
+    if: ${{ inputs.source_checks_only && inputs.source_check_os == 'vita-package' }}
+    name: Vita source-only package check
+    runs-on: ubuntu-latest
+    container:
+      options: --user 0:0
+      image: vitasdk/vitasdk:nightly-non-root-20260829@sha256:8c025f249ce33e3c76f92f422099bfb8b01a4e1a1f67db175df53257c2bbc28b
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run asset-free metadata/artwork regressions
+        run: python3 tests/test_vita_package.py
+      - name: Cross-compile SDK probe through the real packaging helper
+        shell: bash
+        run: |
+          cmake -S tests/fixtures/vita_package -B "build/validation/active/vita fixture" -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$VITASDK/share/vita.toolchain.cmake" -DCMAKE_BUILD_TYPE=Release
+          cmake --build "build/validation/active/vita fixture" --target StarFoxEnhanced.vpk-vpk
+          "$VITASDK/bin/arm-vita-eabi-readelf" -h "build/validation/active/vita fixture/vita_package_fixture" | grep -q 'Machine:.*ARM'
+          python3 tools/check_vita_package.py "build/validation/active/vita fixture/StarFoxEnhanced.vpk"
+      - name: Cross-compile actual Vita runtime and inspect its reservations
+        shell: bash
+        run: |
+          cmake -S . -B build/vita-source-checks -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$VITASDK/share/vita.toolchain.cmake" \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS=-fstack-usage \
+            -DSTARFOX_BUILD_TESTS=OFF -DSTARFOX_BUILD_TOOLS=OFF \
+            -DSTARFOX_PACKAGE_MSU1_MUSIC=OFF \
+            -DSTARFOX_ROM_FILE=source-only-no-rom.sfc \
+            -DSTARFOX_EX_ROM_FILE=source-only-no-ex-rom.sfc \
+            -DSTARFOX_RETAIL_V12_FILE=source-only-no-retail.sfc
+          cmake --build build/vita-source-checks --parallel 2 --target StarFoxEnhanced.vpk-vpk
+          "$VITASDK/bin/arm-vita-eabi-size" build/vita-source-checks/starfox_pc
+          "$VITASDK/bin/arm-vita-eabi-nm" build/vita-source-checks/starfox_pc | grep -E '(_newlib_heap_size_user|sceUserMainThreadStackSize)$'
+          find build/vita-source-checks -name '*.su' -exec grep -H -E '(main\(|SDL_main)' {} + || true
+          python3 tools/check_vita_package.py build/vita-source-checks/StarFoxEnhanced.vpk --require-backdrops
+      # Only public source/resources: no ROM/BIN, executable artifacts or release is uploaded.
+
   windows-x64:
-    if: ${{ !inputs.quest_only }}
+    if: ${{ !inputs.quest_only && !inputs.source_checks_only }}
     name: Windows x64 runtime and standalone asset builder
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
+      - name: Check release shader registration
+        shell: pwsh
+        run: |
+          python tools/check_release_version.py
+          if ($LASTEXITCODE -ne 0) { throw 'Release metadata validation failed' }
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            python tools/check_release_version.py --tag "$env:GITHUB_REF_NAME"
+            if ($LASTEXITCODE -ne 0) { throw 'Release tag and version differ' }
+          }
+          cmake "-DSOURCE_DIR=$PWD" -P tests/test_release_shader_gating.cmake
+          if ($LASTEXITCODE -ne 0) { throw 'Experimental shader release gating failed' }
       - name: Configure and build
         shell: pwsh
         run: |
           cmake -S . -B build/asset-builder -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
             -DSTARFOX_BUILD_TESTS=OFF `
+            -DSTARFOX_ENABLE_LEIASR=ON `
             -DSTARFOX_PACKAGE_MSU1_MUSIC=OFF
           cmake --build build/asset-builder --target starfox_pc starfox_asset_builder
       - name: Verify standalone Windows imports
@@ -69,15 +244,60 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'DLSS adapter configure failed' }
           cmake --build build/dlss-release --config Release --target starfox_dlss_native
           if ($LASTEXITCODE -ne 0) { throw 'DLSS adapter build failed' }
+      - name: Embed verified DLSS 4.5 runtime
+        shell: pwsh
+        run: |
+          $staging = Join-Path $env:RUNNER_TEMP 'starfox-dlss-embed'
+          ./tools/package_dlss.ps1 -SdkDirectory $env:STARFOX_RELEASE_DLSS_SDK `
+            -Adapter build/dlss-release/Release/starfox_dlss_native.dll -Destination $staging
+          cmake -S . -B build/asset-builder "-DSTARFOX_DLSS_RUNTIME_DIRECTORY=$staging/dlss"
+          if ($LASTEXITCODE -ne 0) { throw 'Embedded DLSS configure failed' }
+          cmake --build build/asset-builder --target starfox_pc
+          if ($LASTEXITCODE -ne 0) { throw 'Embedded DLSS runtime build failed' }
+      - name: Build optional direct SR Platform adapter
+        shell: pwsh
+        run: |
+          ./tools/build_leia_sr.ps1 -BuildDirectory build/leia-sr-msvc -OutputDirectory build/asset-builder
+          if ($LASTEXITCODE -ne 0) { throw 'SR Platform adapter build failed' }
+          cmake --build build/asset-builder --target starfox_leia_sr_check
+          if ($LASTEXITCODE -ne 0) { throw 'SR Platform checker build failed' }
+          $imports = (& objdump.exe -p build/asset-builder/starfox_leia_sr.dll | Out-String)
+          if ($imports -notmatch 'starfox_leia_sr_status' -or
+              $imports -notmatch 'starfox_leia_sr_get_api' -or
+              $imports -match 'DLL Name: (SimulatedReality|Dimenco|opencv|glog|LeapC)') {
+            throw 'SR Platform diagnostic exports or optional delay-load contract invalid'
+          }
+          $checkerImports = (& objdump.exe -p build/asset-builder/starfox_leia_sr_check.exe | Out-String)
+          if ($checkerImports -match 'libgcc_s_|libstdc\+\+|libwinpthread') {
+            throw 'SR Platform checker depends on a MinGW runtime DLL'
+          }
+          & build/asset-builder/starfox_leia_sr_check.exe --expect-unavailable
+          if ($LASTEXITCODE -ne 0) { throw 'SR adapter/owned texture checks failed' }
       - name: Package runtime and builder
         shell: pwsh
         run: |
-          $runtime = 'StarFoxEnhanced-0.0.8-windows-x64'
+          $runtime = 'StarFoxEnhanced-0.0.8.8.1-windows-x64'
           cmake --install build/asset-builder --prefix $runtime
-          ./tools/package_dlss.ps1 -SdkDirectory $env:STARFOX_RELEASE_DLSS_SDK `
-            -Adapter build/dlss-release/Release/starfox_dlss_native.dll -Destination $runtime
+          if ($LASTEXITCODE -ne 0) { throw 'Runtime install failed' }
+          ./tools/package_displayxr.ps1 -OutputDirectory $runtime
+          ./tools/package_displayxr.ps1 -OutputDirectory $runtime -VerifyOnly
+          python tests/test_displayxr_package.py --package $runtime
+          if ($LASTEXITCODE -ne 0) { throw 'DisplayXR optional package regression failed' }
+          if (!(Test-Path "$runtime/licenses/dlss/nvngx_dlss.license.txt")) {
+            throw 'Embedded DLSS redistribution notices missing'
+          }
+          if (!(Test-Path "$runtime/licenses/displayxr/LICENSE.txt") -or
+              !(Test-Path "$runtime/licenses/displayxr/NOTICE.txt")) {
+            throw 'DisplayXR interface redistribution notices missing'
+          }
+          if (!(Test-Path "$runtime/starfox_leia_sr.dll") -or
+              !(Test-Path "$runtime/licenses/leia-sr/SR-SDK-LICENSE.txt") -or
+              !(Test-Path "$runtime/starfox_leia_sr_check.exe") -or
+              !(Test-Path "$runtime/Diagnose-Leia-SR.cmd")) {
+            throw 'SR Platform adapter, checker, instructions or notices missing'
+          }
           Compress-Archive -Path "$runtime/*" -DestinationPath "$runtime.zip"
-          $builder = 'StarFoxAssetBuilder-0.0.8-windows-x64'
+          $builder = 'StarFoxAssetBuilder-0.0.8.8.1-windows-x64'
           New-Item -ItemType Directory -Force $builder | Out-Null
           Copy-Item build/asset-builder/starfox_asset_builder.exe $builder/
           Copy-Item platform/mobile/ASSET_BUILDER.md $builder/README.md
@@ -85,13 +305,13 @@ jobs:
           Compress-Archive -Path "$builder/*" -DestinationPath "$builder.zip"
       - uses: actions/upload-artifact@v4
         with:
-          name: StarFoxEnhanced-0.0.8-windows-x64
-          path: StarFoxEnhanced-0.0.8-windows-x64.zip
+          name: StarFoxEnhanced-0.0.8.8.1-windows-x64
+          path: StarFoxEnhanced-0.0.8.8.1-windows-x64.zip
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
-          name: StarFoxAssetBuilder-0.0.8-windows-x64
-          path: StarFoxAssetBuilder-0.0.8-windows-x64.zip
+          name: StarFoxAssetBuilder-0.0.8.8.1-windows-x64
+          path: StarFoxAssetBuilder-0.0.8.8.1-windows-x64.zip
           if-no-files-found: error
       - name: Add to GitHub release
         if: github.event_name == 'push' || inputs.release_tag != ''
@@ -102,11 +322,11 @@ jobs:
         run: |
           tag="${REQUESTED_TAG:-${GITHUB_REF_NAME}}"
           gh release upload "${tag}" \
-            StarFoxEnhanced-0.0.8-windows-x64.zip \
-            StarFoxAssetBuilder-0.0.8-windows-x64.zip --clobber
+            StarFoxEnhanced-0.0.8.8.1-windows-x64.zip \
+            StarFoxAssetBuilder-0.0.8.8.1-windows-x64.zip --clobber
 
   windows-x86:
-    if: ${{ !inputs.quest_only }}
+    if: ${{ !inputs.quest_only && !inputs.source_checks_only }}
     name: Windows x86 runtime
     runs-on: windows-latest
     steps:
@@ -142,13 +362,13 @@ jobs:
           if ($headers -notmatch 'IMAGE_FILE_MACHINE_I386') {
             throw 'packaged runtime is not a 32-bit x86 PE image'
           }
-          $package = 'StarFoxEnhanced-0.0.8-windows-x86'
+          $package = 'StarFoxEnhanced-0.0.8.8.1-windows-x86'
           Move-Item dist/StarFoxEnhanced-windows-x86 $package
           Compress-Archive -Path "$package/*" -DestinationPath "$package.zip"
       - uses: actions/upload-artifact@v4
         with:
-          name: StarFoxEnhanced-0.0.8-windows-x86
-          path: StarFoxEnhanced-0.0.8-windows-x86.zip
+          name: StarFoxEnhanced-0.0.8.8.1-windows-x86
+          path: StarFoxEnhanced-0.0.8.8.1-windows-x86.zip
           if-no-files-found: error
       - name: Add to GitHub release
         if: github.event_name == 'push' || inputs.release_tag != ''
@@ -159,10 +379,10 @@ jobs:
         run: |
           tag="${REQUESTED_TAG:-${GITHUB_REF_NAME}}"
           gh release upload "${tag}" \
-            StarFoxEnhanced-0.0.8-windows-x86.zip --clobber
+            StarFoxEnhanced-0.0.8.8.1-windows-x86.zip --clobber
 
   xbox-uwp-x64:
-    if: ${{ !inputs.quest_only }}
+    if: ${{ !inputs.quest_only && !inputs.source_checks_only }}
     name: Xbox UWP x64 (Developer Mode)
     # Keep the legacy UWP/C++ packaging workload and its redistributable
     # Microsoft.VCLibs framework package available. windows-latest moved to
@@ -181,7 +401,7 @@ jobs:
         shell: pwsh
         run: |
           $root = 'dist/StarFoxEnhanced-xbox-uwp-x64'
-          $package = Join-Path $root 'StarFoxEnhanced-0.0.8-xbox-uwp-x64.appx'
+          $package = Join-Path $root 'StarFoxEnhanced-0.0.8.8.1-xbox-uwp-x64.appx'
           if (-not (Test-Path -LiteralPath $package -PathType Leaf)) {
             throw 'Xbox UWP package is missing'
           }
@@ -209,11 +429,11 @@ jobs:
           Copy-Item -LiteralPath "$root/README-XBOX-UWP.md" -Destination $releaseRoot
           Copy-Item -LiteralPath $dependency -Destination $releaseDependencies
           Compress-Archive -Path "$releaseRoot/*" `
-            -DestinationPath StarFoxEnhanced-0.0.8-xbox-uwp-x64.zip
+            -DestinationPath StarFoxEnhanced-0.0.8.8.1-xbox-uwp-x64.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: StarFoxEnhanced-0.0.8-xbox-uwp-x64
-          path: StarFoxEnhanced-0.0.8-xbox-uwp-x64.zip
+          name: StarFoxEnhanced-0.0.8.8.1-xbox-uwp-x64
+          path: StarFoxEnhanced-0.0.8.8.1-xbox-uwp-x64.zip
           if-no-files-found: error
       - name: Add to GitHub release
         if: github.event_name == 'push' || inputs.release_tag != ''
@@ -224,10 +444,10 @@ jobs:
         run: |
           tag="${REQUESTED_TAG:-${GITHUB_REF_NAME}}"
           gh release upload "${tag}" \
-            StarFoxEnhanced-0.0.8-xbox-uwp-x64.zip --clobber
+            StarFoxEnhanced-0.0.8.8.1-xbox-uwp-x64.zip --clobber
 
   linux-x64:
-    if: ${{ !inputs.quest_only }}
+    if: ${{ !inputs.quest_only && !inputs.source_checks_only }}
     name: Linux x64 native runtime
     runs-on: ubuntu-24.04
     steps:
@@ -265,12 +485,12 @@ jobs:
           test -x dist/StarFoxEnhanced-linux-x64/starfox_asset_builder
           file "${binary}" | grep -q 'ELF 64-bit.*x86-64'
           ! ldd "${binary}" | grep -q 'not found'
-          cmake -E tar cf StarFoxEnhanced-0.0.8-linux-x64.zip \
+          cmake -E tar cf StarFoxEnhanced-0.0.8.8.1-linux-x64.zip \
             --format=zip dist/StarFoxEnhanced-linux-x64
       - uses: actions/upload-artifact@v4
         with:
-          name: StarFoxEnhanced-0.0.8-linux-x64
-          path: StarFoxEnhanced-0.0.8-linux-x64.zip
+          name: StarFoxEnhanced-0.0.8.8.1-linux-x64
+          path: StarFoxEnhanced-0.0.8.8.1-linux-x64.zip
           if-no-files-found: error
       - name: Add to GitHub release
         if: github.event_name == 'push' || inputs.release_tag != ''
@@ -281,10 +501,10 @@ jobs:
         run: |
           tag="${REQUESTED_TAG:-${GITHUB_REF_NAME}}"
           gh release upload "${tag}" \
-            StarFoxEnhanced-0.0.8-linux-x64.zip --clobber
+            StarFoxEnhanced-0.0.8.8.1-linux-x64.zip --clobber
 
   macos-universal:
-    if: ${{ !inputs.quest_only }}
+    if: ${{ !inputs.quest_only && !inputs.source_checks_only }}
     name: macOS universal (unsigned)
     runs-on: macos-15
     steps:
@@ -305,7 +525,7 @@ jobs:
           archs="$(lipo -archs "${binary}")"
           [[ " ${archs} " == *" arm64 "* ]]
           [[ " ${archs} " == *" x86_64 "* ]]
-          package="StarFoxEnhanced-0.0.8-macos-universal"
+          package="StarFoxEnhanced-0.0.8.8.1-macos-universal"
           mkdir -p "${package}"
           cp -R "${app}" "${package}/"
           cp build/macos-universal/Release/starfox_asset_builder "${package}/"
@@ -314,8 +534,8 @@ jobs:
           ditto -c -k --sequesterRsrc --keepParent "${package}" "${package}.zip"
       - uses: actions/upload-artifact@v4
         with:
-          name: StarFoxEnhanced-0.0.8-macos-universal
-          path: StarFoxEnhanced-0.0.8-macos-universal.zip
+          name: StarFoxEnhanced-0.0.8.8.1-macos-universal
+          path: StarFoxEnhanced-0.0.8.8.1-macos-universal.zip
           if-no-files-found: error
       - name: Add to GitHub release
         if: github.event_name == 'push' || inputs.release_tag != ''
@@ -326,10 +546,10 @@ jobs:
         run: |
           tag="${REQUESTED_TAG:-${GITHUB_REF_NAME}}"
           gh release upload "${tag}" \
-            StarFoxEnhanced-0.0.8-macos-universal.zip --clobber
+            StarFoxEnhanced-0.0.8.8.1-macos-universal.zip --clobber
 
   ios-device:
-    if: ${{ !inputs.quest_only }}
+    if: ${{ !inputs.quest_only && !inputs.source_checks_only }}
     name: iOS arm64 device (unsigned)
     runs-on: macos-15
     steps:
@@ -351,16 +571,15 @@ jobs:
           # but iPhone ProMotion stays capped at 60 Hz without this bundle key.
           plutil -convert json -o - "${app}/Info.plist" \
             | jq -e '.CADisableMinimumFrameDurationOnPhone == true' >/dev/null
+          plutil -convert json -o - "${app}/Info.plist" \
+            | jq -e '.CFBundleShortVersionString == "0.0.8" and .CFBundleVersion == "0.0.809"' >/dev/null
           [[ " $(lipo -archs "${binary}") " == *" arm64 "* ]]
-          package="StarFoxEnhanced-0.0.8-ios-arm64-unsigned"
-          mkdir -p "${package}/Payload"
-          cp -R "${app}" "${package}/Payload/"
-          cp platform/apple/IOS_INSTALL.md "${package}/README.md"
-          ditto -c -k --sequesterRsrc --keepParent "${package}" "${package}.zip"
+          package="StarFoxEnhanced-0.0.8.8.1-ios-arm64-unsigned"
+          python3 tools/package_ios.py --app "${app}" --output "${package}.ipa"
       - uses: actions/upload-artifact@v4
         with:
-          name: StarFoxEnhanced-0.0.8-ios-arm64-unsigned
-          path: StarFoxEnhanced-0.0.8-ios-arm64-unsigned.zip
+          name: StarFoxEnhanced-0.0.8.8.1-ios-arm64-unsigned
+          path: StarFoxEnhanced-0.0.8.8.1-ios-arm64-unsigned.ipa
           if-no-files-found: error
       - name: Add to GitHub release
         if: github.event_name == 'push' || inputs.release_tag != ''
@@ -371,10 +590,10 @@ jobs:
         run: |
           tag="${REQUESTED_TAG:-${GITHUB_REF_NAME}}"
           gh release upload "${tag}" \
-            StarFoxEnhanced-0.0.8-ios-arm64-unsigned.zip --clobber
+            StarFoxEnhanced-0.0.8.8.1-ios-arm64-unsigned.ipa --clobber
 
   android-arm64:
-    if: ${{ !inputs.quest_only }}
+    if: ${{ !inputs.quest_only && !inputs.source_checks_only }}
     name: Android arm64 signed APK
     runs-on: ubuntu-latest
     steps:
@@ -412,15 +631,17 @@ jobs:
           test -f "${apk}"
           python3 tools/check_android_package.py "$apk" --source-root "$GITHUB_WORKSPACE"
           "${ANDROID_HOME}/build-tools/35.0.0/aapt" dump badging "${apk}"
+          "${ANDROID_HOME}/build-tools/35.0.0/aapt" dump badging "${apk}" \
+            | grep -F "versionCode='19' versionName='0.0.8.8.1'"
           "${ANDROID_HOME}/build-tools/35.0.0/apksigner" verify --print-certs "${apk}" > "$RUNNER_TEMP/signing-certificate.txt"
           grep -Fqi '50bcb41f7a02c2e9bb0f68a74b1f6e14f7317fedc69d2c6fd70a165f87800fc0' "$RUNNER_TEMP/signing-certificate.txt"
           unzip -l "${apk}" | grep -q 'lib/arm64-v8a/libmain.so'
           unzip -l "${apk}" | grep -q 'lib/arm64-v8a/libSDL3.so'
-          cp "${apk}" StarFoxEnhanced-0.0.8-android-arm64.apk
+          cp "${apk}" StarFoxEnhanced-0.0.8.8.1-android-arm64.apk
       - uses: actions/upload-artifact@v4
         with:
-          name: StarFoxEnhanced-0.0.8-android-arm64
-          path: StarFoxEnhanced-0.0.8-android-arm64.apk
+          name: StarFoxEnhanced-0.0.8.8.1-android-arm64
+          path: StarFoxEnhanced-0.0.8.8.1-android-arm64.apk
           if-no-files-found: error
       - name: Attach signed Android APK to release
         if: github.event_name == 'push' || inputs.release_tag != ''
@@ -431,8 +652,9 @@ jobs:
         shell: bash
         run: |
           tag="${REQUESTED_TAG:-${GITHUB_REF_NAME}}"
-          gh release upload "${tag}" StarFoxEnhanced-0.0.8-android-arm64.apk --clobber
+          gh release upload "${tag}" StarFoxEnhanced-0.0.8.8.1-android-arm64.apk --clobber
   quest-arm64:
+    if: ${{ !inputs.source_checks_only }}
     name: Quest 3 arm64 signed VR development APK
     runs-on: ubuntu-latest
     steps:
@@ -486,6 +708,7 @@ jobs:
           python3 tools/check_quest_package.py "$apk" --source-root .
           "${ANDROID_HOME}/build-tools/35.0.0/aapt" dump badging "$apk" > "$RUNNER_TEMP/quest-badging.txt"
           grep -Fq "package: name='com.starfox.enhanced.quest'" "$RUNNER_TEMP/quest-badging.txt"
+          grep -Fq "versionCode='19' versionName='0.0.8.8.1'" "$RUNNER_TEMP/quest-badging.txt"
           "${ANDROID_HOME}/build-tools/35.0.0/apksigner" verify --print-certs "$apk" > "$RUNNER_TEMP/quest-certificate.txt"
           grep -Fqi '50bcb41f7a02c2e9bb0f68a74b1f6e14f7317fedc69d2c6fd70a165f87800fc0' "$RUNNER_TEMP/quest-certificate.txt"
           mkdir -p quest-package
@@ -495,11 +718,11 @@ jobs:
           mkdir -p quest-package/licenses/fonts
           cp assets/fonts/README.md assets/fonts/misaki.txt quest-package/licenses/fonts/
           cd quest-package
-          zip -9 -r ../StarFoxEnhanced-0.0.8-quest-arm64.zip .
+          zip -9 -r ../StarFoxEnhanced-0.0.8.8.1-quest-arm64.zip .
       - uses: actions/upload-artifact@v4
         with:
-          name: StarFoxEnhanced-0.0.8-quest-arm64
-          path: StarFoxEnhanced-0.0.8-quest-arm64.zip
+          name: StarFoxEnhanced-0.0.8.8.1-quest-arm64
+          path: StarFoxEnhanced-0.0.8.8.1-quest-arm64.zip
           if-no-files-found: error
       - name: Attach signed Quest APK package to release
         if: github.event_name == 'push' || inputs.release_tag != ''
@@ -510,9 +733,9 @@ jobs:
         shell: bash
         run: |
           tag="${REQUESTED_TAG:-${GITHUB_REF_NAME}}"
-          gh release upload "${tag}" StarFoxEnhanced-0.0.8-quest-arm64.zip --clobber
+          gh release upload "${tag}" StarFoxEnhanced-0.0.8.8.1-quest-arm64.zip --clobber
   windows-pcvr:
-    if: ${{ !inputs.quest_only }}
+    if: ${{ !inputs.quest_only && !inputs.source_checks_only }}
     name: Windows x64 OpenXR PCVR development build
     runs-on: windows-latest
     steps:
@@ -550,22 +773,22 @@ jobs:
             }
           }
           Copy-Item THIRD_PARTY_NOTICES.md,CREDITS.md -Destination pcvr-package
-          Compress-Archive -Path pcvr-package/* -DestinationPath StarFoxEnhanced-0.0.8-windows-pcvr.zip
+          Compress-Archive -Path pcvr-package/* -DestinationPath StarFoxEnhanced-0.0.8.8.1-windows-pcvr.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: StarFoxEnhanced-0.0.8-windows-pcvr
-          path: StarFoxEnhanced-0.0.8-windows-pcvr.zip
+          name: StarFoxEnhanced-0.0.8.8.1-windows-pcvr
+          path: StarFoxEnhanced-0.0.8.8.1-windows-pcvr.zip
           if-no-files-found: error
       - name: Add to GitHub release
         if: github.event_name == 'push' || inputs.release_tag != ''
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.release_tag || github.ref_name }}
-          files: StarFoxEnhanced-0.0.8-windows-pcvr.zip
+          files: StarFoxEnhanced-0.0.8.8.1-windows-pcvr.zip
           draft: true
 
   switch-homebrew:
-    if: ${{ !inputs.quest_only }}
+    if: ${{ !inputs.quest_only && !inputs.source_checks_only }}
     name: Nintendo Switch homebrew NRO
     runs-on: ubuntu-latest
     container:
@@ -584,23 +807,23 @@ jobs:
           test -s "${nro}"
           test -f dist/StarFoxEnhanced-switch/package_switch_nsp.ps1
           cmake -E tar cf \
-            StarFoxEnhanced-0.0.8-switch-homebrew.zip \
+            StarFoxEnhanced-0.0.8.8.1-switch-homebrew.zip \
             --format=zip dist/StarFoxEnhanced-switch
       - uses: actions/upload-artifact@v4
         with:
-          name: StarFoxEnhanced-0.0.8-switch-homebrew
-          path: StarFoxEnhanced-0.0.8-switch-homebrew.zip
+          name: StarFoxEnhanced-0.0.8.8.1-switch-homebrew
+          path: StarFoxEnhanced-0.0.8.8.1-switch-homebrew.zip
           if-no-files-found: error
       - name: Add to GitHub release
         if: github.event_name == 'push' || inputs.release_tag != ''
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.release_tag || github.ref_name }}
-          files: StarFoxEnhanced-0.0.8-switch-homebrew.zip
+          files: StarFoxEnhanced-0.0.8.8.1-switch-homebrew.zip
           draft: true
 
   vita-homebrew:
-    if: ${{ !inputs.quest_only }}
+    if: ${{ !inputs.quest_only && !inputs.source_checks_only }}
     name: PS Vita native VPK
     runs-on: ubuntu-latest
     container:
@@ -620,28 +843,206 @@ jobs:
         run: |
           vpk="dist/StarFoxEnhanced-vita/StarFoxEnhanced.vpk"
           test -s "${vpk}"
-          cmake -E tar tf "${vpk}" > vita-contents.txt
-          grep -Fxq 'eboot.bin' vita-contents.txt
+          python3 tools/check_vita_package.py "${vpk}"
           cmake -E tar cf \
-            StarFoxEnhanced-0.0.8-vita.zip \
+            StarFoxEnhanced-0.0.8.8.1-vita.zip \
             --format=zip dist/StarFoxEnhanced-vita
       - uses: actions/upload-artifact@v4
         with:
-          name: StarFoxEnhanced-0.0.8-vita
-          path: StarFoxEnhanced-0.0.8-vita.zip
+          name: StarFoxEnhanced-0.0.8.8.1-vita
+          path: StarFoxEnhanced-0.0.8.8.1-vita.zip
           if-no-files-found: error
       - name: Add to GitHub release
         if: github.event_name == 'push' || inputs.release_tag != ''
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.release_tag || github.ref_name }}
-          files: StarFoxEnhanced-0.0.8-vita.zip
+          files: StarFoxEnhanced-0.0.8.8.1-vita.zip
+          draft: true
+
+  linux-vr-host-tests:
+    if: ${{ !inputs.quest_only && !inputs.source_checks_only }}
+    name: Linux host VR regression tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned SDL build requirements
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config python3 \
+            libasound2-dev libpulse-dev libx11-dev libxext-dev \
+            libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev \
+            libxss-dev libxtst-dev libxkbcommon-dev libgl1-mesa-dev \
+            libgles2-mesa-dev libegl1-mesa-dev libdbus-1-dev libudev-dev \
+            libvulkan1 mesa-vulkan-drivers
+          mapfile -t lavapipe_icds < <(find /usr/share/vulkan/icd.d -maxdepth 1 \
+            -type f -name 'lvp_icd*.json' -print | sort)
+          if [ "${#lavapipe_icds[@]}" -eq 0 ]; then
+            echo "Mesa Lavapipe ICD JSON was not installed"
+            exit 1
+          fi
+          echo "VK_ICD_FILENAMES=${lavapipe_icds[0]}" >> "$GITHUB_ENV"
+          echo "Native Vulkan timestamp regression uses ${lavapipe_icds[0]}"
+      - name: Build PCVR and run asset-free shared regressions
+        shell: bash
+        run: |
+          cmake -S . -B "$RUNNER_TEMP/starfox-frame-host-vr" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DSTARFOX_BUILD_RUNTIME=ON \
+            -DSTARFOX_BUILD_VR=ON \
+            -DSTARFOX_BUILD_TESTS=ON \
+            -DBUILD_TESTING=ON \
+            -DSTARFOX_REQUIRE_LAVAPIPE_TIMESTAMP_TEST=ON \
+            -DSTARFOX_BUILD_TOOLS=OFF \
+            -DSTARFOX_EMBED_RUNTIME_ASSETS=OFF \
+            -DSTARFOX_PACKAGE_MSU1_MUSIC=OFF
+          cmake --build "$RUNNER_TEMP/starfox-frame-host-vr" \
+            --target starfox_pcvr starfox_desktop_paths_tests starfox_vr_application_tests \
+              starfox_vr_game_input_check starfox_vr_cockpit_input_check starfox_vr_cockpit_geometry_check starfox_vr_rumble_parity_check \
+              starfox_vr_presentation_check starfox_vr_input_check starfox_vr_camera_check \
+              starfox_vr_swapchain_check starfox_vr_session_check starfox_vr_device_check \
+              starfox_vr_targets_check starfox_vr_runtime_tests starfox_vr_timestamp_check \
+              starfox_vr_profile_output_check \
+              starfox_vr_packet_check starfox_vr_decal_check starfox_vr_mesh_check \
+              starfox_vr_standard_check \
+              starfox_rumble_sequencer_tests \
+              starfox_update_tests starfox_row_workers_tests starfox_background_scanline_tests \
+              starfox_pixel_filter_tests starfox_camera_response_tests \
+              starfox_scene_world_fx_tests starfox_runtime_input_tests starfox_simulation_tests \
+            --parallel 2
+          ctest --test-dir "$RUNNER_TEMP/starfox-frame-host-vr" --output-on-failure \
+            -R '^starfox_(pcvr_help|vr_profile_cli|vr_profile_output_check|desktop_paths_tests|vr_application_tests|vr_presentation_check|vr_input_check|vr_cockpit_input_check|vr_cockpit_geometry_check|vr_cockpit_depth_check|vr_cockpit_assets|vr_camera_check|vr_swapchain_check|vr_session_check|vr_device_check|vr_targets_check|vr_packet_check|vr_decal_check|vr_mesh_check|vr_standard_check|vr_runtime_tests|vr_timestamp_math|vr_timestamp_query|vr_timestamp_query_required|rumble_sequencer_tests|steam_frame_cmake_guards)$'
+          "$RUNNER_TEMP/starfox-frame-host-vr/starfox_pcvr" --help
+          ctest --test-dir "$RUNNER_TEMP/starfox-frame-host-vr" --output-on-failure \
+            -R '^starfox_(update_tests|row_workers_tests|background_scanline_tests|pixel_filter_tests|camera_response_tests|scene_world_fx_tests|runtime_input_tests|simulation_tests)$'
+
+  steam-frame-arm64:
+    if: ${{ !inputs.quest_only && !inputs.source_checks_only }}
+    name: Sniper sysroot ARM64 baseline, OpenXR player, and package
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install host cross-build tools
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang lld llvm cmake ninja-build python3 curl tar coreutils \
+            binutils pkg-config zip
+      - name: Cross-build and validate clean Frame package
+        env:
+          STARFOX_CMAKE_DEBUG_TRY_COMPILE: "1"
+        shell: bash
+        run: |
+          chmod +x tools/build_steam_frame.sh tools/package/LAUNCH-STEAM-FRAME.sh
+          tools/build_steam_frame.sh . \
+            "$RUNNER_TEMP/starfox-steam-frame-build" \
+            "$RUNNER_TEMP/starfox-steam-frame-package"
+      - name: Archive validated Steam Frame runtime
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP/starfox-steam-frame-package"
+          zip -qr "$GITHUB_WORKSPACE/StarFoxEnhanced-0.0.8.8.1-steam-frame-arm64.zip" .
+          unzip -t "$GITHUB_WORKSPACE/StarFoxEnhanced-0.0.8.8.1-steam-frame-arm64.zip"
+      - name: Preserve cross-build diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: StarFoxEnhanced-steam-frame-configure-failure
+          path: |
+            ${{ runner.temp }}/starfox-steam-frame-build/sysroot-link-normalization.json
+            ${{ runner.temp }}/starfox-steam-frame-build/sniper-sysroot/.starfox-sysroot-link-normalization.json
+            ${{ runner.temp }}/starfox-steam-frame-build/flat/CMakeCache.txt
+            ${{ runner.temp }}/starfox-steam-frame-build/flat/CMakeFiles/CMakeConfigureLog.yaml
+            ${{ runner.temp }}/starfox-steam-frame-build/flat/CMakeFiles/CMakeError.log
+            ${{ runner.temp }}/starfox-steam-frame-build/flat/CMakeFiles/CMakeScratch/
+            ${{ runner.temp }}/starfox-steam-frame-build/steam-frame-vr/CMakeCache.txt
+            ${{ runner.temp }}/starfox-steam-frame-build/steam-frame-vr/CMakeFiles/CMakeConfigureLog.yaml
+            ${{ runner.temp }}/starfox-steam-frame-build/steam-frame-vr/CMakeFiles/CMakeError.log
+            ${{ runner.temp }}/starfox-steam-frame-build/steam-frame-vr/CMakeFiles/CMakeScratch/
+          if-no-files-found: warn
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        with:
+          name: StarFoxEnhanced-0.0.8.8.1-steam-frame-arm64
+          # Keep Linux executable permissions inside the release ZIP.
+          path: StarFoxEnhanced-0.0.8.8.1-steam-frame-arm64.zip
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        with:
+          name: StarFoxEnhanced-0.0.8.8.1-steam-frame-hardware-diagnostics
+          path: ${{ runner.temp }}/starfox-steam-frame-build/diagnostics/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload Steam Frame release package
+        if: github.event_name == 'push' || inputs.release_tag != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag || github.ref_name }}
+          files: StarFoxEnhanced-0.0.8.8.1-steam-frame-arm64.zip
+          draft: true
+
+  ps5-homebrew:
+    if: ${{ !inputs.quest_only && !inputs.source_checks_only }}
+    name: PS5 native RADV homebrew title
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # PS5 launcher backgrounds must be DDS payloads, not LFS pointers.
+          lfs: true
+      - name: Test PS5 policies and SDL patcher
+        shell: bash
+        run: |
+          g++ -std=c++20 -O2 -I include tests/ps5_port_tests.cpp \
+            -o "$RUNNER_TEMP/starfox-ps5-port-tests"
+          "$RUNNER_TEMP/starfox-ps5-port-tests"
+          python3 tests/test_ps5_sdl_patch.py
+      - name: Build and package native PS5 title
+        env:
+          STARFOX_PS5_TITLE_ID: PPSA99764
+        shell: bash
+        run: |
+          # Build paths are relative to /src inside the pinned Docker image.
+          bash tools/build_ps5.sh . build/ps5 "$RUNNER_TEMP/StarFoxEnhanced-ps5"
+          title="$RUNNER_TEMP/StarFoxEnhanced-ps5/$STARFOX_PS5_TITLE_ID"
+          for required in eboot.bin sce_module/libc.prx sce_sys/param.json \
+            sce_sys/icon0.png sce_sys/pic0.dds sce_sys/pic1.dds; do
+            test -s "$title/$required"
+          done
+          if find "$RUNNER_TEMP/StarFoxEnhanced-ps5" -type f \
+            \( -iname '*.sfc' -o -iname '*.smc' -o -iname 'Starfox-Assets.BIN' \
+               -o -iname 'Starfox-MSU1.PAK' \) -print -quit | grep -q .; then
+            echo 'Private game assets must not be included in the PS5 release.' >&2
+            exit 1
+          fi
+          cd "$RUNNER_TEMP"
+          zip -qr "$GITHUB_WORKSPACE/StarFoxEnhanced-0.0.8.8.1-ps5.zip" StarFoxEnhanced-ps5
+          unzip -t "$GITHUB_WORKSPACE/StarFoxEnhanced-0.0.8.8.1-ps5.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: StarFoxEnhanced-0.0.8.8.1-ps5
+          path: StarFoxEnhanced-0.0.8.8.1-ps5.zip
+          if-no-files-found: error
+          retention-days: 7
+      - name: Upload PS5 release package
+        if: github.event_name == 'push' || inputs.release_tag != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag || github.ref_name }}
+          files: StarFoxEnhanced-0.0.8.8.1-ps5.zip
           draft: true
 
   release-checksums:
     name: Release package checksums
-    needs: [windows-x64, windows-x86, xbox-uwp-x64, linux-x64, macos-universal, ios-device, android-arm64, quest-arm64, windows-pcvr, switch-homebrew, vita-homebrew]
-    if: ${{ always() && !inputs.quest_only && (github.event_name == 'push' || inputs.release_tag != '') }}
+    needs: [windows-x64, windows-x86, xbox-uwp-x64, linux-x64, macos-universal, ios-device, android-arm64, quest-arm64, windows-pcvr, switch-homebrew, vita-homebrew, linux-vr-host-tests, steam-frame-arm64, ps5-homebrew]
+    # Implicit success() keeps incomplete/failed platform runs in draft.
+    if: ${{ !inputs.quest_only && !inputs.source_checks_only && (github.event_name == 'push' || inputs.release_tag != '') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -656,12 +1057,25 @@ jobs:
         shell: bash
         run: |
           cd packages
-          shopt -s nullglob
-          assets=( *.zip *.apk )
-          if ((${#assets[@]} == 0)); then
-            echo 'No verified release packages were produced.' >&2
-            exit 1
-          fi
+          # Check the complete expected inventory, not just whatever happened
+          # to be downloaded. Diagnostic artifacts and 3DS are not releases.
+          assets=(
+            StarFoxEnhanced-0.0.8.8.1-windows-x64.zip
+            StarFoxAssetBuilder-0.0.8.8.1-windows-x64.zip
+            StarFoxEnhanced-0.0.8.8.1-windows-x86.zip
+            StarFoxEnhanced-0.0.8.8.1-xbox-uwp-x64.zip
+            StarFoxEnhanced-0.0.8.8.1-linux-x64.zip
+            StarFoxEnhanced-0.0.8.8.1-macos-universal.zip
+            StarFoxEnhanced-0.0.8.8.1-ios-arm64-unsigned.ipa
+            StarFoxEnhanced-0.0.8.8.1-android-arm64.apk
+            StarFoxEnhanced-0.0.8.8.1-quest-arm64.zip
+            StarFoxEnhanced-0.0.8.8.1-windows-pcvr.zip
+            StarFoxEnhanced-0.0.8.8.1-switch-homebrew.zip
+            StarFoxEnhanced-0.0.8.8.1-vita.zip
+            StarFoxEnhanced-0.0.8.8.1-steam-frame-arm64.zip
+            StarFoxEnhanced-0.0.8.8.1-ps5.zip
+          )
+          for asset in "${assets[@]}"; do test -s "$asset"; done
           sha256sum "${assets[@]}" > SHA256SUMS.txt
           tag="${REQUESTED_TAG:-${GITHUB_REF_NAME}}"
           gh release upload "${tag}" SHA256SUMS.txt --clobber
