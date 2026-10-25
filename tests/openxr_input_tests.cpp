@@ -239,7 +239,10 @@ void original_menu_tests() {
             }
         }
         menu.page=Page::options;menu.selection=6;click();require(menu.page==Page::three_d && !menu.ray_tracing);
-        require(menu.row_count()==5 && menu.labels().back()=="BACK" && !menu.preview);
+        // Hosts without MODERN (the Steam Frame app) show no MODERN rows.
+        require(menu.row_count()==5 && menu.labels().back()=="BACK");
+        menu.modern_available=true;
+        require(menu.row_count()==7 && menu.labels().back()=="BACK" && !menu.preview);
         click();require(menu.model_effect==1 && !menu.ray_tracing);
         menu.selection=2;click();require(menu.preview);menu.sample(press,true);require(menu.preview);
         click();require(!menu.preview);
@@ -248,12 +251,16 @@ void original_menu_tests() {
         click();require(menu.labels()[3]=="3D ASTEROIDS: SUPER FX MEDIUM");
         click();require(menu.labels()[3]=="3D ASTEROIDS: SUPER FX HIGH");
         click();require(menu.asteroid_models==0 && menu.labels()[3]=="3D ASTEROIDS: SPRITE");
-        menu.selection=4;click();require(!menu.ray_tracing && menu.page==Page::options);
-        menu.ray_tracing_available=true;click();require(menu.page==Page::three_d && menu.row_count()==6);
+        // MODERN applies at the next start; dynamic lighting at once.
+        menu.selection=4;click();require(menu.modern_renderer && menu.labels()[4]=="MODERN RENDERER: ON NEXT START");
+        menu.modern_running=true;require(menu.labels()[4]=="MODERN RENDERER: ON");
+        menu.selection=5;click();require(menu.dynamic_lighting && menu.labels()[5]=="DYNAMIC LIGHTING: ON");
+        menu.selection=6;click();require(!menu.ray_tracing && menu.page==Page::options);
+        menu.ray_tracing_available=true;click();require(menu.page==Page::three_d && menu.row_count()==8);
         menu.selection=3;click();require(menu.ray_tracing);
         menu.sample(press,true);require(menu.ray_tracing);
         menu.selection=4;click();require(menu.asteroid_models==1 && menu.page==Page::three_d);
-        menu.selection=5;click();require(menu.page==Page::options && menu.selection==6);
+        menu.selection=7;click();require(menu.page==Page::options && menu.selection==6);
         menu.selection=7;click();require(menu.page==Page::two_d);
         click();require(menu.world_effect==4);
         menu.selection=1;click();require(menu.world_intensity==0);
@@ -291,6 +298,7 @@ void original_menu_tests() {
         require(restored.asteroid_models==1 && restored.asteroid_model_mode()==starfox::render::AsteroidModels::super_fx_low);
         require(restored.ray_tracing && !restored.ray_tracing_available);
         require(restored.enhanced_sky);
+        require(restored.modern_renderer && restored.dynamic_lighting);
         require(!restored.ray_tracing_enabled());
         restored.page=Page::three_d;
         require(restored.row_count()==5 && restored.labels().back()=="BACK" && !restored.preview);
@@ -311,6 +319,14 @@ void original_menu_tests() {
         // Version 6 carries the asteroid mode; a 20-byte record cannot claim it.
         auto short_version6=version4;short_version6[4]=6;
         require(!migrated.restore_preferences(short_version6));
+        // Version 7 adds MODERN and dynamic lighting; a version 6 record
+        // restores with both off, and unknown bits are rejected.
+        std::array<uint8_t,21> version6{};std::copy(preferences.begin(),preferences.begin()+21,version6.begin());
+        version6[4]=6;
+        require(migrated.restore_preferences(version6) && !migrated.modern_renderer && !migrated.dynamic_lighting
+            && migrated.asteroid_models==1);
+        auto bad_version7=preferences;bad_version7[21]=4;
+        require(!migrated.restore_preferences(bad_version7));
         // Exercise the very same bounded file loader used by application.cpp.
         // In particular, v6 must not be rejected by a stale 16/20-byte gate.
         const auto file=std::filesystem::temp_directory_path()/
@@ -336,7 +352,7 @@ void original_menu_tests() {
         const auto before_invalid=from_disk.preferences();
         write_record(short_version6);require(!load_startup_preferences(from_disk,file));
         require(from_disk.preferences()==before_invalid);
-        std::array<uint8_t,22> oversized{};
+        std::array<uint8_t,23> oversized{};
         std::copy(preferences.begin(),preferences.end(),oversized.begin());
         write_record(oversized);require(!load_startup_preferences(from_disk,file));
         require(from_disk.preferences()==before_invalid);

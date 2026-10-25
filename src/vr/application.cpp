@@ -162,8 +162,8 @@ int starfox::vr::run_application(int argc,char** argv,const ApplicationHost& hos
     bool enhanced_sky=false; // Optional launch override; the menu preference defaults to off.
     // MODERN (--modern, or STARFOX_MODERN=1 as on the desktop): the frame the
     // flat MODERN renderer draws (vr::ModernFrame), on the headset.
-    bool modern=false;
-    if(const char* flag=std::getenv("STARFOX_MODERN")) modern=std::string_view(flag)=="1";
+    bool modern=false,modern_off=false;
+    if(const char* flag=std::getenv("STARFOX_MODERN")) {modern=std::string_view(flag)=="1";modern_off=std::string_view(flag)=="0";}
     for(int i=1;i<argc;++i) {
         const std::string_view arg=argv[i];
         if(arg=="--bundle" && i+1<argc) {bundle_path=argv[++i];render_game=true;graphics=true;preflight_level="INTROMAP";}
@@ -200,6 +200,16 @@ int starfox::vr::run_application(int argc,char** argv,const ApplicationHost& hos
         else if(arg=="--preflight-invulnerable") preflight_invulnerable=true;
         else if(arg=="--msu" && i+1<argc && !msu_path) msu_path=argv[++i];
         else {std::cerr<<"Usage: starfox_vr_runtime_check [--bundle BIN | --bundle-preflight BIN LEVEL FRAMES | --bundle-ex-preflight BIN LEVEL FRAMES | --graphics | --loader-only | --render-clear | --render-triangle | --render-model ROM SYMBOLS SHAPE | --render-game ROM SYMBOLS | --intro ROM SYMBOLS | --preflight ROM SYMBOLS LEVEL FRAMES] [--msu PACK]\n";return 1;}
+    }
+    // The 3D OPTIONS menu's MODERN RENDERER choice (vr-preferences.bin), read
+    // now because it applies from launch; --modern and STARFOX_MODERN=1 turn
+    // it on regardless, STARFOX_MODERN=0 off (A/B against the existing renderer).
+    if(!modern && !modern_off && !host.cartridge_save_path.empty()) try {
+        const auto saved=host.cartridge_save_path.parent_path()/"vr-preferences.bin";
+        StartupMenu choices;
+        if(std::filesystem::exists(saved) && starfox::vr::load_startup_preferences(choices,saved)) modern=choices.modern_renderer;
+    } catch(const std::exception& error) {
+        std::cerr<<"VR preferences could not load: "<<error.what()<<'\n';
     }
     if(modern) {
         // Before any pipeline exists: reversed depth for every eye, and the
@@ -686,6 +696,8 @@ int starfox::vr::run_application(int argc,char** argv,const ApplicationHost& hos
     } catch(const std::exception& error) {
         std::cerr<<"VR preferences could not load: "<<error.what()<<'\n';
     }
+    // MODERN RENDERER and DYNAMIC LIGHTING rows; MODERN changes apply next start.
+    startup.modern_available=true;startup.modern_running=modern;
     // Explicit launch request takes precedence over a saved OFF preference.
     // Hardware availability still gates use; no flag keeps the saved/default value.
     if(ray_tracing) startup.ray_tracing=true;
@@ -912,13 +924,14 @@ int starfox::vr::run_application(int argc,char** argv,const ApplicationHost& hos
                         inputs.classic_ground_scroll=enabled("STARFOX_MODERN_CLASSIC_SCROLL");
                         inputs.landscape_ground_dots=enabled("STARFOX_MODERN_GROUND_DOTS");
                         inputs.vector_reticle=true;inputs.bg3_behind_bg2=true;
-                        // The engine glow on the ground, with MODERN's coloured lights
-                        // (STARFOX_MODERN_RT_LIGHTS=1): straight below the engine.
+                        // The engine glow on the ground: the DYNAMIC LIGHTING row, or
+                        // STARFOX_MODERN_RT_LIGHTS=1 as for MODERN's coloured lights;
+                        // straight below the engine.
                         static const bool rt_lights=[] {
                             const char* value=std::getenv("STARFOX_MODERN_RT_LIGHTS");return value && std::string_view(value)=="1";
                         }();
                         const auto flow=live->history->current()->flow;
-                        modern_frame.set_engine_glow({rt_lights && (flow==starfox::simulation::GameFlowState::gameplay
+                        modern_frame.set_engine_glow({(rt_lights || startup.dynamic_lighting) && (flow==starfox::simulation::GameFlowState::gameplay
                             || flow==starfox::simulation::GameFlowState::training)});
                         if(!portrait_overrides.empty()) inputs.portrait_overrides=&portrait_overrides;
                         if(!sprite_overrides.empty()) inputs.sprite_overrides=&sprite_overrides;
