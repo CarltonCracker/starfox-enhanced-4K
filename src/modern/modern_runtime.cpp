@@ -363,8 +363,9 @@ bool ModernRuntime::present(SDL_Renderer* renderer,double alpha,int requested_wi
         // The engine glow comes with the coloured lights, at the sun's shadow.
         {
             vr::ModernFrame::EngineGlowSettings glow;
-            glow.enabled=s.rt_lights && !s.preview && gameplay;
-            if(light) glow.toward_light=std::array<float,3>{float(light->x),float(light->y),float(light->z)};
+            // The headset preview draws it as PCVR does: straight below.
+            glow.enabled=s.rt_lights && gameplay;
+            if(light && !s.preview) glow.toward_light=std::array<float,3>{float(light->x),float(light->y),float(light->z)};
             s.frame.set_engine_glow(glow);
         }
         if(!s.frame.prepare(command,*previous,*current,alpha,std::move(world),s.inputs)) {

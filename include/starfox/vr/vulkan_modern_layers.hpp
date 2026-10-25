@@ -51,6 +51,9 @@ public:
     bool record_filter(VkCommandBuffer,const EyeCamera&);
     bool record_stars(VkCommandBuffer,VkExtent2D,const EyeCamera&) const;
     bool record_backgrounds(VkCommandBuffer,VkExtent2D,const EyeCamera&,std::array<unsigned,2> world_effects={}) const;
+    // Right after the world: the engine glow on the ground (ModernFrame::
+    // engine_glow; depth-tested, additive, writes no depth).
+    bool record_after_world(VkCommandBuffer,VkExtent2D,const EyeCamera&) const;
     bool record_below_hud(VkCommandBuffer,VkExtent2D,const EyeCamera&) const;
     bool record_hud(VkCommandBuffer,VkExtent2D,const EyeCamera&) const;
     // The background camera's effects.z: the landscape heading.
@@ -67,11 +70,11 @@ private:
     VkDevice device_{};PFN_vkGetDeviceProcAddr get_{};
     VkPhysicalDeviceMemoryProperties memory_{};VkRenderPass pass_{};
     VulkanPipelineCache* cache_{};
-    VulkanDrawPackets stars_,backgrounds_,textures_,tunnel_surround_,sprites_,reticle_;
+    VulkanDrawPackets stars_,backgrounds_,textures_,tunnel_surround_,sprites_,reticle_,engine_glow_;
     VulkanLayerFilter layer_filter_;
     bool filter_enabled_{};
     Overlay circle_,colour_math_,shutter_;
-    bool textures_active_{},reticle_active_{};
+    bool textures_active_{},reticle_active_{},engine_glow_active_{};
     uint32_t landscape_heading_{},texture_mapping_{};
     std::string status_{"MODERN layers not initialized"};
 };

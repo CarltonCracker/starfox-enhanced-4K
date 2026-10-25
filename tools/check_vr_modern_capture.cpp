@@ -373,6 +373,7 @@ int main(int argc,char** argv) try {
             flat.set_frame_settings(seat);flat.set_texture_directory(textures);
             flat.set_target(width,height,std::max(1U,unsigned(std::lround(double(height)*std::abs(camera.projection[5])/512.))));
             std::vector<unsigned char> vr_pixels,sdl_pixels;
+            const bool rt_lights=std::getenv("STARFOX_MODERN_RT_LIGHTS") && std::string_view(std::getenv("STARFOX_MODERN_RT_LIGHTS"))=="1";
             // Both plans see every tick, so their per-level state (horizon votes,
             // retained layers) matches the game's. Source frames: alpha 1.
             for(unsigned tick=0;tick<=ticks;++tick) {
@@ -382,6 +383,10 @@ int main(int argc,char** argv) try {
                 const bool last=tick==ticks;
                 auto world_packets=models.assemble_world_interpolated(*previous,*current,1.,srgb,true);
                 require(world_packets.pending.empty(),"Model assembly pending");
+                // The engine glow, as application.cpp enables it (STARFOX_MODERN_RT_LIGHTS=1).
+                const bool glow=rt_lights && (current->flow==simulation::GameFlowState::gameplay
+                    || current->flow==simulation::GameFlowState::training);
+                frame.set_engine_glow({glow});flat.set_engine_glow({glow});
                 auto* command=SDL_AcquireGPUCommandBuffer(sdl);require(command!=nullptr,"Acquire SDL command buffer");
                 if(!flat.prepare(command,*previous,*current,1.,world_packets,inputs)) {
                     SDL_CancelGPUCommandBuffer(command);throw std::runtime_error("SDL prepare: "+flat.status());
@@ -422,7 +427,8 @@ int main(int argc,char** argv) try {
                 model_camera=vr::VulkanModernLayers::fogged(model_camera,1);
                 vr_pixels=draw_eye(clear,[&](VkCommandBuffer cmd,VkExtent2D size) {
                     if(!layers.record_stars(cmd,size,eye) || !layers.record_backgrounds(cmd,size,eye)
-                        || !world.record(cmd,size,model_camera) || !layers.record_below_hud(cmd,size,eye) || !layers.record_hud(cmd,size,eye))
+                        || !world.record(cmd,size,model_camera) || !layers.record_after_world(cmd,size,eye)
+                        || !layers.record_below_hud(cmd,size,eye) || !layers.record_hud(cmd,size,eye))
                         throw std::runtime_error("Vulkan MODERN recording failed: "+layers.status()+" / "+world.status());
                 },[&](VkCommandBuffer cmd,VkExtent2D) {
                     if(!world.record_compute(cmd)) throw std::runtime_error("Vulkan world compute failed: "+world.status());

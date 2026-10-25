@@ -912,6 +912,14 @@ int starfox::vr::run_application(int argc,char** argv,const ApplicationHost& hos
                         inputs.classic_ground_scroll=enabled("STARFOX_MODERN_CLASSIC_SCROLL");
                         inputs.landscape_ground_dots=enabled("STARFOX_MODERN_GROUND_DOTS");
                         inputs.vector_reticle=true;inputs.bg3_behind_bg2=true;
+                        // The engine glow on the ground, with MODERN's coloured lights
+                        // (STARFOX_MODERN_RT_LIGHTS=1): straight below the engine.
+                        static const bool rt_lights=[] {
+                            const char* value=std::getenv("STARFOX_MODERN_RT_LIGHTS");return value && std::string_view(value)=="1";
+                        }();
+                        const auto flow=live->history->current()->flow;
+                        modern_frame.set_engine_glow({rt_lights && (flow==starfox::simulation::GameFlowState::gameplay
+                            || flow==starfox::simulation::GameFlowState::training)});
                         if(!portrait_overrides.empty()) inputs.portrait_overrides=&portrait_overrides;
                         if(!sprite_overrides.empty()) inputs.sprite_overrides=&sprite_overrides;
                         modern_frame.prepare(*live->history->previous(),*live->history->current(),alpha,std::move(packets),inputs);
@@ -1218,6 +1226,8 @@ int starfox::vr::run_application(int argc,char** argv,const ApplicationHost& hos
                     ?compute_scene.record(command,extent,model_camera,ray_ready):scene.record(command,extent,model_camera)))
                     throw std::runtime_error("Model packet recording failed");
                 if(ray_ready && !ray_frames[eye]->record_draw(command,extent)) throw std::runtime_error("Ray shadow drawing failed");
+                if(render_game && modern && !modern_layers.record_after_world(command,extent,eye_camera))
+                    throw std::runtime_error("MODERN engine glow recording failed");
                 const auto draw_circle=[&] {
                     if(render_game && circle_active && !circle_pipeline.record_model(command,extent,
                         circle_vertices.buffer(),circle_vertices.count(),eye_camera,circle_model))

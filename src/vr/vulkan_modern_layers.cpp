@@ -11,7 +11,7 @@ constexpr Matrix4 identity{1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
 void VulkanModernLayers::initialize(VkDevice device,PFN_vkGetDeviceProcAddr get,
     const VkPhysicalDeviceMemoryProperties& memory,VkRenderPass pass,VulkanPipelineCache* cache,bool srgb) {
     device_=device;get_=get;memory_=memory;pass_=pass;cache_=cache;
-    for(auto* layer:{&stars_,&backgrounds_,&textures_,&tunnel_surround_,&sprites_,&reticle_}) layer->set_pipeline_cache(cache);
+    for(auto* layer:{&stars_,&backgrounds_,&textures_,&tunnel_surround_,&sprites_,&reticle_,&engine_glow_}) layer->set_pipeline_cache(cache);
     static const bool xbrz=[] {
         const char* value=std::getenv("STARFOX_MODERN_XBRZ");return !(value && std::string_view(value)=="0");
     }();
@@ -85,6 +85,12 @@ bool VulkanModernLayers::upload(const ModernFrame& plan) {
             reticle_.set_blend(plan.reticle->blend);
             layer(reticle_,std::span(&plan.reticle->packet,1));
         }
+        engine_glow_active_=plan.engine_glow.has_value();
+        if(engine_glow_active_) {
+            engine_glow_.set_blend(plan.engine_glow->blend);
+            if(!engine_glow_.initialize(device_,get_,memory_,pass_,std::span(&plan.engine_glow->packet,1),{},true,false))
+                throw std::runtime_error(engine_glow_.status());
+        }
         upload_overlay(circle_,plan.circle);
         upload_overlay(colour_math_,plan.colour_math);
         std::optional<ModernFrame::Overlay> shutter;
@@ -129,6 +135,9 @@ bool VulkanModernLayers::record_backgrounds(VkCommandBuffer command,VkExtent2D e
     // Masks only repeated background artwork; gameplay models stay free to
     // occupy the full view.
     return tunnel_surround_.record(command,extent,world);
+}
+bool VulkanModernLayers::record_after_world(VkCommandBuffer command,VkExtent2D extent,const EyeCamera& camera) const {
+    return !engine_glow_active_ || engine_glow_.record(command,extent,fogged(camera,0));
 }
 bool VulkanModernLayers::record_below_hud(VkCommandBuffer command,VkExtent2D extent,const EyeCamera& camera) const {
     if(circle_.active && !circle_.over_hud && !record_overlay(command,extent,camera,circle_,false)) return false;
