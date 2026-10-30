@@ -3,6 +3,7 @@
 #include "starfox/assets/rom.hpp"
 #include "starfox/simulation/game_simulation.hpp"
 #include "tunnel_margin_cases.hpp"
+#include "background_surface_cases.hpp"
 
 #include <array>
 #include <chrono>
@@ -305,6 +306,13 @@ int main(int argc, char** argv) try {
     if (argc == 4 && std::string_view(argv[1]) == "--source-benchmark") { parallel_benchmark(argv[2],argv[3]); return 0; }
     if (argc == 4 && std::string_view(argv[1]) == "--source-parallel") { source_parallel(argv[2],argv[3]); return 0; }
     native_row_contract();
+    check_background_surface_cases([](const auto& p,unsigned width,bool enabled,auto bounds) {
+        Framebuffer frame(width,224);
+        BackgroundRenderer{}.draw_bg2(p,0,0,frame,TilePriorityPass::all,int(width)/2-128,
+            true,true,false,0,{},false,false,0,false,false,
+            enabled?bounds:std::array<unsigned,2>{});
+        return frame.pixels();
+    });
     large_recording_parity();
     check_tunnel_margins([](const auto& p,unsigned width,unsigned scale,bool extend) {
         Framebuffer f(width,224,scale);

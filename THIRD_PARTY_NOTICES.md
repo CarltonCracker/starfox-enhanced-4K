@@ -238,16 +238,12 @@ The Windows desktop discovery path uses Khronos OpenXR SDK headers, revision
 declarations from DisplayXR runtime `v2.21.11`. Attribution, modifications and
 the complete Apache-2.0 license are in `third_party/displayxr` in source and
 `licenses/displayxr` in packaged desktop builds. No DisplayXR runtime is linked
-into the game. Windows x64 release packaging additionally includes untouched,
-optional upstream installers under `optional-runtimes/displayxr`: runtime
-2.21.11 (BSL-1.0, source `316bed95f4ad9f68427966723c99dbe14f3731eb`) and
-Leia SR plug-in 2.7.6 (Apache-2.0, source
-`c8f7e1cb9b4d0dda485991961759998dd400bbdf`). The original publisher signatures,
-sizes and SHA-256 checksums are checked before packaging. Upstream notices and
-all runtime `LICENSES` texts are preserved in `licenses/displayxr-runtime` and
-`licenses/displayxr-leia-plugin`; pinned inputs are recorded in
-`tools/package/displayxr-runtime.json`. The game never runs these installers
-automatically. They do not replace the separately required vendor SR Platform
+into the game. Windows x64 packages contain upstream download instructions
+under `optional-runtimes/displayxr`, not DisplayXR system installers. Historical
+upstream versions, source revisions and checksums remain recorded in
+`tools/package/displayxr-runtime.json` for identifying older distributions.
+The runtime and plug-in downloaded separately from upstream carry their own
+licenses/notices. Neither replaces the separately required vendor SR Platform
 service/drivers; see the optional package README for installation side effects.
 
 ### Optional direct SR Platform adapter

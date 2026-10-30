@@ -92,12 +92,26 @@ struct GamepadBinding {
     std::int16_t control{};
 };
 
+// P1 keeps the legacy shared keyboard/first-pad assignment. Selecting P2
+// reserves that slot for the keyboard and shifts later pads past it.
+[[nodiscard]] inline input::ButtonMask player_buttons(
+    input::ButtonMask keyboard, std::span<const input::ButtonMask> pads,
+    unsigned keyboard_player, unsigned player) noexcept {
+    if (player >= 5U) return 0;
+    const auto pad = keyboard_player == 1U && player > 1U ? player - 1U : player;
+    const auto buttons = keyboard_player == 1U && player == 1U ? input::ButtonMask{}
+        : pad < pads.size() ? pads[pad] : input::ButtonMask{};
+    return static_cast<input::ButtonMask>(buttons
+        | (player == keyboard_player ? keyboard : input::ButtonMask{}));
+}
+
 class InputBindings {
 public:
     static constexpr std::size_t action_count = 12U;
     static constexpr std::size_t reset_action = action_count;
+    static constexpr std::size_t keyboard_player_action = reset_action + 1U;
     [[nodiscard]] static constexpr std::size_t remap_action_count(BindingDevice device) noexcept {
-        return action_count + (device == BindingDevice::keyboard ? 1U : 0U);
+        return action_count + (device == BindingDevice::keyboard ? 2U : 0U);
     }
     bool bind_reset_key(SDL_Scancode scancode) noexcept;
     [[nodiscard]] bool matches_reset_shortcut(const SDL_KeyboardEvent& event) const noexcept;
@@ -107,6 +121,11 @@ public:
 
     [[nodiscard]] input::ButtonMask sample(
         SDL_Gamepad* gamepad) const noexcept;
+    [[nodiscard]] input::ButtonMask sample_keyboard_only() const noexcept;
+    [[nodiscard]] input::ButtonMask sample_player(
+        std::span<SDL_Gamepad* const> gamepads, unsigned player) const noexcept;
+    [[nodiscard]] unsigned keyboard_player() const noexcept { return keyboard_player_; }
+    void set_keyboard_player(unsigned player) noexcept { if (player < 2U) keyboard_player_ = player; }
     [[nodiscard]] input::ButtonMask sample_gamepad_only(
         SDL_Gamepad* gamepad) const noexcept;
     [[nodiscard]] input::ButtonMask sample_fixed_menu_navigation(
@@ -131,6 +150,7 @@ public:
 
 private:
     bool handheld_menu_layout_{};
+    unsigned keyboard_player_{};
     std::array<SDL_Scancode, action_count> keyboard_{};
     SDL_Scancode reset_key_{SDL_SCANCODE_R};
     std::array<GamepadBinding, action_count> gamepad_{};

@@ -53,7 +53,13 @@ option(STARFOX_BUILD_STEAM_FRAME
 option(STARFOX_BUILD_TOOLS "Build host-side trace and asset tools"
     ${STARFOX_BUILD_TOOLS_DEFAULT})
 option(STARFOX_EMBED_RUNTIME_ASSETS
-    "Embed source-built BPS deltas and symbol tables into the Windows runtime" ON)
+    "Embed source-built BPS deltas and symbol tables into the runtime" ON)
+option(STARFOX_EMBED_ENHANCED_BACKDROPS
+    "Embed desktop backdrop artwork (OFF loads companion assets instead)" ON)
+if(NOT STARFOX_EMBED_ENHANCED_BACKDROPS AND
+   (ANDROID OR IOS OR WINDOWS_STORE OR SWITCH OR VITA OR STARFOX_PS5 OR STARFOX_BUILD_VR))
+    message(FATAL_ERROR "External backdrop artwork is supported by the desktop flat runtime only")
+endif()
 option(STARFOX_PACKAGE_MSU1_MUSIC
     "Build and install the optional Starfox-MSU1.PAK companion" ON)
 # xBRZ is enabled by default; minimal builds may disable the backend.
@@ -1470,7 +1476,7 @@ if(STARFOX_BUILD_RUNTIME)
                 "${STARFOX_RETAIL_GERMANY_V10_PATCH_FILE}"
             COMMENT "Embedding portable runtime patch resources"
             VERBATIM)
-        add_library(starfox_embedded_assets STATIC
+        add_library(starfox_embedded_assets STATIC EXCLUDE_FROM_ALL
             "${STARFOX_GENERATED_EMBEDDED_ASSETS}"
             ${STARFOX_EMBED_SPLIT_OUTPUTS})
         target_include_directories(starfox_embedded_assets PRIVATE include)
@@ -1484,9 +1490,34 @@ if(STARFOX_BUILD_RUNTIME)
 
         if(NOT ANDROID AND NOT IOS AND NOT WINDOWS_STORE
            AND NOT SWITCH AND NOT VITA AND NOT STARFOX_PS5)
-            add_executable(starfox_asset_builder src/app/asset_builder.cpp)
-            target_link_libraries(starfox_asset_builder PRIVATE
-                starfox_core starfox_embedded_assets)
+            # Importing a retail cartridge needs patches/symbols, never the
+            # photographic artwork. Do not duplicate ~170 MiB in this tool.
+            set(STARFOX_IMPORT_ASSETS "${CMAKE_CURRENT_BINARY_DIR}/generated/import_assets.cpp")
+            add_custom_command(OUTPUT "${STARFOX_IMPORT_ASSETS}"
+                COMMAND "${Python3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_runtime_assets.py"
+                    --output "${STARFOX_IMPORT_ASSETS}"
+                    --resource "101=${STARFOX_ORIGINAL_PATCH_FILE}"
+                    --resource "102=${STARFOX_SYMBOLS_FILE}"
+                    --resource "108=${STARFOX_EX_PATCH_FILE}"
+                    --resource "109=${STARFOX_EX_SYMBOLS_FILE}"
+                    --resource "120=${STARFOX_RETAIL_JAPAN_V10_PATCH_FILE}"
+                    --resource "121=${STARFOX_RETAIL_JAPAN_V11_PATCH_FILE}"
+                    --resource "122=${STARFOX_RETAIL_USA_V10_PATCH_FILE}"
+                    --resource "123=${STARFOX_RETAIL_USA_V11_PATCH_FILE}"
+                    --resource "124=${STARFOX_RETAIL_EUROPE_V10_PATCH_FILE}"
+                    --resource "125=${STARFOX_RETAIL_EUROPE_V11_PATCH_FILE}"
+                    --resource "126=${STARFOX_RETAIL_GERMANY_V10_PATCH_FILE}"
+                DEPENDS tools/embed_runtime_assets.py
+                    "${STARFOX_ORIGINAL_PATCH_FILE}" "${STARFOX_SYMBOLS_FILE}"
+                    "${STARFOX_EX_PATCH_FILE}" "${STARFOX_EX_SYMBOLS_FILE}"
+                    "${STARFOX_RETAIL_JAPAN_V10_PATCH_FILE}" "${STARFOX_RETAIL_JAPAN_V11_PATCH_FILE}"
+                    "${STARFOX_RETAIL_USA_V10_PATCH_FILE}" "${STARFOX_RETAIL_USA_V11_PATCH_FILE}"
+                    "${STARFOX_RETAIL_EUROPE_V10_PATCH_FILE}" "${STARFOX_RETAIL_EUROPE_V11_PATCH_FILE}"
+                    "${STARFOX_RETAIL_GERMANY_V10_PATCH_FILE}"
+                VERBATIM)
+            add_executable(starfox_asset_builder src/app/asset_builder.cpp "${STARFOX_IMPORT_ASSETS}")
+            target_link_libraries(starfox_asset_builder PRIVATE starfox_core)
             if(STARFOX_BUILD_VR)
                 install(TARGETS starfox_asset_builder
                     RUNTIME DESTINATION . COMPONENT pcvr)
@@ -1626,6 +1657,20 @@ if(STARFOX_BUILD_RUNTIME)
         RUNTIME DESTINATION .
         LIBRARY DESTINATION .
         BUNDLE DESTINATION .)
+    if(NOT STARFOX_EMBED_ENHANCED_BACKDROPS)
+        target_compile_definitions(starfox_pc PRIVATE STARFOX_EXTERNAL_BACKDROPS=1)
+        if(APPLE)
+            # SDL_GetBasePath resolves to Contents/Resources in a desktop .app.
+            file(GLOB STARFOX_EXTERNAL_BACKDROP_FILES CONFIGURE_DEPENDS
+                "${CMAKE_CURRENT_SOURCE_DIR}/assets/enhanced-backdrops/*.bmp")
+            target_sources(starfox_pc PRIVATE ${STARFOX_EXTERNAL_BACKDROP_FILES})
+            set_source_files_properties(${STARFOX_EXTERNAL_BACKDROP_FILES} PROPERTIES
+                MACOSX_PACKAGE_LOCATION Resources/assets/enhanced-backdrops)
+        else()
+            install(DIRECTORY assets/enhanced-backdrops DESTINATION assets
+                FILES_MATCHING PATTERN "*.bmp")
+        endif()
+    endif()
     if(WIN32 AND NOT WINDOWS_STORE AND STARFOX_ENABLE_LEIASR)
         # Built separately with MSVC so MinGW never imports SDK C++ symbols.
         # The helper installs the module/notices beside this build's executable.
@@ -2196,6 +2241,7 @@ if(STARFOX_BUILD_TESTS)
 
     add_executable(starfox_ending_tests tests/ending_tests.cpp)
     target_link_libraries(starfox_ending_tests PRIVATE starfox_core)
+    add_test(NAME starfox_ending_painter_order COMMAND starfox_ending_tests --painter-order-only)
     add_executable(starfox_msu_fade_tests tests/msu_fade_tests.cpp)
     target_link_libraries(starfox_msu_fade_tests PRIVATE starfox_core)
     add_executable(starfox_intro_pacing_tests tests/intro_pacing_tests.cpp)
@@ -2570,6 +2616,8 @@ if(STARFOX_BUILD_TESTS)
     if(Python3_Interpreter_FOUND)
         add_test(NAME starfox_ios_package_tests
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ios_package.py")
+        add_test(NAME starfox_desktop_asset_layout_tests
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_desktop_asset_layout.py")
         add_test(NAME starfox_vita_package_tests
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_vita_package.py")
         add_test(NAME starfox_ps5_splash_routes

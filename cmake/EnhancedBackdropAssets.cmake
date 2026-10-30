@@ -1,5 +1,10 @@
 # Keep VR artwork resource IDs identical to the shared C++ catalogue.
 function(starfox_enhanced_backdrop_resources output_arguments output_files)
+    if(DEFINED STARFOX_EMBED_ENHANCED_BACKDROPS AND NOT STARFOX_EMBED_ENHANCED_BACKDROPS)
+        set(${output_arguments} "" PARENT_SCOPE)
+        set(${output_files} "" PARENT_SCOPE)
+        return()
+    endif()
     get_filename_component(root "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/.." ABSOLUTE)
     set(catalogue "${root}/include/starfox/render/enhanced_backdrop_library.hpp")
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${catalogue}")

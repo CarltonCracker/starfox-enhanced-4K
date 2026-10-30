@@ -3,6 +3,7 @@
 #include "starfox/input/buttons.hpp"
 #include "starfox/render/background_renderer.hpp"
 #include "starfox/simulation/game_simulation.hpp"
+#include "starfox/simulation/source_painter_order.hpp"
 
 #include <algorithm>
 #include <array>
@@ -15,6 +16,19 @@
 namespace {
 void require(bool condition, const std::string& message) {
     if (!condition) throw std::runtime_error(message);
+}
+void check_painter_order() {
+    using starfox::simulation::source_painter_order;
+    const std::vector<unsigned> handles{0,1,2,3};
+    const std::array<std::int16_t,4> depths{100,500,100,200};
+    require(source_painter_order(handles,[&](auto h){return depths[h];})
+        ==std::vector<unsigned>{1,3,0,2},"Ending paint order ignores depth or equal-depth stability");
+    const std::vector<unsigned> pair{0,1};
+    const std::array<std::int16_t,2> wrapping{-32768,32767};
+    require(source_painter_order(pair,[&](auto h){return wrapping[h];})==pair,
+        "Ending painter order replaced source wrapping CMP with an ordinary signed sort");
+    require(handles==std::vector<unsigned>{0,1,2,3},"Painter ordering mutated native pool order");
+    std::cout<<"Ending painter order: depth, stable ties, wrapping CMP and native-pool preservation passed\n";
 }
 
 void check_ending_irq(const starfox::assets::RomImage& rom,
@@ -393,8 +407,13 @@ void run_ending(const starfox::assets::RomImage& rom,
 }
 
 int main(int argc, char** argv) {
-    if (argc != 3) return 2;
+    if (argc != 3 && argc != 2) return 2;
     try {
+        check_painter_order();
+        if(argc==2) {
+            require(std::string_view(argv[1])=="--painter-order-only","Unknown ending test option");
+            return 0;
+        }
         const auto rom = starfox::assets::RomImage::load(argv[1]);
         const auto symbols = starfox::assets::SymbolMap::load(argv[2]);
         check_ending_irq(rom, symbols);

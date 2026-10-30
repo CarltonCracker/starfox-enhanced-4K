@@ -12,6 +12,7 @@ cbuffer Settings : register(b0,space2) {
     uint singleRows,regionCount;int registerX,registerY;
     uint terrainFirst,terrainLast,logicalWidth,logicalHeight;
     float2 rasterJitter;uint skySourceMin;float stereoSkySourceX;
+    uint surfaceFirst,surfaceLast,padSurface0,padSurface1;
 };
 uint readByte(uint address) {address&=65535u;return (memory[address>>2]>>((address&3u)*8u))&255u;}
 uint readWord(uint address) {address=(address&32767u)*2u;return readByte(address)|(readByte(address+1u)<<8u);}
@@ -74,7 +75,8 @@ void prepare() {
         int period=(flags&416u)?8192:int(tilesHigh*tileEdge);
         int raw=int(word&uint(period-1));
         int delta=(raw-prev)&(period-1);if(delta>period/2-1) delta-=period;
-        unwrapped=count?unwrapped+delta:raw;
+        bool boundedSurface=!(flags&32u) && surfaceFirst<surfaceLast && surfaceLast<=tilesHigh*tileEdge;
+        unwrapped=count?unwrapped+delta:boundedSurface?difference(int(word&8191u),0):raw;
         Sf64 x=number(i+1),y=number(unwrapped);
         sx=sf_add(sx,x);sy=sf_add(sy,y);sxx=sf_add(sxx,sf_mul(x,x));sxy=sf_add(sxy,sf_mul(x,y));
         if(!count) {first=i;firstRaw=int(word&8191u);}last=i;lastRaw=int(word&8191u);prev=raw;++count;
@@ -127,7 +129,9 @@ void main(uint3 id:SV_DispatchThreadID) {
     if(!phase) {if(!id.x) prepare();return;}
     uint x=id.x;if(x>=logicalWidth) return;
     bool extend=(flags&1u)!=0,wrapX=(flags&2u)!=0,tunnel=(flags&32u)!=0;
-    bool expanded=extend && logicalWidth>256 && (flags&4u),ground=expanded && logicalHeight>192 && !(flags&1024u);
+    bool expanded=extend && logicalWidth>256 && (flags&4u);
+    bool boundedSurface=expanded && !tunnel && surfaceFirst<surfaceLast && surfaceLast<=tilesHigh*tileEdge;
+    bool ground=expanded && !boundedSurface && logicalHeight>192 && !(flags&1024u);
     bool authoredTunnel=(flags&4096u)!=0;
     int logicalX=int(x)-originX,sampleX=mosaicAt(tunnel && extend && priority!=2u && !authoredTunnel?clamp(logicalX,0,255):logicalX);
     bool outside=logicalX<0 || logicalX>=256;
@@ -165,6 +169,11 @@ void main(uint3 id:SV_DispatchThreadID) {
             }
         }
         uint sourceY=uint(sampleY+(columnY!=-2147483647?columnY:rowY))&(mapHeight-1);
+        if(boundedSurface) {
+            int offset=(columnY!=-2147483647?columnY:rowY)&8191;
+            if(offset>4095) offset-=8192;
+            sourceY=uint(clamp(sampleY+offset,0,int(surfaceLast)-1));
+        }
         if(expanded && y<144 && outside && skySourceMin<mapHeight) sourceY=max(sourceY,skySourceMin);
         if(ground) {
             if(y>=144 && previous>=0 && int(sourceY)<previous && previous-int(sourceY)>int(mapHeight/2)) wrapped=true;

@@ -3,6 +3,7 @@
 #include "starfox/render/environment_effects.hpp"
 #include "starfox/simulation/game_simulation.hpp"
 #include "starfox/simulation/irq_palette.hpp"
+#include "starfox/simulation/source_painter_order.hpp"
 #include "starfox/platform/nintendo_3ds/frame_profile.hpp"
 
 #include "starfox/assets/decrunch.hpp"
@@ -80,6 +81,29 @@ constexpr std::uint16_t staff_roll = 49U;
 
 std::int16_t signed_word(std::uint16_t value) noexcept {
     return starfox::bit_cast<std::int16_t>(value);
+}
+template<class Map>
+auto ending_painter_order(Map& map,const assets::RomImage& rom,const ObjectPool& objects,
+    std::uint32_t view_position,std::uint32_t world_matrix) {
+    const std::array<std::int16_t,3> camera{
+        signed_word(map.read_native_word(view_position)),
+        signed_word(map.read_native_word(view_position+2)),
+        signed_word(map.read_native_word(view_position+4))};
+    MatrixQ15 world{};
+    for(unsigned i=0;i<world.size();++i) world[i]=signed_word(map.read_native_word(world_matrix+i*2));
+    auto handles=objects.active_handles();
+    std::erase_if(handles,[&](ObjectHandle handle) {
+        return (objects.at(handle).strategy_flags[3]&0x08U)!=0;
+    });
+    return source_painter_order(handles,[&](ObjectHandle handle) {
+        const auto& object=objects.at(handle);
+        const auto position=transform_q15(world,{subtract16(object.world_x,camera[0]),
+            subtract16(object.world_y,camera[1]),subtract16(object.world_z,camera[2])});
+        auto depth=position[2];
+        if(object.shape) depth=add16(depth,rom.read_i16(std::uint32_t(object.shape)+5));
+        if(object.type&1U) depth=add16(depth,15'000);
+        return depth;
+    });
 }
 
 input::ButtonMask map_control_type_buttons(
@@ -3694,8 +3718,10 @@ GameTickResult GameSimulation::tick_end_game_sequence(
     // The native transfer has already run GETVIEW_L, including its fixed-
     // position/target camera and Super FX matrix calls. Do not call the host
     // camera path here: its bounded angle subroutines would replace the
-    // suspended ending task's CPU registers and return stack.
-    draw_order_ = objects_.active_handles();
+    // suspended ending task's CPU registers and return stack. But allocation
+    // order is not painter order: it let ships overwrite stage percentages.
+    // Reuse the source depth/bias/CMP rule without culling or mutating objects.
+    draw_order_ = ending_painter_order(map_,*rom_,objects_,view_position_,world_matrix_);
     // ENDSEQ_L runs its own ENDTRANS loop, including DO_CIRCLE_EXPLOSION_L.
     // Unlike a gameplay TRANSFER it never reaches the host's normal circle
     // snapshot below, so the boss dossier's round wipes were silently lost.

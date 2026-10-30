@@ -13,9 +13,9 @@ does not include its system drivers, service or proprietary runtime DLLs.
 DISPLAYXR LEIA is a separate optional route, requiring DisplayXR. Installing
 SR Platform alone does not enable DisplayXR. Use OUTPUT: SR PLATFORM for
 the same direct SDK route used by the agrofubris stereo build.
-Windows x64 release packages also include optional upstream DisplayXR and
-Leia plug-in installers under optional-runtimes/displayxr. They are never
-run automatically; read that folder's README before choosing to install.
+Windows x64 packages include download instructions under
+optional-runtimes/displayxr, not system installers. Read that folder's README
+if you specifically need DisplayXR; direct SR PLATFORM does not require it.
 If DisplayXR cannot connect when selected in the menu, the previous OUTPUT
 is preserved (including SR PLATFORM). The optional toggle shows UNAVAILABLE
 and can be retried after installing or fixing the required runtime.

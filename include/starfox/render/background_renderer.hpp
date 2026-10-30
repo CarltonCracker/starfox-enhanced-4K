@@ -4,6 +4,7 @@
 #include "starfox/simulation/snes_ppu.hpp"
 
 #include <cstdint>
+#include <array>
 #include <span>
 
 namespace starfox::render {
@@ -75,7 +76,8 @@ public:
         bool continue_ground = true,
         // Full-height tunnel presentation also fills the source's hidden
         // ten-line top guard; native scene pixels below it remain unchanged.
-        bool extend_tunnel_diagonals = false) const noexcept;
+        bool extend_tunnel_diagonals = false,
+        std::array<unsigned,2> surface_continuation_rows = {}) const noexcept;
     void draw_bg3(
         const simulation::SnesPpuState& ppu,
         Framebuffer& target,

@@ -5,6 +5,7 @@
 #include "starfox/render/terrain_profile.hpp"
 #include "../tests/background_roll_cases.hpp"
 #include "../tests/tunnel_margin_cases.hpp"
+#include "../tests/background_surface_cases.hpp"
 #include <SDL3/SDL.h>
 #include <cstring>
 #include <iostream>
@@ -47,6 +48,15 @@ int main(int argc,char** argv) {
         device=SDL_CreateGPUDeviceWithProperties(props);SDL_DestroyProperties(props);require(device,"GPU device");
         {
         GpuBackground gpu;BackgroundRenderer reference;
+        check_background_surface_cases([&](const auto& p,unsigned width,bool enabled,auto bounds) {
+            GpuBackgroundSettings settings;settings.layer=2;settings.continue_ground=false;
+            settings.horizontal_origin=int(width)/2-128;
+            if(enabled) settings.surface_continuation_rows=bounds;
+            const auto actual=run(device,gpu,p,width,224,1,settings);
+            std::vector<std::uint8_t> pixels;pixels.reserve(actual.size());
+            for(const auto value:actual) pixels.push_back(std::uint8_t(value));
+            return pixels;
+        });
         check_tunnel_margins([&](const auto& p,unsigned width,unsigned scale,bool extend) {
             GpuBackgroundSettings settings;settings.layer=2;
             settings.scroll_x=p.bg2_scroll_x;settings.scroll_y=p.bg2_scroll_y;

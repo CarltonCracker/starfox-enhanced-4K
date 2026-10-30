@@ -296,13 +296,36 @@ jobs:
               !(Test-Path "$runtime/Diagnose-Leia-SR.cmd")) {
             throw 'SR Platform adapter, checker, instructions or notices missing'
           }
-          Compress-Archive -Path "$runtime/*" -DestinationPath "$runtime.zip"
           $builder = 'StarFoxAssetBuilder-0.0.8.8.1-windows-x64'
           New-Item -ItemType Directory -Force $builder | Out-Null
-          Copy-Item build/asset-builder/starfox_asset_builder.exe $builder/
+          # The game imports retail ROMs itself. Keep the optional conversion
+          # tool in its own download, not duplicated in every player ZIP.
+          Move-Item -LiteralPath "$runtime/starfox_asset_builder.exe" -Destination "$builder/starfox_asset_builder.exe"
           Copy-Item platform/mobile/ASSET_BUILDER.md $builder/README.md
           Copy-Item THIRD_PARTY_NOTICES.md $builder/
+          Compress-Archive -Path "$runtime/*" -DestinationPath "$runtime.zip"
           Compress-Archive -Path "$builder/*" -DestinationPath "$builder.zip"
+      - name: Scan exact Windows executables and final release archives
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          ./tests/test_windows_defender.ps1
+          ./tools/check_windows_defender.ps1 -UpdateSignatures `
+            -Files @('StarFoxEnhanced-0.0.8.8.1-windows-x64/starfox_pc.exe',
+              'StarFoxEnhanced-0.0.8.8.1-windows-x64/starfox_leia_sr.dll',
+              'StarFoxEnhanced-0.0.8.8.1-windows-x64/starfox_leia_sr_check.exe',
+              'StarFoxAssetBuilder-0.0.8.8.1-windows-x64/starfox_asset_builder.exe',
+              'StarFoxEnhanced-0.0.8.8.1-windows-x64.zip',
+              'StarFoxAssetBuilder-0.0.8.8.1-windows-x64.zip') `
+            -ReportPath build/validation/active/windows-defender-release.json
+      - name: Preserve Windows scan receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64-defender-scan
+          path: build/validation/active/windows-defender-release.json
+          if-no-files-found: warn
+          retention-days: 7
       - uses: actions/upload-artifact@v4
         with:
           name: StarFoxEnhanced-0.0.8.8.1-windows-x64

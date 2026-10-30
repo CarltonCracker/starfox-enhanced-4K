@@ -31,6 +31,25 @@ inline constexpr bool shadowless_space_background(std::string_view name,bool ex=
         if(name==background) return true;
     return false;
 }
+// Meteor's lower gradient is background art, not a shadow receiver. It still
+// needs to continue past the atlas bottom while banking. Do not apply this to
+// star-only maps (where the last opaque texel could be an isolated star).
+inline constexpr std::array gradient_space_background_names{"BG_1_4","BG_1_14"};
+inline constexpr bool gradient_space_background(std::string_view name) noexcept {
+    for(const auto background:gradient_space_background_names) if(name==background) return true;
+    return false;
+}
+inline constexpr std::array original_orbital_surface_names{"BG_1_5","BG_2_5","BG_3_6","BG_2_2"};
+inline constexpr bool original_orbital_surface(std::string_view name) noexcept {
+    for(const auto background:original_orbital_surface_names) if(name==background) return true;
+    return false;
+}
+inline constexpr std::array<unsigned,2> original_orbital_surface_rows(std::string_view name) noexcept {
+    // BG_2_2 ends its ocean at row 480; rows 488..511 are black padding,
+    // not a second space horizon to expose below the banked planet.
+    return name=="BG_2_2"?std::array<unsigned,2>{416,480}:
+        original_orbital_surface(name)?std::array<unsigned,2>{376,496}:std::array<unsigned,2>{};
+}
 // EX swaps menu graphics under BG_TITLE rather than installing a stage list.
 // These origins describe the visible landscape strip in each native atlas.
 inline std::optional<unsigned> ex_menu_landscape_origin(unsigned choice) noexcept {
@@ -117,6 +136,10 @@ inline std::optional<unsigned> ex_menu_full_sky_backdrop(unsigned choice) noexce
     return std::nullopt;
 }
 inline std::optional<unsigned> gameplay_landscape_horizon(std::string_view name,bool ex) noexcept {
+    // Original's orbital planet occupies the lower half of the 512-row atlas.
+    // EX's replacement uses a different layout. Row 200 put the Original
+    // photographic limb 176 pixels above the actual cartridge limb.
+    if(!ex && original_orbital_surface(name)) return original_orbital_surface_rows(name)[0];
     if(name=="BG_3_5") return ex?136:392;
     if(ex && name=="BG_6_2") return 352;
     if(!ex && (name=="BG_1_6A" || name=="BG_3_7A" || name=="BG_1_7B")) return 360;
@@ -516,6 +539,13 @@ inline unsigned titania_ground_material(std::uint16_t c) {
     // The icy-blue far bands are snow, not water. After the weather changer
     // the same indices become red/brown dirt; classify from the live palette.
     return (c&31)>((c>>10)&31)?2U:4U;
+}
+inline unsigned landscape_ground_material(std::string_view name,bool ex,std::uint16_t colour) {
+    // Original Venom cycles its dry floor through purple/blue. Colour alone
+    // misidentified that phase as reflective water, so Auto lost its normal
+    // ground gradient and only looked enhanced with the RT water pass enabled.
+    if(!ex && (name=="BG_1_6A" || name=="BG_3_7A" || name=="BG_1_7B")) return 2;
+    return name=="BG_2_3A"?titania_ground_material(colour):automatic_ground_material(colour);
 }
 inline std::array<std::array<float,4>,2> source_ground_gradient(
     std::span<const std::uint16_t> palette,
