@@ -34,10 +34,10 @@ is up to date. No network request occurs until the update screen is opened.
 Existing 0.0.8.8 downloads do not acquire new menu code automatically. The first
 release containing the updater must be installed normally.
 
-Public release 0.0.8.8.1 keeps all five components in tags, download filenames
+Public release 0.0.8.8.2 keeps all five components in tags, download filenames
 and the update screen. Native package versions use their platform's restricted
-format: Android/Quest build 19, Apple build 0.0.809, UWP 0.0.8.9, Vita 00.89 and
-PS5 01.000.001. These are increasing package identifiers, not alternate public
+format: Android/Quest build 20, Apple build 0.0.810, UWP 0.0.8.10, Vita 00.90 and
+PS5 01.000.002. These are increasing package identifiers, not alternate public
 release names. CMake's four-component project version remains the base series.
 
 ## Safety and failure behavior
@@ -81,6 +81,16 @@ Successful updates remove their own staging/backup files only. Another
 concurrently running copy can prevent replacement; close other copies first.
 
 ## Validation
+
+The 0.0.8.8.2 packages use the same five-component version and platform-asset
+format understood by 0.0.8.8.1's updater. The main Windows ZIP no longer needs
+the standalone builder or bundled DisplayXR installers. Only DisplayXR's
+download instructions/reference metadata may be staged by the new helper;
+existing user files and older optional files are not silently deleted.
+
+Release publication waits for the Windows/Linux/macOS updater checks as well
+as all platform packages and checksums, then explicitly marks the release as
+latest. Incomplete drafts are not advertised by the in-game check.
 
 `starfox_update_tests` covers numeric versions, stable-release/asset policy,
 hostile metadata and idle behavior. `starfox_update_tests --live-check` performs

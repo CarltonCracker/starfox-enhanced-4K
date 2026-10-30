@@ -10,8 +10,8 @@ presentation, widescreen support, and optional visual enhancements using Codex A
 Codex and AI tools used for programming, testing, documentation and some visual
 assets.
 
-**[Download 0.0.8.8.1](https://github.com/kandowontu2/starfox-enhanced/releases/tag/v0.0.8.8.1)** ·
-[Changelog](https://github.com/kandowontu2/starfox-enhanced/blob/main/docs/RELEASE-0.0.8.8.1.md) ·
+**[Download 0.0.8.8.2](https://github.com/kandowontu2/starfox-enhanced/releases/tag/v0.0.8.8.2)** ·
+[Changelog](https://github.com/kandowontu2/starfox-enhanced/blob/main/docs/RELEASE-0.0.8.8.2.md) ·
 [Settings and controls](https://github.com/kandowontu2/starfox-enhanced/blob/main/docs/SETTINGS-AND-CONTROLS.md) ·
 [Build guide](https://github.com/kandowontu2/starfox-enhanced/blob/main/docs/BUILDING.md) ·
 [Report a bug](https://github.com/kandowontu2/starfox-enhanced/issues)

@@ -90,7 +90,7 @@ class DisplayXrPackageTests(unittest.TestCase):
     def test_release_gates_before_upload(self):
         workflow = (ROOT / '.github/workflows/portable-builds.yml').read_text()
         start = workflow.index('- name: Package runtime and builder')
-        end = workflow.index('name: StarFoxEnhanced-0.0.8.8.1-windows-x64', start)
+        end = workflow.index('name: StarFoxEnhanced-0.0.8.8.2-windows-x64', start)
         block = workflow[start:end]
         self.assertIn('-OutputDirectory $runtime -VerifyOnly', block)
         self.assertIn('tests/test_displayxr_package.py --package $runtime', block)
@@ -103,6 +103,8 @@ class DisplayXrPackageTests(unittest.TestCase):
         script = (ROOT / 'tools/package_displayxr.ps1').read_text()
         self.assertNotIn('Invoke-WebRequest', script)
         self.assertNotIn('Start-Process', script)
+        self.assertIn('needs: [updater-checks,', workflow)
+        self.assertIn('gh release edit "${tag}" --draft=false --latest', workflow)
 
     def test_actual_package_if_supplied(self):
         if PACKAGE is None:

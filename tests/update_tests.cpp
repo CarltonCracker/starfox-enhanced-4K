@@ -3,6 +3,8 @@
 #include <SDL3/SDL.h>
 #include <cstdlib>
 #include <iostream>
+#include <fstream>
+#include <iterator>
 #include <stdexcept>
 
 namespace {
@@ -30,6 +32,16 @@ void rejects(const std::string& json) {
 }
 int main(int argc,char** argv) {
     using namespace starfox::app;
+    if(argc==5 && std::string_view(argv[1])=="--release-check") {
+        std::ifstream file{argv[2]};
+        require(bool(file),"release metadata fixture missing");
+        const std::string json{std::istreambuf_iterator<char>{file},std::istreambuf_iterator<char>{}};
+        const auto release=parse_update_release(json,argv[3],argv[4]);
+        require(release.newer && !release.asset_url.empty() && release.sha256.size()==64,
+            "published release is not an installable update for this client");
+        std::cout<<"Current: "<<argv[3]<<" Latest: "<<release.version<<" Package: "<<release.asset_url<<'\n';
+        return 0;
+    }
     if(argc==2 && std::string_view(argv[1])=="--live-check") {
         UpdateService updater{std::filesystem::current_path()};updater.check();
         UpdateStatus state;
@@ -53,6 +65,14 @@ int main(int argc,char** argv) {
     const auto hotfix=parse_update_release(fixture("0.0.8.8.1"),"0.0.8.8","windows-x64.zip");
     require(hotfix.newer && hotfix.version=="0.0.8.8.1" && hotfix.asset_url.ends_with("StarFoxEnhanced-0.0.8.8.1-windows-x64.zip"),"hotfix version/asset truncated");
     require(!parse_update_release(fixture("0.0.8.8.1"),"0.0.8.8.1","windows-x64.zip").newer,"same hotfix offered");
+    for(const auto* suffix:{"windows-x64.zip","windows-x86.zip","linux-x64.zip"}) {
+        const auto update=parse_update_release(fixture("0.0.8.8.2",suffix),"0.0.8.8.1",suffix);
+        require(update.newer && update.version=="0.0.8.8.2"
+                && update.asset_url.ends_with(std::string{"StarFoxEnhanced-0.0.8.8.2-"}+suffix),
+            "0.0.8.8.1 client cannot select the 0.0.8.8.2 platform update");
+        require(!parse_update_release(fixture("0.0.8.8.2",suffix),"0.0.8.8.2",suffix).newer,
+            "0.0.8.8.2 offers itself as an update");
+    }
     require(!parse_update_release(fixture("0.0.8.8"),"0.0.8.8.1","windows-x64.zip").newer,"hotfix downgrade offered");
     require(parse_update_release(fixture("0.0.8.9"),"0.0.8.8.1","windows-x64.zip").newer,"hotfix blocks next release");
     for(const auto* suffix:{"windows-x86.zip","windows-pcvr.zip","android-arm64.apk",""})

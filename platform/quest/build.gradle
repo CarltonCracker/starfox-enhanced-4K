@@ -12,8 +12,8 @@ android {
         applicationId 'com.starfox.enhanced.quest'
         minSdk 29
         targetSdk 35
-        versionCode 19
-        versionName '0.0.8.8.1'
+        versionCode 20
+        versionName '0.0.8.8.2'
         externalNativeBuild {
             cmake {
                 targets 'starfox_quest'
