@@ -5117,6 +5117,7 @@ public:
                     const auto colour = ink & 15U;
                     const auto rgb = colour == 14U ? std::array<std::uint8_t, 3>{255, 255, 255}
                         : colour == 10U ? std::array<std::uint8_t, 3>{255, 220, 64}
+                        : colour == 4U ? std::array<std::uint8_t, 3>{105, 124, 138}
                         : std::array<std::uint8_t, 3>{180, 200, 215};
                     for (unsigned c = 0; c < 3; ++c)
                         rgba_[i + c] = static_cast<std::uint8_t>(rgb[c] * effects.setup_brightness / 15U);
@@ -8239,6 +8240,8 @@ int main(int argc, char** argv) {
                 static_cast<std::uint8_t>(game.asteroid_models()),
                 static_cast<std::uint8_t>(game.gpu_renderer()),
                 window.fixed_window_size()[0],window.fixed_window_size()[1],
+                game.hipoly_arwings(),
+                game.dynamic_lighting(),
             };
         };
         {
@@ -8452,6 +8455,8 @@ int main(int argc, char** argv) {
             game.set_bloom_2d(saved_pregame.bloom_2d);
             game.set_model_smoothing(saved_pregame.model_smoothing);
             game.set_asteroid_models(saved_pregame.asteroid_models);
+            game.set_hipoly_arwings(saved_pregame.hipoly_arwings);
+            game.set_dynamic_lighting(saved_pregame.dynamic_lighting);
             game.set_language(saved_pregame.language);
             if (const auto* language = std::getenv("STARFOX_TEST_LANGUAGE"))
                 game.set_language(static_cast<std::uint8_t>(std::atoi(language)));
@@ -8500,6 +8505,10 @@ int main(int argc, char** argv) {
                 game.set_model_smoothing(static_cast<std::uint8_t>(std::atoi(smoothing)));
             if (const auto* asteroids = std::getenv("STARFOX_TEST_ASTEROID_MODELS"))
                 game.set_asteroid_models(static_cast<std::uint8_t>(std::atoi(asteroids)));
+            if (const auto* hipoly = std::getenv("STARFOX_TEST_HIPOLY_ARWINGS"))
+                game.set_hipoly_arwings(std::atoi(hipoly) != 0);
+            if (const auto* lighting = std::getenv("STARFOX_TEST_DYNAMIC_LIGHTING"))
+                game.set_dynamic_lighting(std::atoi(lighting) != 0);
             if (const auto* separated = std::getenv("STARFOX_TEST_SEPARATED_MODELS"))
                 game.set_smooth_polys(std::atoi(separated) != 0);
             if (saved_pregame.effect == static_cast<std::uint8_t>(starfox::render::Effect::bloom)
@@ -9908,6 +9917,19 @@ int main(int argc, char** argv) {
                         object.health=0U;object.strategy_flags[1]|=0x01U;object.strategy_address=strategy;++killed;break; // The body; its parts follow it.
                     }
                     std::cerr<<"scheduled-defeat frame="<<presented_frames<<" objects="<<killed<<'\n';
+                }
+            }
+            // STARFOX_TEST_BROKEN_WINGS=FLAGS,FRAME: from that presented frame
+            // on, set the cartridge's broken-wing bits in pshipflags (8 left,
+            // 16 right, 24 both), so the game picks its damaged ship shapes.
+            if(const auto* wings=std::getenv("STARFOX_TEST_BROKEN_WINGS"); test_frames && wings) {
+                const std::string spec{wings};
+                const auto comma=spec.find(',');
+                if(comma==std::string::npos) throw std::runtime_error("STARFOX_TEST_BROKEN_WINGS needs FLAGS,FRAME");
+                if(presented_frames>=std::stoull(spec.substr(comma+1))) {
+                    const auto flags=symbols.find("PSHIPFLAGS").at(0);
+                    game.map().write_native_byte(flags,static_cast<std::uint8_t>(game.map().read_native_byte(flags)
+                        |(std::stoul(spec.substr(0,comma))&0x18U)));
                 }
             }
             // Open EXIT GAME? mid-run, as Escape does (MODERN -> fallback hand-off).
@@ -11633,7 +11655,7 @@ int main(int argc, char** argv) {
                             : game.pregame_page() == starfox::simulation::PregamePage::two_d
                                 ? "2D OPTIONS" : game.pregame_page()==starfox::simulation::PregamePage::global
                                     ? "GLOBAL ENHANCEMENTS" : "3D OPTIONS", 27, 10U);
-                        std::array<std::int32_t, 80> row_y;
+                        std::array<std::int32_t, 82> row_y;
                         row_y.fill(-1);
                         const auto selected_row=std::size_t(std::find(visual_order.begin(),visual_order.end(),game.pregame_selection())-visual_order.begin());
                         const auto first_visible=!main_page && visual_order.size()>14
@@ -11664,12 +11686,21 @@ int main(int argc, char** argv) {
                         };
                         const auto draw_graphics_row =
                             [&text_renderer, &framebuffer, viewport_origin,
-                                menu_label_x, menu_value_right](
+                                menu_label_x, menu_value_right, &row_y, &game](
                                 std::string_view label, std::string_view value,
                                 std::int32_t y, bool selected) {
                                 if (y < 0) return;
+                                // MODERN draws without the GPU / GPU FAST
+                                // rows: grey (ink 4) and marked GPU ONLY.
+                                bool greyed=false;
+                                if(game.modern_renderer() && game.pregame_page()!=starfox::simulation::PregamePage::main)
+                                    for(unsigned row=0;row<row_y.size();++row)
+                                        if(row_y[row]==y && starfox::simulation::modern_unsupported_row(row)) {greyed=true;break;}
+                                // Long labels (MODEL EFFECT INTENSITY) leave room for "GPU" only.
+                                if(greyed) value=text_renderer.measure_ascii(label)+text_renderer.measure_ascii("GPU ONLY")+6
+                                    > menu_value_right-menu_label_x?"GPU":"GPU ONLY";
                                 const auto colour = static_cast<std::uint8_t>(
-                                    selected ? 14U : 7U);
+                                    selected ? 14U : greyed ? 4U : 7U);
                                 text_renderer.draw_ascii(label,
                                     menu_label_x + viewport_origin,
                                     y, framebuffer, colour);
@@ -11711,6 +11742,14 @@ int main(int argc, char** argv) {
                         draw_graphics_row("3D ASTEROIDS", starfox::render::asteroid_model_names[
                             static_cast<std::size_t>(game.asteroid_models())], row_y[79],
                             game.pregame_selection()==79U);
+                        draw_graphics_row("HIGH POLY ARWINGS",
+                            !game.modern_renderer() ? std::string_view{"MODERN ONLY"}
+                                : on_off(game.hipoly_arwings()), row_y[80],
+                            game.pregame_selection()==80U);
+                        draw_graphics_row("DYNAMIC LIGHTING",
+                            !game.modern_renderer() ? std::string_view{"MODERN ONLY"}
+                                : on_off(game.dynamic_lighting()), row_y[81],
+                            game.pregame_selection()==81U);
                         draw_graphics_row("AA QUALITY",
                             !window.leia_active() && game.aa_type()>=4 && !window.native_gpu_enabled()?"GPU REQUIRED":
                                 !window.leia_active() && game.aa_type()==4 && game.stereo_output()!=0?"MONO REQUIRED":
@@ -11814,6 +11853,7 @@ int main(int argc, char** argv) {
                             || window.vulkan_hardware_ray_tracing_available());
                         draw_graphics_row(software?"ENHANCED SHADOWS":"RAY TRACING",
                             software?on_off(game.enhanced_shadows())
+                                : game.modern_renderer()?on_off(game.ray_tracing_quality()!=0)
                                 : !ray_hardware_available && !ray_compute_available
                                     ? std::string_view{"UNAVAILABLE"}
                                     : std::array<std::string_view,4>{"OFF","LOW","MEDIUM","HIGH"}[game.ray_tracing_quality()],
@@ -11855,7 +11895,8 @@ int main(int argc, char** argv) {
                 std::array<starfox::render::Rgba8,256> menu_palette{};
                 for(unsigned ink=1;ink<256;++ink) menu_palette[ink]=(ink&15)==14
                     ?starfox::render::Rgba8{255,255,255,255}:(ink&15)==10
-                        ?starfox::render::Rgba8{255,220,64,255}:starfox::render::Rgba8{180,200,215,255};
+                        ?starfox::render::Rgba8{255,220,64,255}:(ink&15)==4
+                        ?starfox::render::Rgba8{105,124,138,255}:starfox::render::Rgba8{180,200,215,255};
                 if(game.show_fps()) text_renderer.draw_ascii("FPS "+std::to_string(live_fps.fps()),
                     int(display_width)-76,2,setup_overlay,126,0);
                 if(exit_confirmation || state_slot_window) {
@@ -11992,7 +12033,8 @@ int main(int argc, char** argv) {
                         std::array<starfox::render::Rgba8,256> menu_palette{};
                         for(unsigned ink=1;ink<256;++ink) menu_palette[ink]=(ink&15)==14
                             ?starfox::render::Rgba8{255,255,255,255}:(ink&15)==10
-                                ?starfox::render::Rgba8{255,220,64,255}:starfox::render::Rgba8{180,200,215,255};
+                                ?starfox::render::Rgba8{255,220,64,255}:(ink&15)==4
+                                ?starfox::render::Rgba8{105,124,138,255}:starfox::render::Rgba8{180,200,215,255};
                         const auto origin=int((display_width-256)/2);
                         starfox::render::append_calibrated_host_ui(*frame,setup_overlay,menu_palette,
                             game.menu_preview()?15:game.map().display_brightness(),
