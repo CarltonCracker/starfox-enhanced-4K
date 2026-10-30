@@ -12,6 +12,11 @@ on:
         type: boolean
         required: false
         default: false
+      windows_x64_only:
+        description: Retry Windows x64 packaging only; leave the release draft for inventory verification
+        type: boolean
+        required: false
+        default: false
       source_checks_only:
         description: Run desktop and shared VR source tests only; no platform packages or release
         type: boolean
@@ -334,6 +339,17 @@ jobs:
           Start-Service WinDefend
           Set-MpPreference -DisableRealtimeMonitoring $false -DisableArchiveScanning $false `
             -DisableBehaviorMonitoring $false -DisableIOAVProtection $false -DisableScriptScanning $false
+          # Enabling the service can trigger an engine restart. Retry only
+          # signature initialization, never a detection or failed file scan.
+          for ($updateAttempt = 0; $updateAttempt -lt 4; $updateAttempt++) {
+            try { Update-MpSignature -UpdateSource MMPC -ErrorAction Stop; break }
+            catch {
+              if ($updateAttempt -eq 3) { throw }
+              Write-Output 'Waiting for Defender signature service to initialize'
+              Start-Sleep -Seconds 15
+              Start-Service WinDefend
+            }
+          }
           for ($attempt = 0; $attempt -lt 30; $attempt++) {
             $health = Get-MpComputerStatus
             if ($health.AMServiceEnabled -and $health.AntivirusEnabled -and $health.RealTimeProtectionEnabled) { break }
@@ -380,7 +396,7 @@ jobs:
             StarFoxAssetBuilder-0.0.8.8.2-windows-x64.zip --clobber
 
   windows-x86:
-    if: ${{ !inputs.quest_only && !inputs.source_checks_only }}
+    if: ${{ !inputs.quest_only && !inputs.source_checks_only && !inputs.windows_x64_only }}
     name: Windows x86 runtime
     runs-on: windows-latest
     steps:
@@ -438,7 +454,7 @@ jobs:
             StarFoxEnhanced-0.0.8.8.2-windows-x86.zip --clobber
 
   xbox-uwp-x64:
-    if: ${{ !inputs.quest_only && !inputs.source_checks_only }}
+    if: ${{ !inputs.quest_only && !inputs.source_checks_only && !inputs.windows_x64_only }}
     name: Xbox UWP x64 (Developer Mode)
     # Keep the legacy UWP/C++ packaging workload and its redistributable
     # Microsoft.VCLibs framework package available. windows-latest moved to
@@ -505,7 +521,7 @@ jobs:
             StarFoxEnhanced-0.0.8.8.2-xbox-uwp-x64.zip --clobber
 
   linux-x64:
-    if: ${{ !inputs.quest_only && !inputs.source_checks_only }}
+    if: ${{ !inputs.quest_only && !inputs.source_checks_only && !inputs.windows_x64_only }}
     name: Linux x64 native runtime
     runs-on: ubuntu-24.04
     steps:
@@ -564,7 +580,7 @@ jobs:
             StarFoxEnhanced-0.0.8.8.2-linux-x64.zip --clobber
 
   macos-universal:
-    if: ${{ !inputs.quest_only && !inputs.source_checks_only }}
+    if: ${{ !inputs.quest_only && !inputs.source_checks_only && !inputs.windows_x64_only }}
     name: macOS universal (unsigned)
     runs-on: macos-15
     steps:
@@ -611,7 +627,7 @@ jobs:
             StarFoxEnhanced-0.0.8.8.2-macos-universal.zip --clobber
 
   ios-device:
-    if: ${{ !inputs.quest_only && !inputs.source_checks_only }}
+    if: ${{ !inputs.quest_only && !inputs.source_checks_only && !inputs.windows_x64_only }}
     name: iOS arm64 device (unsigned)
     runs-on: macos-15
     steps:
@@ -657,7 +673,7 @@ jobs:
             StarFoxEnhanced-0.0.8.8.2-ios-arm64-unsigned.ipa --clobber
 
   android-arm64:
-    if: ${{ !inputs.quest_only && !inputs.source_checks_only }}
+    if: ${{ !inputs.quest_only && !inputs.source_checks_only && !inputs.windows_x64_only }}
     name: Android arm64 signed APK
     runs-on: ubuntu-latest
     steps:
@@ -720,7 +736,7 @@ jobs:
           tag="${REQUESTED_TAG:-${GITHUB_REF_NAME}}"
           gh release upload "${tag}" StarFoxEnhanced-0.0.8.8.2-android-arm64.apk --clobber
   quest-arm64:
-    if: ${{ !inputs.source_checks_only }}
+    if: ${{ !inputs.source_checks_only && !inputs.windows_x64_only }}
     name: Quest 3 arm64 signed VR development APK
     runs-on: ubuntu-latest
     steps:
@@ -803,7 +819,7 @@ jobs:
           tag="${REQUESTED_TAG:-${GITHUB_REF_NAME}}"
           gh release upload "${tag}" StarFoxEnhanced-0.0.8.8.2-quest-arm64.zip --clobber
   windows-pcvr:
-    if: ${{ !inputs.quest_only && !inputs.source_checks_only }}
+    if: ${{ !inputs.quest_only && !inputs.source_checks_only && !inputs.windows_x64_only }}
     name: Windows x64 OpenXR PCVR development build
     runs-on: windows-latest
     steps:
@@ -858,7 +874,7 @@ jobs:
           draft: true
 
   switch-homebrew:
-    if: ${{ !inputs.quest_only && !inputs.source_checks_only }}
+    if: ${{ !inputs.quest_only && !inputs.source_checks_only && !inputs.windows_x64_only }}
     name: Nintendo Switch homebrew NRO
     runs-on: ubuntu-latest
     container:
@@ -895,7 +911,7 @@ jobs:
           draft: true
 
   vita-homebrew:
-    if: ${{ !inputs.quest_only && !inputs.source_checks_only }}
+    if: ${{ !inputs.quest_only && !inputs.source_checks_only && !inputs.windows_x64_only }}
     name: PS Vita native VPK
     runs-on: ubuntu-latest
     container:
@@ -935,7 +951,7 @@ jobs:
           draft: true
 
   linux-vr-host-tests:
-    if: ${{ !inputs.quest_only && !inputs.source_checks_only }}
+    if: ${{ !inputs.quest_only && !inputs.source_checks_only && !inputs.windows_x64_only }}
     name: Linux host VR regression tests
     runs-on: ubuntu-24.04
     steps:
@@ -995,7 +1011,7 @@ jobs:
             -R '^starfox_(update_tests|row_workers_tests|background_scanline_tests|pixel_filter_tests|camera_response_tests|scene_world_fx_tests|runtime_input_tests|simulation_tests)$'
 
   steam-frame-arm64:
-    if: ${{ !inputs.quest_only && !inputs.source_checks_only }}
+    if: ${{ !inputs.quest_only && !inputs.source_checks_only && !inputs.windows_x64_only }}
     name: Sniper sysroot ARM64 baseline, OpenXR player, and package
     runs-on: ubuntu-24.04
     steps:
@@ -1065,7 +1081,7 @@ jobs:
           draft: true
 
   ps5-homebrew:
-    if: ${{ !inputs.quest_only && !inputs.source_checks_only }}
+    if: ${{ !inputs.quest_only && !inputs.source_checks_only && !inputs.windows_x64_only }}
     name: PS5 native RADV homebrew title
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -1121,7 +1137,7 @@ jobs:
     name: Release package checksums
     needs: [updater-checks, windows-x64, windows-x86, xbox-uwp-x64, linux-x64, macos-universal, ios-device, android-arm64, quest-arm64, windows-pcvr, switch-homebrew, vita-homebrew, linux-vr-host-tests, steam-frame-arm64, ps5-homebrew]
     # Implicit success() keeps incomplete/failed platform runs in draft.
-    if: ${{ !inputs.quest_only && !inputs.source_checks_only && (github.event_name == 'push' || inputs.release_tag != '') }}
+    if: ${{ !inputs.quest_only && !inputs.source_checks_only && !inputs.windows_x64_only && (github.event_name == 'push' || inputs.release_tag != '') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
