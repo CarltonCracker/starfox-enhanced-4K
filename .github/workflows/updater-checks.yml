@@ -57,6 +57,33 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Windows updater sandbox failed' }
           python tests/test_linux_app_update.py -v
           if ($LASTEXITCODE -ne 0) { throw 'Linux ZIP policy tests failed' }
+      - name: Verify Defender provisioning before release builds
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          STARFOX_UPDATE_TEST_FIXTURE: build/update-checks/Release/starfox_update_exit_fixture.exe
+        run: |
+          # GitHub's disposable Windows image disables Defender by default.
+          # Enable protection here only, never on a developer/player machine.
+          if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted') {
+            throw 'Defender provisioning is restricted to GitHub-hosted runners'
+          }
+          $policy = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Advanced Threat Protection'
+          if (Test-Path -LiteralPath $policy) {
+            Set-ItemProperty -LiteralPath $policy -Name ForceDefenderPassiveMode -Value 0 -Type DWord
+          }
+          Start-Service WinDefend
+          Set-MpPreference -DisableRealtimeMonitoring $false -DisableArchiveScanning $false `
+            -DisableBehaviorMonitoring $false -DisableIOAVProtection $false -DisableScriptScanning $false
+          for ($attempt = 0; $attempt -lt 30; $attempt++) {
+            $health = Get-MpComputerStatus
+            if ($health.AMServiceEnabled -and $health.AntivirusEnabled -and $health.RealTimeProtectionEnabled) { break }
+            Start-Sleep -Seconds 1
+          }
+          $health | Select-Object AMServiceEnabled, AntivirusEnabled, RealTimeProtectionEnabled, AMRunningMode
+          ./tools/check_windows_defender.ps1 -UpdateSignatures `
+            -Files @($env:STARFOX_UPDATE_TEST_FIXTURE) `
+            -ReportPath build/validation/active/windows-defender-preflight.json
       - name: Native Linux preservation, permissions and restart/rollback sandbox
         if: runner.os == 'Linux'
         env:

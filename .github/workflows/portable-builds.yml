@@ -44,6 +44,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
       - uses: msys2/setup-msys2@v2
         id: msys2
         if: runner.os == 'Windows'
@@ -108,6 +110,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
       - name: Check exact ARC and dispatch preparation before the full build
         shell: bash
         run: |
@@ -159,6 +163,8 @@ jobs:
       image: vitasdk/vitasdk:nightly-non-root-20260829@sha256:8c025f249ce33e3c76f92f422099bfb8b01a4e1a1f67db175df53257c2bbc28b
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
       - name: Run asset-free metadata/artwork regressions
         run: python3 tests/test_vita_package.py
       - name: Cross-compile SDK probe through the real packaging helper
@@ -189,10 +195,13 @@ jobs:
 
   windows-x64:
     if: ${{ !inputs.quest_only && !inputs.source_checks_only }}
+    needs: updater-checks
     name: Windows x64 runtime and standalone asset builder
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
       - name: Check release shader registration
         shell: pwsh
         run: |
@@ -313,6 +322,24 @@ jobs:
         shell: pwsh
         timeout-minutes: 10
         run: |
+          # GitHub's disposable Windows image disables Defender by default.
+          # Enable protection here only, never on a developer/player machine.
+          if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted') {
+            throw 'Defender provisioning is restricted to GitHub-hosted runners'
+          }
+          $policy = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Advanced Threat Protection'
+          if (Test-Path -LiteralPath $policy) {
+            Set-ItemProperty -LiteralPath $policy -Name ForceDefenderPassiveMode -Value 0 -Type DWord
+          }
+          Start-Service WinDefend
+          Set-MpPreference -DisableRealtimeMonitoring $false -DisableArchiveScanning $false `
+            -DisableBehaviorMonitoring $false -DisableIOAVProtection $false -DisableScriptScanning $false
+          for ($attempt = 0; $attempt -lt 30; $attempt++) {
+            $health = Get-MpComputerStatus
+            if ($health.AMServiceEnabled -and $health.AntivirusEnabled -and $health.RealTimeProtectionEnabled) { break }
+            Start-Sleep -Seconds 1
+          }
+          $health | Select-Object AMServiceEnabled, AntivirusEnabled, RealTimeProtectionEnabled, AMRunningMode
           ./tests/test_windows_defender.ps1
           ./tools/check_windows_defender.ps1 -UpdateSignatures `
             -Files @('StarFoxEnhanced-0.0.8.8.2-windows-x64/starfox_pc.exe',
@@ -358,6 +385,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
       - name: Install pinned LLVM-MinGW toolchain
         shell: pwsh
         run: |
@@ -417,6 +446,8 @@ jobs:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
       - uses: microsoft/setup-msbuild@v2
       - name: Build signed Xbox Developer Mode package
         shell: pwsh
@@ -479,6 +510,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
       - name: Install SDL build dependencies
         shell: bash
         run: |
@@ -536,6 +569,8 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
       - name: Build and test
         shell: bash
         run: |
@@ -581,6 +616,8 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
       - name: Build unsigned device application
         shell: bash
         run: |
@@ -625,6 +662,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -686,6 +725,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -767,6 +808,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
       - name: Build and package PCVR player
         shell: pwsh
         run: |
@@ -822,6 +865,8 @@ jobs:
       image: devkitpro/devkita64:20260219@sha256:1fc388c3a0d34bd2045a6dadcb1020e069d5f876a187fd705de14b4440c00282
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
       - name: Build native Switch application
         shell: bash
         run: |
@@ -860,6 +905,8 @@ jobs:
       image: vitasdk/vitasdk:nightly-non-root-20260829@sha256:8c025f249ce33e3c76f92f422099bfb8b01a4e1a1f67db175df53257c2bbc28b
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
       - name: Build native Vita application
         shell: bash
         run: |
@@ -893,6 +940,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
       - name: Install pinned SDL build requirements
         shell: bash
         run: |
@@ -951,6 +1000,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
       - name: Install host cross-build tools
         shell: bash
         run: |
@@ -1020,6 +1071,8 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
         with:
           # PS5 launcher backgrounds must be DDS payloads, not LFS pointers.
           lfs: true
