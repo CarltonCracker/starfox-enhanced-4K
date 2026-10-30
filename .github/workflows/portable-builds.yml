@@ -200,7 +200,6 @@ jobs:
 
   windows-x64:
     if: ${{ !inputs.quest_only && !inputs.source_checks_only }}
-    needs: updater-checks
     name: Windows x64 runtime and standalone asset builder
     runs-on: windows-2022
     steps:
