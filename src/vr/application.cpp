@@ -556,6 +556,10 @@ int starfox::vr::run_application(int argc,char** argv,const ApplicationHost& hos
     // app and starfox_vr_modern_capture). Outlives the eye commands below.
     starfox::vr::ModernFrame modern_frame;
     modern_frame.set_settings({true,.25F});
+    // MODERN's enlarged world on a headset (vr::headset_world_scale): eye
+    // units per metre, and its 2D layers in front of it.
+    const float world_units=modern?1.F/starfox::vr::headset_world_scale():1.F;
+    if(modern) starfox::vr::set_source_ui_distance(starfox::vr::headset_ui_distance());
     // MODERN's replacement artwork, as the flat renderer loads it: model
     // textures, portraits, OBJ sprites, and planet sky/ground once per level.
     render::TextureOverrides texture_overrides,portrait_overrides;
@@ -909,7 +913,11 @@ int starfox::vr::run_application(int argc,char** argv,const ApplicationHost& hos
                             sandbox.begin(bounds,*live->history->current());
                         }
                         auto hands=playing?input.aim_poses(session.space(),time):std::array<std::optional<XrPosef>,2>{};
-                        for(auto& hand:hands) if(hand) *hand=renderer.anchored_pose(*hand);
+                        for(auto& hand:hands) if(hand) {
+                            *hand=renderer.anchored_pose(*hand);
+                            // In the eyes' world units (MODERN's world scale).
+                            hand->position={hand->position.x*world_units,hand->position.y*world_units,hand->position.z*world_units};
+                        }
                         auto pointer=sandbox.update(hands,{controls.roll_left,controls.roll_right});
                         sandbox.apply(packets);
                         if(!sandbox_pointer.initialize(device.binding().device,get_device,properties,targets.render_pass(),
@@ -1346,7 +1354,7 @@ int starfox::vr::run_application(int argc,char** argv,const ApplicationHost& hos
             if(eye_result==StereoRenderer::EyeResult::complete && eye<2 && ray_frames[eye]
                 && ray_frames[eye]->state()==VulkanDxrFrame::State::ready) ray_frames[eye]->retire();
             return eye_result;
-        },1.0F,0.05F);
+        },world_units,0.05F);
         using Result=starfox::vr::StereoRenderer::Result;
         if(session.state()!=XR_SESSION_STATE_FOCUSED) {
             input.poll(false);

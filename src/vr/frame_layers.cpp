@@ -103,17 +103,7 @@ FrameLayers assemble_frame_layers(const GameSceneSnapshot& scene,const FrameLaye
             corridor.reset();
         }
     }
-    if(snapshot->ppu->tunnel_scene && !corridor && !in.flat_tunnel_extension) {
-        const auto border=[&](unsigned y,unsigned x) {
-            const auto ink=render::tunnel_border_index(*snapshot->ppu,y,x);
-            return source_backdrop_colour(snapshot->ppu->cgram[ink],snapshot->display_brightness,srgb);
-        };
-        auto surround=tunnel_surround_packet(border(112,0),border(4,128),border(219,128));
-        surround.model=source_layer_matrix(
-            float(snapshot->source_vanishing_point[0])+16.F,
-            float(snapshot->source_vanishing_point[1])+16.F).value();
-        out.tunnel_surround.push_back(std::move(surround));
-    }
+    bool nucleus_room=false; // Space Armada's 3D boss room replaced the tunnel art.
     const bool intro_sky=!snapshot->ppu->tunnel_scene
         && snapshot->flow==simulation::GameFlowState::intro
         && !snapshot->meters.extended && snapshot->background_unique_top_rows==224;
@@ -204,7 +194,7 @@ FrameLayers assemble_frame_layers(const GameSceneSnapshot& scene,const FrameLaye
                         reactor_x,reactor_z,turn,16);
                     if(!floor.geometry.vertex_view().empty()) {
                         bg2=std::move(packet);
-                        nucleus_floor=std::move(floor);
+                        nucleus_floor=std::move(floor);nucleus_room=true;
                     }
                 }
             } catch(const std::exception& error) {
@@ -255,6 +245,20 @@ FrameLayers assemble_frame_layers(const GameSceneSnapshot& scene,const FrameLaye
                 next_backgrounds.insert(next_backgrounds.begin()+std::ptrdiff_t(bg2_index),std::move(bg3));
             else next_backgrounds.push_back(std::move(bg3));
         }
+    }
+    // The cartridge's colours around its view, where the tunnel art has no
+    // 3D replacement; around the corridor or the boss room they would frame
+    // it in a window.
+    if(snapshot->ppu->tunnel_scene && !corridor && !nucleus_room && !in.flat_tunnel_extension) {
+        const auto border=[&](unsigned y,unsigned x) {
+            const auto ink=render::tunnel_border_index(*snapshot->ppu,y,x);
+            return source_backdrop_colour(snapshot->ppu->cgram[ink],snapshot->display_brightness,srgb);
+        };
+        auto surround=tunnel_surround_packet(border(112,0),border(4,128),border(219,128));
+        surround.model=source_layer_matrix(
+            float(snapshot->source_vanishing_point[0])+16.F,
+            float(snapshot->source_vanishing_point[1])+16.F).value();
+        out.tunnel_surround.push_back(std::move(surround));
     }
     if(in.backgrounds_only) return out;
     DrawPacket bitmap;

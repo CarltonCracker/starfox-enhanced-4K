@@ -130,6 +130,8 @@ struct ModernRuntime::State {
                 });
             }
         }
+        // The headset's 2D layer distance (vr::headset_ui_distance), as PCVR.
+        if(preview) vr::set_source_ui_distance(vr::headset_ui_distance());
         // Ray-traced sun shadows (experimental, off unless asked for):
         // STARFOX_MODERN_RT_SHADOWS=1; STARFOX_MODERN_RT_SHADOW_LEVEL = the
         // percentage of the ground colour kept in shadow (default 50).

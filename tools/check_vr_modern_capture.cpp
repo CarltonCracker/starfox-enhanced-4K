@@ -20,6 +20,9 @@
 // STARFOX_MODERN_RT_LIGHTS=1, the coloured lights, as the RAY TRACING and
 // DYNAMIC LIGHTING rows do; without it the engine glow is the decal.
 // STARFOX_VR_EYE=1 draws as the right eye (its own slot in the ray data).
+// STARFOX_TEST_DEFEAT=SHAPE,STRATEGY,TICK (starfox_pc's): at that source tick
+// the first object of that shape dies through that strategy.
+// STARFOX_VR_OBJECTS=1 lists the last tick's objects and world packets.
 // STARFOX_VR_TIME=N redraws the Vulkan eye N more times and reports the
 // fastest GPU times (timestamps) of the once-per-frame work (ray casters,
 // xBRZ layer) and of the eye's pass; the readback is not included.
@@ -49,6 +52,7 @@
 #include <algorithm>
 #include <chrono>
 #include <functional>
+#include <set>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
@@ -150,7 +154,10 @@ int main(int argc,char** argv) try {
     std::filesystem::create_directories(out_dir);
     const bool classic=std::getenv("STARFOX_VR_CLASSIC") && std::string_view(std::getenv("STARFOX_VR_CLASSIC"))=="1";
     // As application.cpp does before any pipeline exists with MODERN on.
-    if(!classic) {vr::set_scene_reversed_depth(true);vr::set_inset_decals(true);vr::set_solid_decals(true);}
+    if(!classic) {
+        vr::set_scene_reversed_depth(true);vr::set_inset_decals(true);vr::set_solid_decals(true);
+        vr::set_source_ui_distance(vr::headset_ui_distance());
+    }
     constexpr bool srgb=true; // The PCVR swapchains are sRGB.
 
     simulation::GameSimulation game(rom,symbols,level,{},true);
@@ -158,7 +165,9 @@ int main(int argc,char** argv) try {
     audio::Spc700Audio spc;audio::Msu1Audio msu;std::vector<int16_t> mixed;
     // Levels wait for their checkpoint; the intro (as application.cpp's
     // LiveGame does) and other screens start at once.
-    const bool native_intro=!level.starts_with("LEVEL");
+    // STARFOX_VR_FROM_START=1: a level from its first tick (its launch).
+    const bool native_intro=!level.starts_with("LEVEL") || (std::getenv("STARFOX_VR_FROM_START")
+        && std::string_view(std::getenv("STARFOX_VR_FROM_START"))=="1");
     const auto checkpoint=native_intro?0:symbols.find("MAPRESTART").at(0);
     unsigned warmup=0;
     while(!native_intro && !game.map().peek_ram_word(checkpoint).value() && warmup<3000) {
@@ -177,6 +186,20 @@ int main(int argc,char** argv) try {
             game.synchronize_apu_output_ports(spc.output_ports());
         }
         enter_armada_approach(game,rom,symbols);
+    }
+    // STARFOX_TEST_MAP_JUMP=<label> (starfox_pc's): after the preroll, continue
+    // the level's map script at an authored label (god mode on).
+    if(const char* label=std::getenv("STARFOX_TEST_MAP_JUMP")) {
+        const char* preroll=std::getenv("STARFOX_TEST_PREROLL_TICKS");
+        for(unsigned tick=0,count=preroll?unsigned(std::stoul(preroll)):200U;tick<count;++tick) {
+            const auto advanced=game.tick({});
+            audio::render_mixed_tick(spc,msu,advanced.audio_port_writes,game.map().take_msu_register_writes(),
+                game.music_volume(),game.sfx_volume(),mixed);
+            game.synchronize_apu_output_ports(spc.output_ports());
+        }
+        game.set_god_mode(true);
+        game.map().start(symbols.find(label).at(0),game.player());
+        game.map().advance_distance(1);
     }
     vr::GameSceneHistory history(game,rom,symbols);
     vr::GameFrameDriver driver(game,[&](auto apu,auto writes) {
@@ -401,13 +424,65 @@ int main(int argc,char** argv) try {
             const vr::RayEmitters emitters(symbols);
             // Both plans see every tick, so their per-level state (horizon votes,
             // retained layers) matches the game's. Source frames: alpha 1.
+            const auto symbol_name=[&](std::uint32_t value,bool word) {
+                for(const auto& [symbol,values]:symbols.entries())
+                    for(const auto v:values) if(word?(v&0xffffU)==value && (v>>16U)<0x70U:v==value) return symbol;
+                return std::string{"?"};
+            };
             for(unsigned tick=0;tick<=ticks;++tick) {
+                if(const char* defeat=std::getenv("STARFOX_TEST_DEFEAT")) {
+                    const std::string spec{defeat};
+                    const auto a=spec.find(','),b=spec.rfind(',');
+                    require(a!=std::string::npos && b!=a,"STARFOX_TEST_DEFEAT needs SHAPE,STRATEGY,TICK");
+                    if(tick==std::stoul(spec.substr(b+1))) {
+                        std::uint32_t shape{};
+                        for(const auto value:symbols.find(spec.substr(0,a))) if(value<0x10000U) {shape=value;break;}
+                        const auto strategy=symbols.find(spec.substr(a+1,b-a-1)).at(0);
+                        unsigned killed{};
+                        for(const auto handle:game.objects().active_handles()) {
+                            auto& object=game.objects().at(handle);
+                            if(!shape || object.shape!=shape) continue;
+                            object.health=0U;object.strategy_flags[1]|=0x01U;object.strategy_address=strategy;++killed;break;
+                        }
+                        std::cout<<"scheduled-defeat tick="<<tick<<" objects="<<killed<<'\n';
+                    }
+                }
                 driver.advance(XrTime(tick)*50'000'000,{},true);
                 const auto previous=history.previous(),current=history.current();
                 require(previous && current && current->ppu,"Scene history incomplete");
                 const bool last=tick==ticks;
-                auto world_packets=models.assemble_world_interpolated(*previous,*current,1.,srgb,true);
+                // STARFOX_VR_ALPHA: the last tick drawn between source ticks, as a
+                // headset frame is (default 1, the tick itself).
+                const double alpha=last && std::getenv("STARFOX_VR_ALPHA")?std::stod(std::getenv("STARFOX_VR_ALPHA")):1.;
+                auto world_packets=models.assemble_world_interpolated(*previous,*current,alpha,srgb,true);
                 require(world_packets.pending.empty(),"Model assembly pending");
+                if(last && std::getenv("STARFOX_VR_OBJECTS")) {
+                    const auto& p=game.objects().at(game.player());
+                    std::cout<<"objects bg="<<current->background_id<<" flow="<<int(current->flow)<<" camera-player=("<<int(current->camera.x)-int(p.world_x)<<","<<int(current->camera.y)-int(p.world_y)<<","<<int(std::int16_t(std::uint16_t(current->camera.z-p.world_z)))<<") ground="<<int(current->shadow_height)-int(current->camera.y)<<'\n';
+                    for(const auto handle:game.objects().active_handles()) {
+                        const auto& o=game.objects().at(handle);
+                        std::cout<<"  handle="<<handle<<" shape="<<symbol_name(o.shape,true)<<" strat="<<symbol_name(o.strategy_address,false)
+                            <<" flags="<<unsigned(o.flags)<<" rel=("<<o.world_x-p.world_x<<','<<o.world_y-p.world_y<<','
+                            <<int(std::int16_t(std::uint16_t(o.world_z-p.world_z)))<<")\n";
+                    }
+                    for(std::size_t i=0;i<world_packets.packets.size();++i) {
+                        const auto& m=world_packets.packets[i].model;
+                        std::cout<<"  packet key="<<std::hex<<world_packets.handles[i]<<std::dec<<" at=("<<m[12]<<','<<m[13]<<','<<m[14]
+                            <<") tris="<<world_packets.packets[i].geometry.vertex_view().size()/3<<'\n';
+                    }
+                    {
+                        // The world's texel words, as ScenePacketValidator counts them.
+                        std::size_t texels=0,largest=0;std::set<const void*> seen;
+                        for(const auto& packet:world_packets.packets) {
+                            const auto& mesh=packet.geometry;
+                            if(mesh.shared_texels && !seen.insert(mesh.shared_texels.get()).second) continue;
+                            texels+=mesh.texel_view().size();largest=std::max(largest,mesh.texel_view().size());
+                        }
+                        std::cout<<"  world texel words "<<texels<<" (largest packet "<<largest<<")\n";
+                    }
+                    for(const auto& model:world_packets.compute_models)
+                        std::cout<<"  compute key="<<std::hex<<model.key<<std::dec<<" packet="<<model.packet_index<<'\n';
+                }
                 // The engine glow and the ray tracing, as application.cpp
                 // enables them: the glow traced with RAY TRACING, else the decal.
                 const bool gameplay=current->flow==simulation::GameFlowState::gameplay
@@ -424,10 +499,24 @@ int main(int argc,char** argv) try {
                 const auto caster=[&](uint32_t key) {return emitters.caster(*current,key);};
                 const vr::RayEmitterKind emitter=[&](uint32_t key)->unsigned {return emitters.kind(*current,key);};
                 auto* command=SDL_AcquireGPUCommandBuffer(sdl);require(command!=nullptr,"Acquire SDL command buffer");
-                if(!flat.prepare(command,*previous,*current,1.,world_packets,inputs)) {
+                if(!flat.prepare(command,*previous,*current,alpha,world_packets,inputs)) {
                     SDL_CancelGPUCommandBuffer(command);throw std::runtime_error("SDL prepare: "+flat.status());
                 }
-                frame.prepare(*previous,*current,1.,std::move(world_packets),inputs);
+                frame.prepare(*previous,*current,alpha,std::move(world_packets),inputs);
+                if(last && std::getenv("STARFOX_VR_OBJECTS")) {
+                    // Each layer set's upload totals, as ScenePacketValidator counts them.
+                    const auto totals=[&](const char* name,std::span<const vr::DrawPacket> packets) {
+                        std::size_t vertices=0,texels=0;std::set<const void*> seen;
+                        for(const auto& packet:packets) {
+                            const auto& mesh=packet.geometry;
+                            vertices+=mesh.vertex_view().size()+mesh.line_view().size();
+                            if(!mesh.shared_texels || seen.insert(mesh.shared_texels.get()).second) texels+=mesh.texel_view().size();
+                        }
+                        std::cout<<"  layer "<<name<<": packets "<<packets.size()<<", vertices "<<vertices<<", texel words "<<texels<<'\n';
+                    };
+                    totals("stars",frame.stars);totals("backgrounds",frame.backgrounds);totals("textures",frame.textures);
+                    totals("surround",frame.tunnel_surround);totals("sprites",frame.sprites);
+                }
                 require(layers.upload(frame),layers.status());
                 vr::VulkanModernLayers::apply_fog(fog,frame,.05F);
                 if(!last) {require(SDL_SubmitGPUCommandBuffer(command),"Submit SDL prepare");continue;}

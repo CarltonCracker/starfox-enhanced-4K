@@ -32,8 +32,12 @@ void ScenePacketValidator::add(const DrawPacket& packet) {
     if(!mesh.shared_texels || counted_images_.insert(mesh.shared_texels.get()).second) {
         if(artwork) artwork_words_+=texture_words.size();else texel_count_+=texture_words.size();
     }
-    if(vertex_count_>4'000'000 || texel_count_>4'000'000 || artwork_words_>backdrop_texture_word_limit)
-        throw std::runtime_error("Native scene exceeds upload budget");
+    // MODERN's replacement art and xBRZ-scaled sprites (512x512, 262k words
+    // each, uploaded per packet) passed the cartridge-sized 4M-word total in
+    // busy explosions and stopped the PCVR app; 32M words is 128 MB.
+    if(vertex_count_>4'000'000 || texel_count_>32'000'000 || artwork_words_>backdrop_texture_word_limit)
+        throw std::runtime_error("Native scene exceeds upload budget (vertices "+std::to_string(vertex_count_)
+            +", texel words "+std::to_string(texel_count_)+", artwork words "+std::to_string(artwork_words_)+")");
     if(artwork) {
         const auto& first=vertices.front();
         if(!mesh.shared_texels || !mesh.line_view().empty()

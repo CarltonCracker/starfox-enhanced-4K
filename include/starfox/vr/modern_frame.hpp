@@ -37,6 +37,18 @@ EyeCamera reversed_depth_camera(EyeCamera) noexcept;
 // depth), then everything else depth-tested against them. Moving objects
 // (`moving` handles), line-only objects and non-object passes never qualify.
 std::vector<bool> painter_scenery(const SourceModelPackets&,std::span<const uint16_t> moving);
+// MODERN's world size on a headset. The cartridge's world is 256 source
+// units per metre: its ship flies ~12 cm above the 3D ground with the camera
+// ~1.5 m behind it and corridor walls ~35 cm away, so at that scale the
+// stereo depth is a toy diorama under the player's nose. A headset draws it
+// this many times larger (8 by default: the ground ~1 m below the eyes, the
+// ship ~14 m ahead) by shrinking the eyes' separation and head motion
+// instead (EyeCamera units per metre = 1/scale), with the 2D layers (HUD,
+// sprites, text) 3 m in front, before the world rather than behind the
+// ship. STARFOX_VR_WORLD_SCALE=1..64 overrides it (1 = the cartridge's scale).
+[[nodiscard]] float headset_world_scale() noexcept;
+// The 2D layers' distance for that scale (set_source_ui_distance), world units.
+[[nodiscard]] inline float headset_ui_distance() noexcept {return 3.F/headset_world_scale();}
 // Replacement landscape artwork (RGBA words, red in the low byte).
 struct ModernImage {unsigned width{},height{};std::vector<uint32_t> pixels;};
 // MODERN's per-frame scene, free of any graphics API: which packets to draw,

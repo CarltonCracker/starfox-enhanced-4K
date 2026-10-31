@@ -139,6 +139,14 @@ EyeCamera reversed_depth_camera(EyeCamera camera) noexcept {
     if(m[11]==-1 && m[15]==0 && m[10]==-1) {m[10]=0;m[14]=-m[14];}
     return camera;
 }
+float headset_world_scale() noexcept {
+    static const float scale=[] {
+        const char* value=std::getenv("STARFOX_VR_WORLD_SCALE");
+        const float chosen=value?float(std::atof(value)):8.F;
+        return std::isfinite(chosen) && chosen>=1 && chosen<=64?chosen:8.F;
+    }();
+    return scale;
+}
 std::vector<bool> painter_scenery(const SourceModelPackets& source,std::span<const uint16_t> moving) {
     std::vector<const SourceComputeModel*> requests(source.packets.size());
     for(const auto& request:source.compute_models)
