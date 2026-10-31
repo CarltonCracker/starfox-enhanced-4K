@@ -163,6 +163,9 @@ extern "C" void StarfoxPS5_HideSplashScreen(void);
 #elif defined(__APPLE__) && !defined(SDL_PLATFORM_IOS)
 #include <mach-o/dyld.h>
 #endif
+#if defined(STARFOX_UWP)
+extern "C" void starfox_uwp_log(const char* message) noexcept;
+#endif
 
 namespace {
 
@@ -2047,6 +2050,15 @@ public:
 #endif
         if(renderer_mode_==starfox::simulation::RendererMode::gpu) recreate_renderer(renderer_mode_);
     }
+#if defined(STARFOX_UWP)
+    // Follows the MODERN selection: "gpu" while it is on, "direct3d11" otherwise.
+    bool uwp_modern_{};
+    void set_uwp_modern(bool value) {
+        if(uwp_modern_==value) return;
+        uwp_modern_=value;
+        if(renderer_ && renderer_mode_==starfox::simulation::RendererMode::gpu) recreate_renderer(renderer_mode_);
+    }
+#endif
     bool fit_screen_{};
     bool integer_scaling_{};
     void set_integer_scaling(bool value) {
@@ -5483,9 +5495,10 @@ private:
 #if defined(STARFOX_UWP)
         // Xbox UWP exposes SDL through its WinRT/D3D11 video backend. Avoid
         // automatic probing of desktop-only drivers during activation.
+        // MODERN needs SDL's GPU driver (D3D12), so only it selects "gpu".
         const auto* renderer_driver =
             mode == starfox::simulation::RendererMode::software
-                ? "software" : "direct3d11";
+                ? "software" : uwp_modern_ ? "gpu" : "direct3d11";
 #elif defined(_WIN32) && defined(STARFOX_SDL_GPU_EFFECTS)
         // Intel's compact continuous-clip DXIL now passes the stage sweep,
         // while this adapter's Vulkan driver has very slow dense dispatches.
@@ -5615,6 +5628,23 @@ private:
         } else
 #endif
         renderer_ = SDL_CreateRenderer(window_, renderer_driver);
+#if defined(STARFOX_UWP)
+        if(!renderer_ && uwp_modern_ && mode==starfox::simulation::RendererMode::gpu) {
+            // No D3D12 device: MODERN falls back to the existing renderer.
+            const std::string line=std::string("SDL GPU (D3D12) unavailable: ")+SDL_GetError()+"; using Direct3D 11";
+            starfox_uwp_log(line.c_str());std::cerr<<line<<'\n';
+            renderer_=SDL_CreateRenderer(window_,"direct3d11");
+        }
+        if(renderer_ && std::string_view(SDL_GetRendererName(renderer_))=="gpu") {
+            auto* gpu=static_cast<SDL_GPUDevice*>(SDL_GetPointerProperty(
+                SDL_GetRendererProperties(renderer_),SDL_PROP_RENDERER_GPU_DEVICE_POINTER,nullptr));
+            // StarFoxEnhanced-startup.log: the off-console and console D3D12 check.
+            const std::string line=std::string("SDL GPU device created: driver=")
+                +(gpu?SDL_GetGPUDeviceDriver(gpu):"none")+" adapter="
+                +(gpu?SDL_GetStringProperty(SDL_GetGPUDeviceProperties(gpu),SDL_PROP_GPU_DEVICE_NAME_STRING,"unknown"):"none");
+            starfox_uwp_log(line.c_str());
+        }
+#endif
 #if defined(__ANDROID__)
         if(!renderer_ && mode == starfox::simulation::RendererMode::software) {
             std::cerr<<"Android preferred presenter unavailable: "<<SDL_GetError()
@@ -7617,9 +7647,6 @@ std::filesystem::path executable_path(const char* argv0) {
 
 } // namespace
 
-#if defined(STARFOX_UWP)
-extern "C" void starfox_uwp_log(const char* message) noexcept;
-#endif
 #if defined(__ANDROID__)
 // This Mali/Unisoc driver corrupts native GPU geometry. Tested CPU geometry
 // with a restricted, explicitly ordered GPU sky/bloom path is usable.
@@ -9776,10 +9803,19 @@ int main(int argc, char** argv) {
             } else if(!game.modern_renderer() && modern) {
                 window.set_renderer_release_callback({});modern.reset();
             }
+#if defined(STARFOX_UWP)
+            window.set_uwp_modern(game.modern_renderer()
+                && game.renderer_mode()==starfox::simulation::RendererMode::gpu);
+#endif
         };
         sync_modern();
         bool modern_failure_reported=false;
         std::string modern_failure_reason;
+#if defined(STARFOX_UWP)
+        bool modern_present_logged=false;
+        // Console frame timings: one startup-log line per 10 s of MODERN frames.
+        struct {std::chrono::steady_clock::time_point start,last;unsigned frames{};double worst_ms{};} modern_timing;
+#endif
 #endif
         // EXIT GAME? and the save-slot window, drawn into one 112x40 bitmap that
         // both presentations show (MODERN as an overlay on a dark panel).
@@ -12278,6 +12314,35 @@ int main(int argc, char** argv) {
                     modern_capture.empty()?nullptr:modern_capture.c_str(),fps_overlay,dialog,tally?&*tally:nullptr)) {
                     if(!advance_frozen_frame) live_fps.record_frame(std::chrono::steady_clock::now());
                     if(presented_frames==0) startup_trace->mark("first game/menu frame presented");
+#if defined(STARFOX_UWP)
+                    // The console has no stderr: the startup log shows MODERN is live.
+                    if(!modern_present_logged) {
+                        modern_present_logged=true;
+                        starfox_uwp_log(("MODERN frame presented (dynamic lighting "
+                            +std::string(game.dynamic_lighting()?"on":"off")+")").c_str());
+                    }
+                    const auto now=std::chrono::steady_clock::now();
+                    const double gap_ms=std::chrono::duration<double,std::milli>(now-modern_timing.last).count();
+                    // A host-drawn menu in between restarts the window.
+                    if(modern_timing.frames==0 || gap_ms>250.0) modern_timing={now,now,1U,0.0};
+                    else {
+                        modern_timing.worst_ms=std::max(modern_timing.worst_ms,gap_ms);
+                        modern_timing.last=now;++modern_timing.frames;
+                    }
+                    if(const double seconds=std::chrono::duration<double>(now-modern_timing.start).count(); seconds>=10.0) {
+                        int output_w=0,output_h=0;
+                        SDL_GetRenderOutputSize(window.renderer(),&output_w,&output_h);
+                        constexpr std::array<const char*,4> softness{"hard","low","medium","high"};
+                        const auto intervals=double(modern_timing.frames-1U);
+                        char line[256];
+                        std::snprintf(line,sizeof(line),"MODERN timing: %.1f fps, %.2f ms avg, %.2f ms worst, %dx%d,"
+                            " dynamic lighting %s, shadow softness %s, vsync %s",intervals/seconds,seconds*1000.0/intervals,
+                            modern_timing.worst_ms,output_w,output_h,game.dynamic_lighting()?"on":"off",
+                            softness[game.shadow_softness()&3U],game.vsync()?"on":"off");
+                        starfox_uwp_log(line);
+                        modern_timing.frames=0;
+                    }
+#endif
                     complete_presentation();
                     if(test_frames!=0 && presented_frames>=test_frames) {
                         if(modern->unsupported_models()) std::cerr<<"modern: unsupported warp/axis models in final frame="<<modern->unsupported_models()<<'\n';
@@ -12289,6 +12354,9 @@ int main(int argc, char** argv) {
                 if(!modern_failure_reported || modern->status()!=modern_failure_reason) {
                     std::cerr<<"modern: falling back to the existing renderer (flow "<<int(game.flow_state())<<", frame "
                         <<presented_frames<<"): "<<modern->status()<<std::endl;
+#if defined(STARFOX_UWP)
+                    starfox_uwp_log(("MODERN fallback: "+std::string(modern->status())).c_str());
+#endif
                     modern_failure_reported=true;modern_failure_reason=modern->status();
                 }
             }

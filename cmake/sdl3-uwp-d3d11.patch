@@ -1,5 +1,206 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 5cf74b7..aeb0b6f 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -3588,7 +3588,18 @@ endif()
+ 
+ sdl_glob_sources(${SDL3_SOURCE_DIR}/src/tray/*.c)
+ 
+-if(SDL_GPU AND NOT WINDOWS_STORE)
++if(SDL_GPU AND WINDOWS_STORE)
++  # UWP (Xbox Developer Mode): the D3D12 backend only, with d3d12/dxgi
++  # linked directly and a CoreWindow swapchain (see SDL_gpu_d3d12.c).
++  sdl_glob_sources("${SDL3_SOURCE_DIR}/src/gpu/d3d12/*.c")
++  sdl_link_dependency(d3d12 LIBS d3d12 dxgi)
++  set(SDL_GPU_D3D12 1)
++  set(HAVE_SDL_GPU TRUE)
++  if(SDL_RENDER_GPU)
++    set(SDL_VIDEO_RENDER_GPU 1)
++    set(HAVE_RENDER_GPU TRUE)
++  endif()
++elseif(SDL_GPU)
+   if(HAVE_D3D11_H)
+     sdl_glob_sources("${SDL3_SOURCE_DIR}/src/gpu/d3d11/*.c")
+     set(SDL_GPU_D3D11 1)
+diff --git a/src/gpu/d3d12/SDL_gpu_d3d12.c b/src/gpu/d3d12/SDL_gpu_d3d12.c
+index 5879575..dc0fe4a 100644
+--- a/src/gpu/d3d12/SDL_gpu_d3d12.c
++++ b/src/gpu/d3d12/SDL_gpu_d3d12.c
+@@ -131,6 +131,56 @@
+ #define HRESULT_FMT "(0x%08X)"
+ #endif
+ 
++#ifdef SDL_PLATFORM_WINRT
++/* WinRT's SDL_LoadObject uses LoadPackagedLibrary, which cannot load system
++ * DLLs. d3d12 and dxgi are linked directly instead, and the names this backend
++ * looks up resolve from a fixed table. dxgidebug and the PIX event runtime are
++ * not available to packaged apps, so those optional paths stay off.
++ */
++#undef USE_PIX_RUNTIME
++
++static HRESULT WINAPI D3D12_WINRT_CreateDXGIFactory1(const GUID *riid, void **ppFactory)
++{
++    return CreateDXGIFactory2(0, riid, ppFactory);
++}
++
++static SDL_SharedObject *D3D12_WINRT_LoadObject(const char *sofile)
++{
++    if (SDL_strcmp(sofile, D3D12_DLL) == 0 || SDL_strcmp(sofile, DXGI_DLL) == 0) {
++        return (SDL_SharedObject *)sofile;
++    }
++    SDL_SetError("%s is not available on WinRT", sofile);
++    return NULL;
++}
++
++static SDL_FunctionPointer D3D12_WINRT_LoadFunction(SDL_SharedObject *handle, const char *name)
++{
++    (void)handle;
++    if (SDL_strcmp(name, D3D12_CREATE_DEVICE_FUNC) == 0) {
++        return (SDL_FunctionPointer)D3D12CreateDevice;
++    }
++    if (SDL_strcmp(name, D3D12_SERIALIZE_ROOT_SIGNATURE_FUNC) == 0) {
++        return (SDL_FunctionPointer)D3D12SerializeRootSignature;
++    }
++    if (SDL_strcmp(name, D3D12_GET_DEBUG_INTERFACE_FUNC) == 0) {
++        return (SDL_FunctionPointer)D3D12GetDebugInterface;
++    }
++    if (SDL_strcmp(name, CREATE_DXGI_FACTORY1_FUNC) == 0) {
++        return (SDL_FunctionPointer)D3D12_WINRT_CreateDXGIFactory1;
++    }
++    return NULL;
++}
++
++static void D3D12_WINRT_UnloadObject(SDL_SharedObject *handle)
++{
++    (void)handle;
++}
++
++#define SDL_LoadObject   D3D12_WINRT_LoadObject
++#define SDL_LoadFunction D3D12_WINRT_LoadFunction
++#define SDL_UnloadObject D3D12_WINRT_UnloadObject
++#endif // SDL_PLATFORM_WINRT
++
+ // Function Pointer Signatures
+ typedef HRESULT (WINAPI *pfnCreateDXGIFactory1)(const GUID *riid, void **ppFactory);
+ typedef HRESULT (WINAPI *pfnDXGIGetDebugInterface)(const GUID *riid, void **ppDebug);
+@@ -6910,11 +6960,18 @@ static bool D3D12_INTERNAL_ResizeSwapchain(
+     }
+ 
+     // Resize the swapchain
++#ifdef SDL_PLATFORM_WINRT
++    // A CoreWindow swapchain needs an explicit size.
++    int pixelWidth = 0, pixelHeight = 0;
++    SDL_GetWindowSizeInPixels(windowData->window, &pixelWidth, &pixelHeight);
++#else
++    const int pixelWidth = 0, pixelHeight = 0; // use client window size
++#endif
+     HRESULT res = IDXGISwapChain_ResizeBuffers(
+         windowData->swapchain,
+         0, // Keep buffer count the same
+-        0, // use client window width
+-        0, // use client window height
++        (UINT)pixelWidth,
++        (UINT)pixelHeight,
+         DXGI_FORMAT_UNKNOWN, // Keep the old format
+         renderer->supportsTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0);
+     CHECK_D3D12_ERROR_AND_RETURN("Could not resize swapchain buffers", false);
+@@ -6978,7 +7035,18 @@ static bool D3D12_INTERNAL_CreateSwapchain(
+     HRESULT res;
+ 
+     // Get the DXGI handle
+-#ifdef _WIN32
++#ifdef SDL_PLATFORM_WINRT
++    IUnknown *coreWindow = (IUnknown *)SDL_GetPointerProperty(SDL_GetWindowProperties(windowData->window), SDL_PROP_WINDOW_WINRT_WINDOW_POINTER, NULL);
++    int pixelWidth = 0, pixelHeight = 0;
++    if (!coreWindow) {
++        SET_STRING_ERROR_AND_RETURN("Couldn't get CoreWindow", false);
++    }
++    // A CoreWindow swapchain needs an explicit size.
++    if (!SDL_GetWindowSizeInPixels(windowData->window, &pixelWidth, &pixelHeight)) {
++        return false;
++    }
++    dxgiHandle = NULL;
++#elif defined(_WIN32)
+     dxgiHandle = (HWND)SDL_GetPointerProperty(SDL_GetWindowProperties(windowData->window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
+ #else
+     dxgiHandle = (HWND)windowData->window;
+@@ -6990,8 +7058,13 @@ static bool D3D12_INTERNAL_CreateSwapchain(
+     windowData->swapchainTextureCount = SDL_clamp(renderer->allowedFramesInFlight, 2, 3);
+ 
+     // Initialize the swapchain buffer descriptor
++#ifdef SDL_PLATFORM_WINRT
++    swapchainDesc.Width = (UINT)pixelWidth;
++    swapchainDesc.Height = (UINT)pixelHeight;
++#else
+     swapchainDesc.Width = 0;  // use client window width
+     swapchainDesc.Height = 0; // use client window height
++#endif
+     swapchainDesc.Format = swapchainFormat;
+     swapchainDesc.SampleDesc.Count = 1;
+     swapchainDesc.SampleDesc.Quality = 0;
+@@ -7016,11 +7089,21 @@ static bool D3D12_INTERNAL_CreateSwapchain(
+         swapchainDesc.Flags = 0;
+     }
+ 
+-#ifndef SDL_PLATFORM_WINRT
++#ifdef SDL_PLATFORM_WINRT
++    // Create the swapchain!
++    (void)fullscreenDesc;
++    res = IDXGIFactory4_CreateSwapChainForCoreWindow(
++        renderer->factory,
++        (IUnknown *)renderer->commandQueue,
++        coreWindow,
++        &swapchainDesc,
++        NULL,
++        &swapchain);
++    CHECK_D3D12_ERROR_AND_RETURN("Could not create swapchain", false);
++#else
+     if (!IsWindow(dxgiHandle)) {
+         return false;
+     }
+-#endif
+ 
+     // Create the swapchain!
+     res = IDXGIFactory4_CreateSwapChainForHwnd(
+@@ -7032,6 +7115,7 @@ static bool D3D12_INTERNAL_CreateSwapchain(
+         NULL,
+         &swapchain);
+     CHECK_D3D12_ERROR_AND_RETURN("Could not create swapchain", false);
++#endif
+ 
+     res = IDXGISwapChain1_QueryInterface(
+         swapchain,
+@@ -7047,6 +7131,11 @@ static bool D3D12_INTERNAL_CreateSwapchain(
+             SwapchainCompositionToColorSpace[swapchainComposition]);
+     }
+ 
++#ifdef SDL_PLATFORM_WINRT
++    // CoreWindow swapchains have no HWND to associate.
++    (void)pParent;
++    (void)dxgiHandle;
++#else
+     /*
+      * The swapchain's parent is a separate factory from the factory that
+      * we used to create the swapchain, and only that parent can be used to
+@@ -7079,6 +7168,7 @@ static bool D3D12_INTERNAL_CreateSwapchain(
+         // We're done with the parent now
+         IDXGIFactory1_Release(pParent);
+     }
++#endif
+ 
+     IDXGISwapChain3_GetDesc1(swapchain3, &swapchainDesc);
+     CHECK_D3D12_ERROR_AND_RETURN("Failed to retrieve swapchain descriptor!", false);
+@@ -9142,7 +9232,7 @@ static SDL_GPUDevice *D3D12_CreateDevice(bool debugMode, bool preferLowPower, SD
+             SDL_LogWarn(SDL_LOG_CATEGORY_GPU, "Could not load D3D12GetInterface, custom D3D12 SDK will not load.");
+         } else if (SUCCEEDED(pD3D12GetInterface(D3D_GUID(D3D_CLSID_ID3D12SDKConfiguration), D3D_GUID(D3D_IID_ID3D12SDKConfiguration), (void**) &sdk_config))) {
+             ID3D12SDKConfiguration1 *sdk_config1 = NULL;
+-            if (SUCCEEDED(IUnknown_QueryInterface(sdk_config, &D3D_IID_ID3D12SDKConfiguration1, (void**) &sdk_config1))) {
++            if (SUCCEEDED(ID3D12SDKConfiguration_QueryInterface(sdk_config, &D3D_IID_ID3D12SDKConfiguration1, (void**) &sdk_config1))) {
+                 if (SUCCEEDED(ID3D12SDKConfiguration1_CreateDeviceFactory(sdk_config1, d3d12SDKVersion, d3d12SDKPath, &D3D_IID_ID3D12DeviceFactory, (void**) &factory))) {
+                     SDL_LogInfo(SDL_LOG_CATEGORY_GPU, "Loaded vendored D3D12Core.dll");
+                 } else {
 diff --git a/src/render/direct3d11/SDL_render_d3d11.c b/src/render/direct3d11/SDL_render_d3d11.c
-index 512124c..5e297f0 100644
+index f6f94af..9210e77 100644
 --- a/src/render/direct3d11/SDL_render_d3d11.c
 +++ b/src/render/direct3d11/SDL_render_d3d11.c
 @@ -3056,10 +3056,12 @@ static bool D3D11_CreateRenderer(SDL_Renderer *renderer, SDL_Window *window, SDL
@@ -16,6 +217,7 @@ index 512124c..5e297f0 100644
      SDL_SetupRendererColorspace(renderer, create_props);
  
 diff --git a/src/thread/stdcpp/SDL_systhread.cpp b/src/thread/stdcpp/SDL_systhread.cpp
+index c718d23..1571ddc 100644
 --- a/src/thread/stdcpp/SDL_systhread.cpp
 +++ b/src/thread/stdcpp/SDL_systhread.cpp
 @@ -46,7 +46,15 @@ bool SDL_SYS_CreateThread(SDL_Thread *thread,
