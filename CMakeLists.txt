@@ -711,7 +711,9 @@ if(STARFOX_BUILD_RUNTIME)
             # fork keeps WinRT video/audio, Windows Gaming Input and Xbox Dev
             # Mode.
             # Its SDL3 forward-port retained a desktop-only D3D11 window lookup
-            # and omitted thread IDs needed by WASAPI's reentrancy checks.
+            # and omitted thread IDs needed by WASAPI's reentrancy checks. It
+            # also builds no SDL_GPU backend; the patch adds D3D12 (linked
+            # directly, CoreWindow swapchain) so MODERN can run on Xbox.
             # Apply the local UWP runtime fixes reproducibly before configuring
             # the dependency. The helper tolerates CMake reconfiguration after
             # the patch is already present in the fetched source tree.

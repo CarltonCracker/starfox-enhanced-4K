@@ -1,8 +1,9 @@
 # MODERN renderer: the shared VR scene (starfox_scene) drawn through SDL_GPU
 # for flat-screen targets. Needs SDL3::SDL3 from the runtime build. Desktop
-# Windows/Linux, Android and PS5 (all present through SDL_GPU with DXIL or
-# SPIR-V); other targets keep their existing renderers.
-if((WIN32 AND NOT WINDOWS_STORE) OR CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID OR STARFOX_PS5)
+# Windows/Linux, Xbox UWP (D3D12 through the patched SDL fork), Android and PS5
+# (all present through SDL_GPU with DXIL or SPIR-V); other targets keep their
+# existing renderers.
+if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID OR STARFOX_PS5)
     set(STARFOX_MODERN_DEFAULT ON)
 else()
     set(STARFOX_MODERN_DEFAULT OFF)

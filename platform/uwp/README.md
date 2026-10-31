@@ -58,3 +58,26 @@ tools and the Windows 11 SDK installed:
 The build validates the executable's imports against the bundled VCLibs
 framework before packaging. Desktop C++ runtime imports are rejected, even if
 the executable happens to launch successfully on a Windows PC.
+
+## MODERN renderer on Xbox (untested on console)
+
+MODERN, with its DYNAMIC LIGHTING ray tracing, runs on D3D12 through SDL's GPU
+renderer. Every other renderer keeps using Direct3D 11. The game switches to
+D3D12 only while RENDERER is MODERN. If the console cannot create a D3D12
+device, the game logs why and keeps drawing with Direct3D 11.
+
+To test, set the package to Game mode, which gives it the full GPU. In Dev
+Home, highlight Star Fox Enhanced, press the Menu button, choose View details
+and set App type to Game. Then:
+
+1. Choose RENDERER: MODERN in the pre-game menu, then start a stage.
+2. Get `StarFoxEnhanced-startup.log` from LocalState. It must contain
+   `SDL GPU device created: driver=direct3d12 adapter=...` and
+   `MODERN frame presented`. A line starting `SDL GPU (D3D12) unavailable`
+   or `MODERN fallback` gives the reason it did not run.
+3. For timings, set VSYNC OFF and PRESENTATION FPS to its highest value.
+   Play Corneria past the launch tunnel for at least 30 seconds each with
+   DYNAMIC LIGHTING OFF, ON with SHADOW SOFTNESS HARD, and ON with SHADOW
+   SOFTNESS HIGH. While MODERN draws, the log gets a `MODERN timing:` line
+   every 10 seconds: fps, average and worst frame time, output size and the
+   lighting settings in force. Report the Xbox model with the log.
