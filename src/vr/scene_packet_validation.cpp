@@ -190,6 +190,24 @@ void ScenePacketValidator::add(const DrawPacket& packet) {
             }
             if(v.texture[3]&48U) throw std::runtime_error("Conflicting tile/sprite/solid payload flags");
             const auto start=std::size_t(v.texture[0]);
+            // MODERN's 3D backgrounds (background_tiles.cpp), told apart by
+            // header word 7 (scene.hlsl tile_background_sample): the corridor
+            // (2048), the landscape sky dome (4096), its ground (|16384) and
+            // replacement landscape art (|32768). Their own layouts, not the
+            // native tile payload.
+            if(start<=texture_words.size() && texture_words.size()-start>=16
+                && (texture_words[start+7]==2048U || (texture_words[start+7]&~(16384U|32768U))==4096U)) {
+                const auto marker=texture_words[start+7];
+                const auto size=texture_words.size()-start;
+                if(marker==2048U) {
+                    if(size<272+2*448+4*8) throw std::runtime_error("Truncated MODERN corridor payload");
+                } else if(marker&32768U) {
+                    const auto width=texture_words[start],height=texture_words[start+1];
+                    if((marker&16384U) || !width || !height || width>8192 || height>8192 || size<16+std::size_t(width)*height)
+                        throw std::runtime_error("Invalid MODERN landscape art payload");
+                } else if(size<272+16384+6+112+2) throw std::runtime_error("Truncated MODERN landscape payload");
+                continue;
+            }
             if(start>texture_words.size() || texture_words.size()-start<272+16384)
                 throw std::runtime_error("Truncated GPU tile background payload");
             if(v.texture[3]&render::calibrated_ground_flag) {
@@ -237,11 +255,15 @@ void ScenePacketValidator::add(const DrawPacket& packet) {
             if(scanlines>3 || (scanlines && texture_words.size()-start<272+16384+448))
                 throw std::runtime_error("Invalid GPU scanline payload");
             // Word 7 packs the two-bit priority and the selective
-            // face-planet and game-over star continuation flags.
+            // face-planet and game-over star continuation flags, plus MODERN's
+            // display-rate presentation (1024: scroll fraction, Mode 2
+            // horizon) and overscan row clamp (8192).
             if((bpp!=2 && bpp!=4 && bpp!=8) || texture_words[start+2]>3
-                || (texture_words[start+7]&~768U)>2
+                || (texture_words[start+7]&~(768U|1024U|8192U))>2
                 || texture_words[start+8]>1 || texture_words[start+9]>16 || texture_words[start+11]>1)
-                throw std::runtime_error("Invalid GPU tile background controls");
+                throw std::runtime_error("Invalid GPU tile background controls (words 2,5,7,8,9,11: "
+                    +std::to_string(texture_words[start+2])+","+std::to_string(bpp)+","+std::to_string(texture_words[start+7])+","
+                    +std::to_string(texture_words[start+8])+","+std::to_string(texture_words[start+9])+","+std::to_string(texture_words[start+11])+")");
         } else if(v.texture[3]&16U) {
             if(v.texture[3]&32U) throw std::runtime_error("Conflicting sprite/solid payload flags");
             const auto start=std::size_t(v.texture[0]);
@@ -263,9 +285,11 @@ void ScenePacketValidator::add(const DrawPacket& packet) {
         } else if(v.texture[3]&1U) {
             const auto width=uint64_t(v.texture[1])+1,height=uint64_t(v.texture[2])+1;
             // Source texture masks are 8-bit. Reject before multiplication.
+            // MODERN's replacement art and xBRZ-scaled sprites exceed the
+            // cartridge's 256 texels (backdrops' limit is 4096 too).
             const uint64_t palette_words=(v.texture[3]&536870912U)?256:0;
             const auto pixel_words=palette_words?(width*height+3)/4:width*height;
-            if(width>256 || height>256 || uint64_t(v.texture[0])+palette_words+pixel_words>texture_words.size())
+            if(width>4096 || height>4096 || uint64_t(v.texture[0])+palette_words+pixel_words>texture_words.size())
                 throw std::runtime_error("Native scene texture reference out of bounds");
         }
 }

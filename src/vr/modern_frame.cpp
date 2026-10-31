@@ -336,6 +336,9 @@ void ModernFrame::prepare(const GameSceneSnapshot& previous,const GameSceneSnaps
     if(layers_rebuilt) {
         auto layers=assemble_frame_layers(current,inputs);
         tunnel_surround=std::move(layers.tunnel_surround);sprites=std::move(layers.sprites);
+        // As assemble_frame_layers places the PPU canvas.
+        sprite_layer=source_ui_layer_matrix(float(current.source_vanishing_point[0]),float(current.source_vanishing_point[1]),
+            current.flow==simulation::GameFlowState::ex_pregame_menu).value_or(identity_matrix);
         layer_revision_=current.revision;
     }
     // Backgrounds follow the source's scroll registers and per-scanline
@@ -442,7 +445,7 @@ void ModernFrame::prepare(const GameSceneSnapshot& previous,const GameSceneSnaps
         background_interpolated_=interpolated;
     }
     fog.reset();
-    if(fog_colour_ && !settings_.headset && landscape_world && fog_background_==current.background_id
+    if(fog_colour_ && landscape_world && fog_background_==current.background_id
         && gameplay_flow(current)) {
         static const auto distances=[] {
             std::array<float,2> d{1500.F,3300.F};
@@ -644,7 +647,9 @@ void ModernFrame::prepare(const GameSceneSnapshot& previous,const GameSceneSnaps
             const V up=unit({ground[4],ground[5],ground[6]});
             const V origin{ground[12],ground[13],ground[14]};
             const double height=dot({engine[0]-origin[0],engine[1]-origin[1],engine[2]-origin[2]},up);
-            constexpr double reach=700./256.;
+            // Gone by about two wingspans up (4.5 half spans), as on the
+            // flat view's traced glow.
+            const double reach=half_span*4.5;
             if(!(height>0 && height<reach) || !(half_span>0)) break;
             V toward=up;
             if(const auto& sun=engine_glow_settings_.toward_light) {
@@ -658,12 +663,14 @@ void ModernFrame::prepare(const GameSceneSnapshot& previous,const GameSceneSnaps
             V along=unit({forward[0]-up[0]*dot(forward,up),forward[1]-up[1]*dot(forward,up),forward[2]-up[2]*dot(forward,up)});
             if(dot(along,along)<.5) break;
             const V across{up[1]*along[2]-up[2]*along[1],up[2]*along[0]-up[0]*along[2],up[0]*along[1]-up[1]*along[0]};
-            const double radius=half_span*2.*std::sqrt(1.-(height/reach)*(height/reach));
-            const double fall=1.-height/reach;
+            // Three times as wide at the top, nearly full while low.
+            const double climb=height/reach;
+            const double radius=half_span*2.*(1.+2.*climb);
+            const double fall=1.-climb*climb*(3.-2.*climb);
             // Red and yellow on alternate pairs of ticks (the cartridge's flicker).
             const bool red=(current.revision/2U)%2U==0U;
             const std::array<float,3> tint=red?std::array<float,3>{1.F,.35F,.1F}:std::array<float,3>{1.F,.75F,.2F};
-            const float strength=float(.5*fall*fall);
+            const float strength=float(.5*fall);
             DrawPacket packet;
             const std::array<std::array<float,2>,4> corners{{{-1,-1},{1,-1},{1,1},{-1,1}}};
             for(const unsigned corner:{0U,1U,2U,0U,2U,3U}) {

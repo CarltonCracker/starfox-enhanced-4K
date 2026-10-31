@@ -1,4 +1,5 @@
 #include "starfox/modern/sdl_frame.hpp"
+#include "starfox/render/texture_override_files.hpp"
 #include "starfox/vr/background_tiles.hpp"
 #include <algorithm>
 #include <bit>
@@ -11,18 +12,9 @@ namespace {
 void require(bool ok,const std::string& what) {if(!ok) throw std::runtime_error(what);}
 // PNG (or BMP) to RGBA words with red in the low byte; empty when absent.
 std::optional<vr::ModernImage> load_rgba(const std::string& path) {
-    SDL_Surface* loaded=SDL_LoadSurface(path.c_str());
-    if(!loaded) return {};
-    SDL_Surface* rgba=SDL_ConvertSurface(loaded,SDL_PIXELFORMAT_ABGR8888);
-    SDL_DestroySurface(loaded);
-    if(!rgba) return {};
-    vr::ModernImage image{unsigned(rgba->w),unsigned(rgba->h),{}};
-    if(image.width==0 || image.height==0 || image.width>8192 || image.height>8192) {SDL_DestroySurface(rgba);return {};}
-    image.pixels.resize(std::size_t(image.width)*image.height);
-    for(unsigned y=0;y<image.height;++y)
-        std::memcpy(image.pixels.data()+std::size_t(y)*image.width,static_cast<const uint8_t*>(rgba->pixels)+std::size_t(y)*rgba->pitch,image.width*4U);
-    SDL_DestroySurface(rgba);
-    return image;
+    auto image=render::load_rgba_image(path);
+    if(!image) return {};
+    return vr::ModernImage{image->width,image->height,std::move(image->rgba)};
 }
 SceneBlend sdl_blend(vr::SceneBlend blend) {
     switch(blend) {
@@ -185,8 +177,9 @@ void SdlFrameRenderer::push_fog(SDL_GPUCommandBuffer* command,const vr::EyeCamer
             out[0]=point.position[0];out[1]=point.position[1];out[2]=point.position[2];out[3]=point.radius;
             out[4]=point.colour[0];out[5]=point.colour[1];out[6]=point.colour[2];out[7]=std::bit_cast<float>(point.object);
             out[8]=point.axis[0];out[9]=point.axis[1];out[10]=point.axis[2];out[11]=point.aspect;
-            out[12]=point.hardness;out[13]=point.projected?1.F:0.F;out[14]=point.fade_height;
-            out[15]=point.background_only?1.F:0.F;
+            // Projected lights: look.y = spread (nonzero), look.w = lift.
+            out[12]=point.hardness;out[13]=point.projected?std::max(point.spread,1e-3F):0.F;out[14]=point.fade_height;
+            out[15]=point.projected?point.lift:(point.background_only?1.F:0.F);
         }
     }
     SDL_PushGPUFragmentUniformData(command,1,data.data(),sizeof(data));

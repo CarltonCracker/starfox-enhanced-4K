@@ -88,6 +88,9 @@ public:
     // Sprites, HUD and the tunnel surround: rebuilt once per source tick.
     bool layers_rebuilt{};
     std::vector<DrawPacket> tunnel_surround,sprites;
+    // The sprites' canvas placement (source_ui_layer_matrix): 256x224 PPU
+    // pixels to world, for drawing them as one filtered layer.
+    Matrix4 sprite_layer=identity_matrix;
     // Backgrounds: rebuilt per tick or at display rate while they scroll;
     // their models are updated every frame.
     bool backgrounds_rebuilt{};
