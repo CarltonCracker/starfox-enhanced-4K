@@ -6,3 +6,5 @@ cmake/*.patch -whitespace
 platform/android/gradlew text eol=lf
 tools/package_switch_nsp.ps1 text eol=crlf
 platform/ps5/sce_sys/*.dds filter=lfs diff=lfs merge=lfs -text
+# Hashed byte-for-byte into upstream-dialogue.json; keep LF on Windows checkouts.
+assets/localization/*.txt text eol=lf
