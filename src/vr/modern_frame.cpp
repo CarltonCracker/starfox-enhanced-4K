@@ -272,6 +272,43 @@ void ModernFrame::prepare(const GameSceneSnapshot& previous,const GameSceneSnaps
         stars.push_back(world.packets[index]);star_keys.push_back(*star);
         erase_world_packet(world,index,"Star pass");
     }
+    // Set pieces the cartridge parks just outside its 256x224 view, never
+    // shown there but in plain sight once a headset looks around: Corneria's
+    // wingmen (FRIENDSHIP) held beside the camera through the hangar-exit
+    // dialogue, and Space Armada's mothership (SSHIP_0) dropped below the
+    // player as its corridor takes over. Left out (with their shadow
+    // passes) while outside that view, 1.5 times wider for their size.
+    if(inputs.symbols && prop_symbols_!=inputs.symbols) {
+        prop_symbols_=inputs.symbols;offscreen_props_.clear();
+        for(const auto& [name,values]:inputs.symbols->entries())
+            if(name.starts_with("FRIENDSHIP_") || name.starts_with("SSHIP_0"))
+                for(const auto value:values) if(value<0x10000U) offscreen_props_.push_back(uint16_t(value));
+    }
+    if(!offscreen_props_.empty()) {
+        std::vector<uint32_t> hidden;
+        for(const auto& item:current.objects) {
+            if(std::find(offscreen_props_.begin(),offscreen_props_.end(),item.object.shape)==offscreen_props_.end()) continue;
+            const auto compute=std::find_if(world.compute_models.begin(),world.compute_models.end(),
+                [&](const auto& model){return model.key==item.handle;});
+            if(compute==world.compute_models.end() || compute->model.projection.continuous_poses.empty()) continue;
+            // Camera-relative, native axes (+Y down, +Z forward).
+            const auto& p=compute->model.projection.continuous_poses[0].translation;
+            const double x=std::abs(double(p[0])),y=std::abs(double(p[1])),z=double(p[2]);
+            const bool in_view=z>0 && x<=z*(128./256.)*1.5 && y<=z*(112./256.)*1.5;
+            static const bool trace=std::getenv("STARFOX_TRACE_MODERN")!=nullptr;
+            if(trace) std::fprintf(stderr,"modern-prop handle=%u shape=%u at=%.0f,%.0f,%.0f %s\n",unsigned(item.handle),
+                unsigned(item.object.shape),double(p[0]),double(p[1]),z,in_view?"shown":"hidden");
+            if(!in_view) hidden.push_back(item.handle);
+        }
+        for(std::size_t index=world.handles.size();index-->0;) {
+            if(std::find(hidden.begin(),hidden.end(),world.handles[index]&0xffffU)==hidden.end() || world.handles[index]>=0x20000U) continue;
+            world.packets.erase(world.packets.begin()+std::ptrdiff_t(index));
+            world.handles.erase(world.handles.begin()+std::ptrdiff_t(index));
+            auto& models=world.compute_models;
+            models.erase(std::remove_if(models.begin(),models.end(),[&](const auto& model){return model.packet_index==index;}),models.end());
+            for(auto& model:models) if(model.packet_index>index) --model.packet_index;
+        }
+    }
     // The cartridge's ground dots (grid packet 0x30000) tie objects to the
     // ground; keep them over the 3D landscape ground unless switched off.
     const bool landscape_world=inputs.landscape_world && current.background_landscape && !current.ppu->tunnel_scene;

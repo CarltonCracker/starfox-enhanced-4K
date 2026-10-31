@@ -140,6 +140,9 @@ public:
     // Head-locked normalized-device shutter (identity camera).
     std::optional<DrawPacket> shutter;
 private:
+    // Set pieces the cartridge parks just outside its own view (see prepare).
+    const assets::SymbolMap* prop_symbols_{};
+    std::vector<uint16_t> offscreen_props_;
     Settings settings_;
     EngineGlowSettings engine_glow_settings_;
     std::function<std::optional<ModernImage>(const std::string&)> load_image_;

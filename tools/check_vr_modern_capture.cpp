@@ -23,6 +23,8 @@
 // STARFOX_TEST_DEFEAT=SHAPE,STRATEGY,TICK (starfox_pc's): at that source tick
 // the first object of that shape dies through that strategy.
 // STARFOX_VR_OBJECTS=1 lists the last tick's objects and world packets.
+// STARFOX_VR_HIDE=key,key,... (hex) leaves those world packets out (finding
+// which object draws what).
 // STARFOX_VR_TIME=N redraws the Vulkan eye N more times and reports the
 // fastest GPU times (timestamps) of the once-per-frame work (ray casters,
 // xBRZ layer) and of the eye's pass; the readback is not included.
@@ -456,6 +458,22 @@ int main(int argc,char** argv) try {
                 const double alpha=last && std::getenv("STARFOX_VR_ALPHA")?std::stod(std::getenv("STARFOX_VR_ALPHA")):1.;
                 auto world_packets=models.assemble_world_interpolated(*previous,*current,alpha,srgb,true);
                 require(world_packets.pending.empty(),"Model assembly pending");
+                if(const char* hide=std::getenv("STARFOX_VR_HIDE")) {
+                    std::string list{hide};
+                    for(std::size_t at=0;at<list.size();) {
+                        const auto comma=std::min(list.find(',',at),list.size());
+                        const auto key=uint32_t(std::stoul(list.substr(at,comma-at),nullptr,16));
+                        at=comma+1;
+                        for(std::size_t i=0;i<world_packets.handles.size();++i) if(world_packets.handles[i]==key) {
+                            world_packets.packets.erase(world_packets.packets.begin()+std::ptrdiff_t(i));
+                            world_packets.handles.erase(world_packets.handles.begin()+std::ptrdiff_t(i));
+                            auto& models=world_packets.compute_models;
+                            models.erase(std::remove_if(models.begin(),models.end(),[&](const auto& m){return m.packet_index==i;}),models.end());
+                            for(auto& model:models) if(model.packet_index>i) --model.packet_index;
+                            break;
+                        }
+                    }
+                }
                 if(last && std::getenv("STARFOX_VR_OBJECTS")) {
                     const auto& p=game.objects().at(game.player());
                     std::cout<<"objects bg="<<current->background_id<<" flow="<<int(current->flow)<<" camera-player=("<<int(current->camera.x)-int(p.world_x)<<","<<int(current->camera.y)-int(p.world_y)<<","<<int(std::int16_t(std::uint16_t(current->camera.z-p.world_z)))<<") ground="<<int(current->shadow_height)-int(current->camera.y)<<'\n';
