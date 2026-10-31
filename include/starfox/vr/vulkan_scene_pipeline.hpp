@@ -50,6 +50,13 @@ private:
 // before creating the pipelines that should use it; the fog must outlive them.
 void set_scene_fog(const VulkanSceneFog*) noexcept;
 [[nodiscard]] const VulkanSceneFog* scene_fog() noexcept;
+// MODERN's ray-traced shadows and lights on a headset (vr::VulkanRayShadows):
+// its descriptor set, bound at set 2 by every textured scene pipeline created
+// while it and the fog are registered (scene.hlsl's STARFOX_SCENE_RT variant).
+// Process-wide like the fog; the binding must outlive those pipelines.
+struct SceneRayBinding {VkDescriptorSetLayout layout{};VkDescriptorSet set{};};
+void set_scene_rays(const SceneRayBinding*) noexcept;
+[[nodiscard]] const SceneRayBinding* scene_rays() noexcept;
 // Instances per line draw for MODERN's one-source-pixel brush (scene.hlsl
 // headset_line_brush): 2N-1, N the target pixels per source pixel in
 // camera.effects.w bits 8-19 (4.4 fixed point) rounded; 1 where unset.
@@ -83,7 +90,7 @@ public:
 private:
     SceneTopology topology_{SceneTopology::triangles};
     bool textured_{};
-    VkDescriptorSet fog_{};
+    VkDescriptorSet fog_{},rays_{};
     PFN_vkCmdBindDescriptorSets bind_descriptors_{};
     VkDevice device_{};VkPipeline pipeline_{};VkPipelineLayout layout_{};
     PFN_vkDestroyPipeline destroy_pipeline_{};

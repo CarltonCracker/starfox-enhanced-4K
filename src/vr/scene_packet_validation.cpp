@@ -285,9 +285,11 @@ void ScenePacketValidator::add(const DrawPacket& packet) {
         } else if(v.texture[3]&1U) {
             const auto width=uint64_t(v.texture[1])+1,height=uint64_t(v.texture[2])+1;
             // Source texture masks are 8-bit. Reject before multiplication.
+            // MODERN's replacement art and xBRZ-scaled sprites exceed the
+            // cartridge's 256 texels (backdrops' limit is 4096 too).
             const uint64_t palette_words=(v.texture[3]&536870912U)?256:0;
             const auto pixel_words=palette_words?(width*height+3)/4:width*height;
-            if(width>256 || height>256 || uint64_t(v.texture[0])+palette_words+pixel_words>texture_words.size())
+            if(width>4096 || height>4096 || uint64_t(v.texture[0])+palette_words+pixel_words>texture_words.size())
                 throw std::runtime_error("Native scene texture reference out of bounds");
         }
 }

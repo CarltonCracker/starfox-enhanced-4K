@@ -33,6 +33,8 @@ with tempfile.TemporaryDirectory() as temporary:
             ('fragment', 'fragment', 'ps_6_0', []), ('fragment_textured', 'fragment_textured', 'ps_6_0', []),
             ('fragment_fog', 'fragment', 'ps_6_0', ['STARFOX_SCENE_FOG']),
             ('fragment_textured_fog', 'fragment_textured', 'ps_6_0', ['STARFOX_SCENE_FOG']),
+            # MODERN's ray-traced shadows and lights on the headset (vr::VulkanRayShadows, set 2).
+            ('fragment_textured_rt', 'fragment_textured', 'ps_6_0', ['STARFOX_SCENE_FOG', 'STARFOX_SCENE_RT']),
             ('connected_project', 'connected_project', 'cs_6_0', []), ('connected_rows', 'connected_rows', 'cs_6_0', []),
             ('hud_layer_vertex', 'hud_layer_vertex', 'vs_6_0', []), ('hud_layer_fragment', 'hud_layer_fragment', 'ps_6_0', [])]:
         binary = pathlib.Path(temporary) / (name + '.spv')

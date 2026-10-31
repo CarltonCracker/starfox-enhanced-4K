@@ -35,6 +35,7 @@
 #include "starfox/vr/decal_surface.hpp"
 #include "starfox/vr/modern_frame.hpp"
 #include "starfox/vr/vulkan_modern_layers.hpp"
+#include "starfox/vr/vulkan_ray_shadows.hpp"
 #include "starfox/render/texture_override_files.hpp"
 #include "starfox/vr/game_frame_driver.hpp"
 #include "starfox/vr/startup_menu.hpp"
@@ -515,6 +516,12 @@ int starfox::vr::run_application(int argc,char** argv,const ApplicationHost& hos
     // MODERN's distance haze (Venom), bound by every scene pipeline created
     // after it is registered; declared first so it outlives them all.
     starfox::vr::VulkanSceneFog scene_fog;
+    // MODERN's ray-traced shadows and lights (the RAY TRACING row), set 2 of
+    // the same pipelines; outlives them too.
+    starfox::vr::VulkanRayShadows ray_shadows;
+    bool ray_shadows_ready=false,rt_hide_shadows=false;
+    std::unique_ptr<starfox::vr::RayEmitters> rt_emitters;
+    const starfox::assets::SymbolMap* rt_emitter_symbols{};
     starfox::vr::VulkanPipelineCache shader_cache;
     starfox::vr::VulkanDrawPackets scene;
     starfox::vr::VulkanSourceScene compute_scene;
@@ -603,6 +610,9 @@ int starfox::vr::run_application(int argc,char** argv,const ApplicationHost& hos
             if(modern_layers.status()!="MODERN layers ready") std::cerr<<modern_layers.status()<<'\n';
             if(!scene_fog.initialize(device.binding().device,get_device,properties)) {std::cerr<<scene_fog.status()<<'\n';return 8;}
             starfox::vr::set_scene_fog(&scene_fog);
+            ray_shadows_ready=ray_shadows.initialize(device.binding().device,get_device,properties,physical_properties.limits);
+            if(ray_shadows_ready) starfox::vr::set_scene_rays(&ray_shadows.binding());
+            else std::cerr<<"MODERN ray tracing unavailable: "<<ray_shadows.status()<<'\n';
         }
         const std::array<starfox::vr::SceneVertex,3> triangle{{
             {{-.4F,-.3F,-2.F},{.1F,.8F,.2F,1.F}},
@@ -651,7 +661,8 @@ int starfox::vr::run_application(int argc,char** argv,const ApplicationHost& hos
     bool cancelled=false;
     starfox::vr::StartupMenu startup;
     startup.fixed_face_buttons=host.android!=nullptr;
-    startup.ray_tracing_available=ray_supported;startup.ray_tracing=ray_tracing;
+    // MODERN traces in its own compute pass (VulkanRayShadows), not DXR.
+    startup.ray_tracing_available=ray_supported || modern;startup.ray_tracing=ray_tracing;
     std::optional<starfox::vr::SceneBlend> circle_blend;
     starfox::vr::Matrix4 circle_model{};
     bool circle_active=false,circle_over_hud=false;
@@ -907,6 +918,19 @@ int starfox::vr::run_application(int argc,char** argv,const ApplicationHost& hos
                     }
                     const auto profile_models=std::chrono::steady_clock::now();
                     if(!packets.pending.empty()) throw std::runtime_error("Live model pass incomplete: "+packets.pending.front().reason);
+                    // MODERN's ray tracing this frame: the sun (RAY TRACING) and
+                    // the coloured lights (with DYNAMIC LIGHTING), in gameplay.
+                    std::optional<render::shadows::Vec3> rt_sun;
+                    bool rt_traced_lights=false,rt_traced=false;
+                    if(modern) {
+                        static const bool rt_forced=[] {
+                            const char* value=std::getenv("STARFOX_MODERN_RT_SHADOWS");return value && std::string_view(value)=="1";
+                        }();
+                        const auto flow=live->history->current()->flow;
+                        const bool gameplay=flow==starfox::simulation::GameFlowState::gameplay || flow==starfox::simulation::GameFlowState::training;
+                        rt_traced=ray_shadows_ready && (startup.ray_tracing || rt_forced) && gameplay;
+                        if(rt_traced) rt_sun=starfox::vr::ray_sun(*live->history->previous(),*live->history->current(),alpha,75.);
+                    }
                     if(modern) {
                         // MODERN's frame plan: stars split off, the world in
                         // native draw order (bias, seat setback), backgrounds,
@@ -931,8 +955,13 @@ int starfox::vr::run_application(int argc,char** argv,const ApplicationHost& hos
                             const char* value=std::getenv("STARFOX_MODERN_RT_LIGHTS");return value && std::string_view(value)=="1";
                         }();
                         const auto flow=live->history->current()->flow;
-                        modern_frame.set_engine_glow({(rt_lights || startup.dynamic_lighting) && (flow==starfox::simulation::GameFlowState::gameplay
-                            || flow==starfox::simulation::GameFlowState::training)});
+                        const bool lights_wanted=(rt_lights || startup.dynamic_lighting) && (flow==starfox::simulation::GameFlowState::gameplay
+                            || flow==starfox::simulation::GameFlowState::training);
+                        // Traced with RAY TRACING on; otherwise the decal stands in.
+                        rt_traced_lights=rt_traced && lights_wanted;
+                        starfox::vr::ModernFrame::EngineGlowSettings glow{lights_wanted && !rt_traced_lights,{}};
+                        if(rt_sun) glow.toward_light=std::array<float,3>{float(rt_sun->x),float(rt_sun->y),float(rt_sun->z)};
+                        modern_frame.set_engine_glow(glow);
                         if(!portrait_overrides.empty()) inputs.portrait_overrides=&portrait_overrides;
                         if(!sprite_overrides.empty()) inputs.sprite_overrides=&sprite_overrides;
                         modern_frame.prepare(*live->history->previous(),*live->history->current(),alpha,std::move(packets),inputs);
@@ -967,14 +996,14 @@ int starfox::vr::run_application(int argc,char** argv,const ApplicationHost& hos
                     // Do not disable rays just because this frame has no compute solids.
                     // MODERN always takes the ordered source scene (painter scenery).
                     compute_scene_active=modern || !packets.compute_models.empty()
-                        || (startup.ray_tracing_enabled()
+                        || (!modern && startup.ray_tracing_enabled()
                             && std::any_of(packets.packets.begin(),packets.packets.end(),[](const auto& packet) {
                                 return !packet.geometry.vertex_view().empty();
                             }));
                     if(compute_scene_active) {
                         if(!compute_scene.initialize(device.binding().device,get_device,properties,physical_properties.limits,
                             targets.render_pass(),packets,&shader_cache,modern_frame.moving)) throw std::runtime_error(compute_scene.status());
-                        if(startup.ray_tracing_enabled()) {
+                        if(!modern && startup.ray_tracing_enabled()) {
                             ray_inputs=packets;
                             ray_plan_cache.invalidate();
                             SourceRayPolicy(live->symbols).apply(ray_inputs,*live->history->current());
@@ -1042,6 +1071,32 @@ int starfox::vr::run_application(int argc,char** argv,const ApplicationHost& hos
                         if(!modern_layers.upload(modern_frame)) throw std::runtime_error(modern_layers.status());
                         // Eye cameras' near plane: renderer.step_async's 0.05 m.
                         starfox::vr::VulkanModernLayers::apply_fog(scene_fog,modern_frame,.05F);
+                        rt_hide_shadows=false;
+                        if(ray_shadows_ready) {
+                            if(rt_emitter_symbols!=&live->symbols) {
+                                rt_emitters=std::make_unique<starfox::vr::RayEmitters>(live->symbols);rt_emitter_symbols=&live->symbols;
+                            }
+                            const auto& emitters=*rt_emitters;
+                            // Sun shadows land on the landscape ground where the
+                            // cartridge draws shadows, the corridor and the boss room.
+                            const bool receivers=std::any_of(modern_frame.backgrounds.begin(),modern_frame.backgrounds.end(),[&](const auto& packet) {
+                                return (snapshot->shadows_enabled && starfox::vr::is_landscape_ground(packet)) || starfox::vr::is_tunnel_corridor(packet)
+                                    || starfox::vr::is_nucleus_room(packet) || starfox::vr::is_nucleus_floor(packet);
+                            });
+                            const bool shadowless=rt_traced && emitters.shadowless(*snapshot);
+                            starfox::vr::VulkanRayShadows::Settings settings;
+                            const auto softness=starfox::vr::ray_softness(int(live->game.shadow_softness()&3U));
+                            settings.radius=softness.radius;settings.samples=softness.samples;
+                            std::optional<starfox::vr::VulkanRayShadows::LightInputs> lights;
+                            if(rt_traced_lights) lights=starfox::vr::VulkanRayShadows::LightInputs{
+                                [&emitters,snapshot](uint32_t key)->unsigned {return emitters.kind(*snapshot,key);},
+                                starfox::vr::ray_bomb_flash(*snapshot),uint32_t(snapshot->revision)};
+                            if(!ray_shadows.prepare(compute_scene,packets,shadowless?std::nullopt:rt_sun,receivers,
+                                [&emitters,snapshot](uint32_t key) {return emitters.caster(*snapshot,key);},settings,lights?&*lights:nullptr))
+                                std::cerr<<"MODERN ray tracing skipped: "<<ray_shadows.status()<<'\n';
+                            // Ray-traced shadows replace the cartridge's polygons, never both.
+                            rt_hide_shadows=ray_shadows.sun_active() || shadowless;
+                        }
                     }
                     if(!modern) {
                         // The source 2D layers and their display-rate motion
@@ -1140,7 +1195,7 @@ int starfox::vr::run_application(int argc,char** argv,const ApplicationHost& hos
                 } catch(const std::exception& error) {game_error=error.what();return starfox::vr::StereoRenderer::EyeResult::failed;}
             }
             bool ray_ready=false;
-            if(startup.ray_tracing_enabled() && ray_environment_valid && render_game && compute_scene_active && (!startup.open || startup.preview) && eye<2) {
+            if(!modern && startup.ray_tracing_enabled() && ray_environment_valid && render_game && compute_scene_active && (!startup.open || startup.preview) && eye<2) {
                 if(!ray_times[eye] || *ray_times[eye]!=time) {
                     ray_times[eye]=time;
                     // Topology and source alpha materials are shared by both eyes.
@@ -1207,7 +1262,12 @@ int starfox::vr::run_application(int argc,char** argv,const ApplicationHost& hos
                 }
                 // MODERN: reversed depth, smooth 2D filtering, resolved
                 // dither and the ground dots' scale (VulkanModernLayers::eye_camera).
-                const auto eye_camera=modern?starfox::vr::VulkanModernLayers::eye_camera(panel_camera,extent):panel_camera;
+                auto eye_camera=modern?starfox::vr::VulkanModernLayers::eye_camera(panel_camera,extent):panel_camera;
+                if(modern && eye<2) {
+                    // The eye for MODERN's traced pixels (camera.effects.w bit 4).
+                    eye_camera.effects[3]|=uint32_t(eye)<<4;
+                    if(ray_shadows.active()) ray_shadows.set_eye(eye,eye_camera,extent);
+                }
                 const bool controls_stars=live && (live->history->current()->flow==starfox::simulation::GameFlowState::controls_type
                     || live->history->current()->flow==starfox::simulation::GameFlowState::controls_choice);
                 const auto record_stars=[&] {
@@ -1236,7 +1296,7 @@ int starfox::vr::run_application(int argc,char** argv,const ApplicationHost& hos
                 if(render_triangle && !pipeline.record(command,extent,vertices.buffer(),vertices.count(),eye_camera))
                     throw std::runtime_error("Triangle recording failed");
                 if((render_model || render_game) && !(render_game && compute_scene_active
-                    ?compute_scene.record(command,extent,model_camera,ray_ready):scene.record(command,extent,model_camera)))
+                    ?compute_scene.record(command,extent,model_camera,ray_ready || (modern && rt_hide_shadows)):scene.record(command,extent,model_camera)))
                     throw std::runtime_error("Model packet recording failed");
                 if(ray_ready && !ray_frames[eye]->record_draw(command,extent)) throw std::runtime_error("Ray shadow drawing failed");
                 if(render_game && modern && !modern_layers.record_after_world(command,extent,eye_camera))
@@ -1275,6 +1335,11 @@ int starfox::vr::run_application(int argc,char** argv,const ApplicationHost& hos
                     throw std::runtime_error("Live grid compute recording failed");
                 if(!ray_ready && eye==0 && render_game && compute_scene_active && (!startup.open || startup.preview) && !compute_scene.record_compute(command))
                     throw std::runtime_error("Live model compute recording failed");
+                // MODERN's ray casters from those models, shared by both eyes.
+                if(modern && render_game && (!startup.open || startup.preview)) {
+                    if(eye==0 && !ray_shadows.record_casters(command)) throw std::runtime_error("MODERN ray caster recording failed");
+                    if(eye!=0) ray_shadows.record_read_barrier(command);
+                }
             },[&](VkCommandBuffer command,VkExtent2D,const auto&,XrTime) {
                 if(ray_ready && !ray_frames[eye]->record_release(command)) throw std::runtime_error("Ray shadow release failed");
             },ray_ready?&ray_wait:nullptr);

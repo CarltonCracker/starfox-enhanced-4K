@@ -67,7 +67,7 @@ target_sources(starfox_vr_core PRIVATE src/vr/openxr_input.cpp src/vr/refresh_ra
 target_compile_features(starfox_vr_core PUBLIC cxx_std_20)
 target_link_libraries(starfox_vr_core PUBLIC starfox_scene OpenXR::openxr_loader Vulkan::Headers starfox_sfvr PRIVATE ${CMAKE_DL_LIBS})
 add_library(starfox_vr_game STATIC src/vr/game_frame_driver.cpp src/vr/vulkan_draw_packets.cpp)
-target_sources(starfox_vr_game PRIVATE src/vr/vulkan_modern_layers.cpp src/vr/vulkan_layer_filter.cpp)
+target_sources(starfox_vr_game PRIVATE src/vr/vulkan_modern_layers.cpp src/vr/vulkan_layer_filter.cpp src/vr/vulkan_ray_shadows.cpp)
 target_sources(starfox_vr_game PRIVATE src/vr/vulkan_source_bindings.cpp)
 target_sources(starfox_vr_game PRIVATE src/vr/vulkan_source_model.cpp)
 target_sources(starfox_vr_game PRIVATE src/vr/vulkan_source_scene.cpp)

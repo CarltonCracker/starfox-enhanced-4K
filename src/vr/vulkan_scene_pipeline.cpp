@@ -19,11 +19,13 @@ void check(VkResult value,const char* operation) {
     if(value!=VK_SUCCESS) throw std::runtime_error(std::string(operation)+": "+std::to_string(value));
 }
 }
-namespace {bool reversed_depth{};const VulkanSceneFog* registered_fog{};}
+namespace {bool reversed_depth{};const VulkanSceneFog* registered_fog{};const SceneRayBinding* registered_rays{};}
 void set_scene_reversed_depth(bool enabled) noexcept {reversed_depth=enabled;}
 bool scene_reversed_depth() noexcept {return reversed_depth;}
 void set_scene_fog(const VulkanSceneFog* fog) noexcept {registered_fog=fog;}
 const VulkanSceneFog* scene_fog() noexcept {return registered_fog;}
+void set_scene_rays(const SceneRayBinding* rays) noexcept {registered_rays=rays;}
+const SceneRayBinding* scene_rays() noexcept {return registered_rays;}
 VulkanSceneFog::~VulkanSceneFog() {close();}
 void VulkanSceneFog::close() noexcept {
     if(buffer_) destroy_buffer_(device_,buffer_,nullptr);
@@ -90,7 +92,7 @@ VulkanScenePipeline::~VulkanScenePipeline() {close();}
 void VulkanScenePipeline::close() noexcept {
     if(pipeline_) destroy_pipeline_(device_,pipeline_,nullptr);
     if(layout_) destroy_layout_(device_,layout_,nullptr);
-    pipeline_={};layout_={};device_={};fog_={};
+    pipeline_={};layout_={};device_={};fog_={};rays_={};
 }
 bool VulkanScenePipeline::initialize(VkDevice device,PFN_vkGetDeviceProcAddr get,VkRenderPass pass,bool depth_test,SceneTopology topology,VkDescriptorSetLayout textures,SceneBlend mode,VulkanPipelineCache* cache,bool depth_write,bool painter) {
     painter=painter && depth_test;
@@ -108,6 +110,10 @@ bool VulkanScenePipeline::initialize(VkDevice device,PFN_vkGetDeviceProcAddr get
         const auto* fog=scene_fog();
         fog_=fog?fog->set():VK_NULL_HANDLE;
         if(fog && !fog_) throw std::runtime_error("Registered scene fog is not initialized");
+        // Ray tracing (textured fragments only) builds on the fog variant.
+        const auto* rays=fog_ && textured_?scene_rays():nullptr;
+        rays_=rays?rays->set:VK_NULL_HANDLE;
+        if(rays && (!rays_ || !rays->layout)) throw std::runtime_error("Registered scene rays are not initialized");
         if(textured_ || fog_) bind_descriptors_=entry<PFN_vkCmdBindDescriptorSets>(get,device,"vkCmdBindDescriptorSets");
         device_=device;
 #define LOAD(member,type,name) member=entry<type>(get,device,name)
@@ -128,17 +134,19 @@ bool VulkanScenePipeline::initialize(VkDevice device,PFN_vkGetDeviceProcAddr get
         module.codeSize=textured_?sizeof(shader::vertex_textured):sizeof(shader::vertex);
         module.pCode=textured_?shader::vertex_textured:shader::vertex;
         check(create_shader(device,&module,nullptr,&modules[0]),"Create vertex shader");
-        module.codeSize=fog_?(textured_?sizeof(shader::fragment_textured_fog):sizeof(shader::fragment_fog))
+        module.codeSize=rays_?sizeof(shader::fragment_textured_rt)
+            :fog_?(textured_?sizeof(shader::fragment_textured_fog):sizeof(shader::fragment_fog))
             :(textured_?sizeof(shader::fragment_textured):sizeof(shader::fragment));
-        module.pCode=fog_?(textured_?shader::fragment_textured_fog:shader::fragment_fog)
+        module.pCode=rays_?shader::fragment_textured_rt
+            :fog_?(textured_?shader::fragment_textured_fog:shader::fragment_fog)
             :(textured_?shader::fragment_textured:shader::fragment);
         check(create_shader(device,&module,nullptr,&modules[1]),"Create fragment shader");
         VkPushConstantRange range{VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(SceneConstants)};
         VkPipelineLayoutCreateInfo layout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         layout.pushConstantRangeCount=1;layout.pPushConstantRanges=&range;
-        const std::array<VkDescriptorSetLayout,2> sets{textured_?textures:(fog?fog->empty_layout():VK_NULL_HANDLE),
-            fog?fog->layout():VK_NULL_HANDLE};
-        if(textured_ || fog_) {layout.setLayoutCount=fog_?2:1;layout.pSetLayouts=sets.data();}
+        const std::array<VkDescriptorSetLayout,3> sets{textured_?textures:(fog?fog->empty_layout():VK_NULL_HANDLE),
+            fog?fog->layout():VK_NULL_HANDLE,rays?rays->layout:VK_NULL_HANDLE};
+        if(textured_ || fog_) {layout.setLayoutCount=rays_?3:fog_?2:1;layout.pSetLayouts=sets.data();}
         check(create_layout(device,&layout,nullptr,&layout_),"Create scene layout");
         std::array<VkPipelineShaderStageCreateInfo,2> stages{};
         for(auto& stage:stages) stage.sType=VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -232,6 +240,7 @@ bool VulkanScenePipeline::record_range(VkCommandBuffer command,VkExtent2D extent
     bind_pipeline_(command,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline_);
     if(textured_) bind_descriptors_(command,VK_PIPELINE_BIND_POINT_GRAPHICS,layout_,0,1,&textures,0,nullptr);
     if(fog_) bind_descriptors_(command,VK_PIPELINE_BIND_POINT_GRAPHICS,layout_,1,1,&fog_,0,nullptr);
+    if(rays_) bind_descriptors_(command,VK_PIPELINE_BIND_POINT_GRAPHICS,layout_,2,1,&rays_,0,nullptr);
     viewport_(command,0,1,&viewport);scissor_(command,0,1,&scissor);
     bind_vertices_(command,0,1,&vertices,&offset);
     const auto constants=scene_constants(camera);

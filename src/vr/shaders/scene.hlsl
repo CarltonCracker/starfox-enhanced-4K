@@ -1508,8 +1508,52 @@ float4 scene_fog(Fragment input,float4 colour,uint mode,float4 fog_colour,float4
     }
     return fog_by_distance(colour,input.position.z,fog_colour,fog_params);
 }
+#if defined(STARFOX_SCENE_RT)
+// The headset's ray-traced sun shadows and coloured lights
+// (vr::VulkanRayShadows, set 2). Casters are expanded once per frame in seat
+// space (the source camera's native axes before the head pose); each eye
+// rebuilds its pixels' seat positions with its own inverse clip transform.
+// The receivers per draw are the haze's (scene_fog_mode: 2 the background,
+// 1 the world's models); the eye is camera.effects.w bit 4.
+// shadow_params x = on (1) or off (0), y = caster objects, z = brightness
+// kept in shadow, w = sun samples; shadow_light xyz = toward the sun (seat,
+// native), w = ray start offset per unit of distance; shadow_target z = the
+// sun's angular radius; ray_flags x/y = sun shadows on the background/models;
+// ray_targets = each eye's target size; ray_eyes = each eye's position;
+// shadow_unproject = four rows per eye (clip to seat space); light_params
+// and point_lights as scene_sdl.hlsl's SdlFog.
+[[vk::binding(0,2)]] cbuffer SceneRays {
+    float4 shadow_params;float4 shadow_light;float4 shadow_target;float4 ray_flags;
+    float4 ray_targets;float4 ray_eyes[2];float4 shadow_unproject[8];
+    float4 light_params;float4 point_lights[64];
+};
+[[vk::binding(1,2)]] StructuredBuffer<float4> shadow_triangles;
+[[vk::binding(2,2)]] ByteAddressBuffer shadow_objects;
+uint ray_eye_index() {return (camera.effects.w>>4)&1U;}
+float4 ray_clip(float4 position) {
+    // Vulkan clip space is Y down, as the eye's viewport.
+    float2 size=ray_eye_index()==0?ray_targets.xy:ray_targets.zw;
+    return float4(position.x/size.x*2.-1.,position.y/size.y*2.-1.,position.z,1);
+}
+float4 ray_unproject_row(uint row) {return shadow_unproject[ray_eye_index()*4+row];}
+float3 ray_eye() {return ray_eyes[ray_eye_index()].xyz;}
+#include "scene_rt.hlsli"
+#endif
 float4 fragment_textured_main(Fragment input) : SV_Target0 {
+#if defined(STARFOX_SCENE_RT)
+    // Receivers need the face's plane before anything may discard: flat
+    // faces, so screen derivatives of the rebuilt position give it.
+    const uint ray_mode=shadow_params.x!=0?scene_fog_mode():0;
+    float3 surface=0,normal=0;
+    if(ray_mode!=0) {
+        surface=shadow_native_position(input.position);
+        normal=cross(ddx(surface),ddy(surface));
+    }
+#endif
     float4 colour=styled_colour(fragment_textured_raw(input));
+#if defined(STARFOX_SCENE_RT)
+    colour=ray_lighting(input,colour,surface,normal,ray_mode,(ray_mode==2?ray_flags.x:ray_flags.y)!=0);
+#endif
 #if defined(STARFOX_SCENE_FOG)
     colour=scene_fog(input,colour,scene_fog_mode(),scene_fog_colour,scene_fog_params);
 #endif

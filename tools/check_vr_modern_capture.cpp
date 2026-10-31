@@ -16,6 +16,14 @@
 //   run, as starfox_pc does.
 // Writes OUT_DIR/LEVEL-TICKS-vr.bmp and OUT_DIR/LEVEL-TICKS-sdl.bmp.
 //
+// STARFOX_MODERN_RT_SHADOWS=1 traces the sun (both paths) and, with
+// STARFOX_MODERN_RT_LIGHTS=1, the coloured lights, as the RAY TRACING and
+// DYNAMIC LIGHTING rows do; without it the engine glow is the decal.
+// STARFOX_VR_EYE=1 draws as the right eye (its own slot in the ray data).
+// STARFOX_VR_TIME=N redraws the Vulkan eye N more times and reports the
+// fastest GPU times (timestamps) of the once-per-frame work (ray casters,
+// xBRZ layer) and of the eye's pass; the readback is not included.
+//
 // STARFOX_VR_CLASSIC=1 draws the existing (non-MODERN) PCVR renderer instead,
 // to OUT_DIR/LEVEL-TICKS-classic.bmp. MODERN loads replacement artwork from
 // <exe>/textures/ for both paths, as starfox_pc and starfox_pcvr do.
@@ -26,6 +34,8 @@
 #include "starfox/vr/decal_surface.hpp"
 #include "starfox/vr/game_frame_driver.hpp"
 #include "starfox/vr/modern_frame.hpp"
+#include "starfox/vr/ray_lighting.hpp"
+#include "starfox/vr/vulkan_ray_shadows.hpp"
 #include "starfox/vr/source_models.hpp"
 #include "starfox/vr/vulkan_depth_targets.hpp"
 #include "starfox/vr/vulkan_eye_commands.hpp"
@@ -37,6 +47,8 @@
 #include "starfox/render/texture_override_files.hpp"
 #include <SDL3/SDL.h>
 #include <algorithm>
+#include <chrono>
+#include <functional>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
@@ -241,6 +253,8 @@ int main(int argc,char** argv) try {
     DEVICE(vkCreateBuffer);DEVICE(vkDestroyBuffer);DEVICE(vkGetBufferMemoryRequirements);DEVICE(vkBindBufferMemory);
     DEVICE(vkAllocateMemory);DEVICE(vkFreeMemory);DEVICE(vkMapMemory);DEVICE(vkUnmapMemory);
     DEVICE(vkCmdPipelineBarrier);DEVICE(vkCmdCopyImageToBuffer);
+    DEVICE(vkCreateQueryPool);DEVICE(vkDestroyQueryPool);DEVICE(vkCmdResetQueryPool);DEVICE(vkCmdWriteTimestamp);
+    DEVICE(vkGetQueryPoolResults);
     VkQueue queue{};vkGetDeviceQueue(device,family,0,&queue);
     std::cout<<"Vulkan: "<<properties.deviceName<<" | level "<<level<<" tick "<<ticks<<" | "<<width<<'x'<<height
         <<" yaw "<<yaw<<" pitch "<<pitch<<" fov "<<fov<<'\n';
@@ -269,6 +283,10 @@ int main(int argc,char** argv) try {
     // MODERN's haze, registered before any pipeline exists (as application.cpp does).
     vr::VulkanSceneFog fog;
     if(!classic) {require(fog.initialize(device,vkGetDeviceProcAddr,memory),fog.status());vr::set_scene_fog(&fog);}
+    // And its ray tracing, likewise.
+    const bool rt=!classic && std::getenv("STARFOX_MODERN_RT_SHADOWS") && std::string_view(std::getenv("STARFOX_MODERN_RT_SHADOWS"))=="1";
+    vr::VulkanRayShadows rays;
+    if(rt) {require(rays.initialize(device,vkGetDeviceProcAddr,memory,properties.limits),rays.status());vr::set_scene_rays(&rays.binding());}
     {
         const std::array<VkExtent2D,2> extents{VkExtent2D{width,height},VkExtent2D{width,height}};
         vr::VulkanDepthTargets depth;require(depth.initialize(instance,physical,device,get,extents),depth.status());
@@ -373,7 +391,14 @@ int main(int argc,char** argv) try {
             flat.set_frame_settings(seat);flat.set_texture_directory(textures);
             flat.set_target(width,height,std::max(1U,unsigned(std::lround(double(height)*std::abs(camera.projection[5])/512.))));
             std::vector<unsigned char> vr_pixels,sdl_pixels;
+            std::function<void()> redraw;
+            VkQueryPool timer{};
+            {
+                VkQueryPoolCreateInfo info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};info.queryType=VK_QUERY_TYPE_TIMESTAMP;info.queryCount=3;
+                check(vkCreateQueryPool(device,&info,nullptr,&timer),"Create timestamp pool");
+            }
             const bool rt_lights=std::getenv("STARFOX_MODERN_RT_LIGHTS") && std::string_view(std::getenv("STARFOX_MODERN_RT_LIGHTS"))=="1";
+            const vr::RayEmitters emitters(symbols);
             // Both plans see every tick, so their per-level state (horizon votes,
             // retained layers) matches the game's. Source frames: alpha 1.
             for(unsigned tick=0;tick<=ticks;++tick) {
@@ -383,10 +408,21 @@ int main(int argc,char** argv) try {
                 const bool last=tick==ticks;
                 auto world_packets=models.assemble_world_interpolated(*previous,*current,1.,srgb,true);
                 require(world_packets.pending.empty(),"Model assembly pending");
-                // The engine glow, as application.cpp enables it (STARFOX_MODERN_RT_LIGHTS=1).
-                const bool glow=rt_lights && (current->flow==simulation::GameFlowState::gameplay
-                    || current->flow==simulation::GameFlowState::training);
-                frame.set_engine_glow({glow});flat.set_engine_glow({glow});
+                // The engine glow and the ray tracing, as application.cpp
+                // enables them: the glow traced with RAY TRACING, else the decal.
+                const bool gameplay=current->flow==simulation::GameFlowState::gameplay
+                    || current->flow==simulation::GameFlowState::training;
+                const auto sun=rt && gameplay?vr::ray_sun(*previous,*current,1.,75.):std::nullopt;
+                const bool traced_lights=rt && rt_lights && gameplay;
+                {
+                    vr::ModernFrame::EngineGlowSettings glow{rt_lights && gameplay && !traced_lights,{}};
+                    if(sun) glow.toward_light=std::array<float,3>{float(sun->x),float(sun->y),float(sun->z)};
+                    frame.set_engine_glow(glow);flat.set_engine_glow(glow);
+                }
+                const bool shadowless=rt && gameplay && emitters.shadowless(*current);
+                const auto softness=vr::ray_softness(int(game.shadow_softness()&3U));
+                const auto caster=[&](uint32_t key) {return emitters.caster(*current,key);};
+                const vr::RayEmitterKind emitter=[&](uint32_t key)->unsigned {return emitters.kind(*current,key);};
                 auto* command=SDL_AcquireGPUCommandBuffer(sdl);require(command!=nullptr,"Acquire SDL command buffer");
                 if(!flat.prepare(command,*previous,*current,1.,world_packets,inputs)) {
                     SDL_CancelGPUCommandBuffer(command);throw std::runtime_error("SDL prepare: "+flat.status());
@@ -398,6 +434,15 @@ int main(int argc,char** argv) try {
 
                 // SDL: modern_runtime.cpp's present() without the window.
                 require(flat.record_filtered_layers(command,camera),flat.status());
+                if(rt) {
+                    modern::SdlFrameRenderer::ShadowSettings settings;
+                    settings.radius=softness.radius;settings.samples=softness.samples;
+                    settings.cartridge_shadows=current->shadows_enabled;settings.no_shadows=shadowless;
+                    const modern::SdlFrameRenderer::LightInputs lights{emitter,vr::ray_bomb_flash(*current),uint32_t(current->revision)};
+                    require(flat.record_shadows(command,camera,sun,caster,settings,traced_lights?&lights:nullptr),"SDL shadows: "+flat.status());
+                    std::cout<<"sdl rays: objects "<<flat.ray_shadows().object_count()<<", triangles "<<flat.ray_shadows().triangle_count()
+                        <<", lights "<<flat.point_light_count()<<", flow "<<int(current->flow)<<", sun "<<bool(sun)<<'\n';
+                }
                 const auto clear=vr::frame_clear_colour(*current,srgb);
                 SDL_GPUColorTargetInfo target{};target.texture=sdl_target;target.load_op=SDL_GPU_LOADOP_CLEAR;
                 target.store_op=SDL_GPU_STOREOP_STORE;target.clear_color={clear[0],clear[1],clear[2],1};
@@ -422,20 +467,56 @@ int main(int argc,char** argv) try {
                 // Vulkan: application.cpp's eye recording for MODERN.
                 require(world.initialize(device,vkGetDeviceProcAddr,memory,properties.limits,targets.render_pass(),
                     frame.world,nullptr,frame.moving),world.status());
-                const auto eye=vr::VulkanModernLayers::eye_camera(camera,extent);
+                auto eye=vr::VulkanModernLayers::eye_camera(camera,extent);
+                const unsigned eye_index=std::getenv("STARFOX_VR_EYE") && std::string_view(std::getenv("STARFOX_VR_EYE"))=="1"?1:0;
+                eye.effects[3]|=eye_index<<4;
                 auto model_camera=eye;model_camera.effects={0,0,0,eye.effects[3]};
                 model_camera=vr::VulkanModernLayers::fogged(model_camera,1);
-                vr_pixels=draw_eye(clear,[&](VkCommandBuffer cmd,VkExtent2D size) {
+                bool hide_shadows=false;
+                if(rt) {
+                    const bool receivers=std::any_of(frame.backgrounds.begin(),frame.backgrounds.end(),[&](const auto& packet) {
+                        return (current->shadows_enabled && vr::is_landscape_ground(packet)) || vr::is_tunnel_corridor(packet)
+                            || vr::is_nucleus_room(packet) || vr::is_nucleus_floor(packet);
+                    });
+                    vr::VulkanRayShadows::Settings settings;settings.radius=softness.radius;settings.samples=softness.samples;
+                    const vr::VulkanRayShadows::LightInputs lights{emitter,vr::ray_bomb_flash(*current),uint32_t(current->revision)};
+                    require(rays.prepare(world,frame.world,shadowless?std::nullopt:sun,receivers,caster,settings,traced_lights?&lights:nullptr),
+                        "Vulkan rays: "+rays.status());
+                    rays.set_eye(eye_index,eye,extent);
+                    hide_shadows=rays.sun_active() || shadowless;
+                    std::cout<<"vr rays: objects "<<rays.object_count()<<", triangles "<<rays.triangle_count()
+                        <<", lights "<<rays.point_light_count()<<", sun "<<rays.sun_active()<<'\n';
+                }
+                redraw=[&,clear,eye,model_camera,hide_shadows] {vr_pixels=draw_eye(clear,[&](VkCommandBuffer cmd,VkExtent2D size) {
+                    vkCmdWriteTimestamp(cmd,VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,timer,1);
                     if(!layers.record_stars(cmd,size,eye) || !layers.record_backgrounds(cmd,size,eye)
-                        || !world.record(cmd,size,model_camera) || !layers.record_after_world(cmd,size,eye)
+                        || !world.record(cmd,size,model_camera,hide_shadows) || !layers.record_after_world(cmd,size,eye)
                         || !layers.record_below_hud(cmd,size,eye) || !layers.record_hud(cmd,size,eye))
                         throw std::runtime_error("Vulkan MODERN recording failed: "+layers.status()+" / "+world.status());
+                    vkCmdWriteTimestamp(cmd,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,timer,2);
                 },[&](VkCommandBuffer cmd,VkExtent2D) {
+                    vkCmdResetQueryPool(cmd,timer,0,3);
                     if(!world.record_compute(cmd)) throw std::runtime_error("Vulkan world compute failed: "+world.status());
+                    vkCmdWriteTimestamp(cmd,VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,timer,0);
+                    if(rt && !rays.record_casters(cmd)) throw std::runtime_error("Vulkan ray casters failed");
                     if(!layers.record_filter(cmd,eye)) throw std::runtime_error("Vulkan xBRZ layer failed: "+layers.status());
-                });
+                });};
+                redraw();
+            }
+            if(const char* repeat=std::getenv("STARFOX_VR_TIME")) {
+                double fastest=1e9,fastest_frame=1e9;
+                for(unsigned i=0,count=unsigned(std::stoul(repeat));i<count;++i) {
+                    redraw();
+                    std::array<uint64_t,3> stamps{};
+                    check(vkGetQueryPoolResults(device,timer,0,3,sizeof(stamps),stamps.data(),sizeof(uint64_t),
+                        VK_QUERY_RESULT_64_BIT|VK_QUERY_RESULT_WAIT_BIT),"Read timestamps");
+                    fastest_frame=std::min(fastest_frame,double(stamps[1]-stamps[0])*properties.limits.timestampPeriod/1e6);
+                    fastest=std::min(fastest,double(stamps[2]-stamps[1])*properties.limits.timestampPeriod/1e6);
+                }
+                std::cout<<"vr: casters and xBRZ "<<fastest_frame<<" ms, eye pass "<<fastest<<" ms (fastest of "<<repeat<<")\n";
             }
             vkDeviceWaitIdle(device);
+            vkDestroyQueryPool(device,timer,nullptr);
             flat.release();
             SDL_ReleaseGPUTransferBuffer(sdl,download);SDL_ReleaseGPUTexture(sdl,sdl_depth_target);SDL_ReleaseGPUTexture(sdl,sdl_target);
             SDL_DestroyGPUDevice(sdl);SDL_Quit();
@@ -447,6 +528,7 @@ int main(int argc,char** argv) try {
         }
         vkDeviceWaitIdle(device);
     }
+    vr::set_scene_rays(nullptr);rays.close();
     vr::set_scene_fog(nullptr);fog.close();
     vkDestroyBuffer(device,readback,nullptr);vkFreeMemory(device,read_memory,nullptr);
     vkDestroyImage(device,image,nullptr);vkFreeMemory(device,image_memory,nullptr);
