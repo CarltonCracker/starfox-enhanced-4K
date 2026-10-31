@@ -521,14 +521,28 @@ InputBindings::InputBindings(bool handheld_menu_layout)
 }
 
 input::ButtonMask InputBindings::sample(SDL_Gamepad* gamepad) const noexcept {
+    return static_cast<input::ButtonMask>(sample_keyboard_only() | sample_gamepad_only(gamepad));
+}
+
+input::ButtonMask InputBindings::sample_player(
+    std::span<SDL_Gamepad* const> gamepads, unsigned player) const noexcept {
+    std::array<input::ButtonMask, 5> pads{};
+    const auto pad = keyboard_player_ == 1U && player > 1U ? player - 1U : player;
+    if (player < pads.size() && pad < gamepads.size()
+        && !(keyboard_player_ == 1U && player == 1U))
+        pads[pad] = sample_gamepad_only(gamepads[pad]);
+    return player_buttons(player == keyboard_player_ ? sample_keyboard_only() : 0U,
+        pads, keyboard_player_, player);
+}
+
+input::ButtonMask InputBindings::sample_keyboard_only() const noexcept {
     const auto* keys = SDL_GetKeyboardState(nullptr);
     input::ButtonMask result{};
     for (std::size_t action = 0; action < action_count; ++action) {
         add_keyboard_button(
             result, keys, keyboard_[action], kActionButtons[action]);
     }
-    return static_cast<input::ButtonMask>(
-        result | sample_gamepad_only(gamepad));
+    return result;
 }
 
 input::ButtonMask InputBindings::sample_gamepad_only(
@@ -643,12 +657,15 @@ void InputBindings::reset(BindingDevice device) noexcept {
     if (device == BindingDevice::keyboard) {
         keyboard_ = kDefaultKeyboard;
         reset_key_ = SDL_SCANCODE_R;
+        keyboard_player_ = 0U;
     }
     else gamepad_ = kDefaultGamepad;
 }
 
 std::string InputBindings::binding_name(
     BindingDevice device, std::size_t action) const {
+    if (device == BindingDevice::keyboard && action == keyboard_player_action)
+        return keyboard_player_ == 1U ? "PLAYER 2" : "PLAYER 1";
     if (device == BindingDevice::keyboard && action == reset_action) {
         return std::string{"CTRL+SHIFT+"} + SDL_GetScancodeName(reset_key_);
     }
@@ -672,6 +689,7 @@ std::string InputBindings::binding_name(
 }
 
 std::string_view InputBindings::action_name(std::size_t action) noexcept {
+    if (action == keyboard_player_action) return "KEYBOARD PLAYER";
     if (action == reset_action) return "RESET";
     return action < action_count ? kActionNames[action] : std::string_view{"?"};
 }
@@ -714,6 +732,10 @@ void InputBindings::load(const std::filesystem::path& override_path) {
         char device{};
         std::size_t action{};
         fields >> device >> action;
+        if (fields && device == 'P') {
+            if (action < 2U) set_keyboard_player(static_cast<unsigned>(action));
+            continue;
+        }
         if (!fields || action > reset_action
             || (action == reset_action && device != 'K')) continue;
         if (device == 'K') {
@@ -748,6 +770,7 @@ void InputBindings::save(const std::filesystem::path& override_path) const {
     std::ofstream output{path, std::ios::trunc};
     if (!output) return;
     output << "SFE_INPUT_V2\n";
+    output << "P " << keyboard_player_ << '\n';
     output << "K " << reset_action << ' ' << static_cast<int>(reset_key_) << '\n';
     for (std::size_t action = 0; action < action_count; ++action) {
         output << "K " << action << ' '

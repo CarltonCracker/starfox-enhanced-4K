@@ -142,7 +142,7 @@ GpuRasterOutput GpuBackground::enqueue(void* device,void* command,const simulati
                     && (ppu.bg2_screen_size&1 || ppu.bg2_tile_size_16)
                     && ppu.background_mode==2 && !ppu.bg2_scanline_scroll_enabled?4096U:0U)
                 |(s.extend_tunnel_diagonals && tunnel_ceiling_guard_page(ppu)?8192U:0U);
-            std::array<std::int32_t,32> data{int(width),int(height),int(scale),0,
+            std::array<std::int32_t,36> data{int(width),int(height),int(scale),0,
                 ppu.bg2_screen_base,ppu.bg2_character_base,(ppu.bg2_screen_size&1)?64:32,(ppu.bg2_screen_size&2)?64:32,
                 s.scroll_x,s.scroll_y,s.horizontal_origin,s.extend_horizontal?0:std::max(s.horizontal_origin,0),
                 s.extend_horizontal?int(logical_width):std::min(int(logical_width),std::max(s.horizontal_origin+256,0)),
@@ -150,7 +150,8 @@ GpuRasterOutput GpuBackground::enqueue(void* device,void* command,const simulati
                 int(s.tag),(ppu.main_screen&2)?1:0,s.transparent_cgram_black?1:0,int(flags),
                 starfox::bit_cast<std::int32_t>(s.single_occurrence_top_rows),int(s.unique_regions.size()),ppu.bg2_scroll_x,ppu.bg2_scroll_y,
                 int(s.terrain_source_rows[0]),int(s.terrain_source_rows[1]),int(logical_width),int(logical_height),
-                starfox::bit_cast<std::int32_t>(s.raster_jitter[0]),starfox::bit_cast<std::int32_t>(s.raster_jitter[1]),int(s.sky_source_min),starfox::bit_cast<std::int32_t>(s.stereo_sky_source_x)};
+                starfox::bit_cast<std::int32_t>(s.raster_jitter[0]),starfox::bit_cast<std::int32_t>(s.raster_jitter[1]),int(s.sky_source_min),starfox::bit_cast<std::int32_t>(s.stereo_sky_source_x),
+                int(s.surface_continuation_rows[0]),int(s.surface_continuation_rows[1]),0,0};
             for(unsigned phase=0;phase<2;++phase) {
                 data[3]=int(phase);SDL_PushGPUComputeUniformData(cmd,0,data.data(),sizeof(data));
                 SDL_GPUStorageBufferReadWriteBinding outputs[2]{};

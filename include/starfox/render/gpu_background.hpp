@@ -22,6 +22,9 @@ struct GpuBackgroundSettings {
     unsigned single_occurrence_top_rows{};
     unsigned sky_source_min{}; // Optional authored top row; extend only outside native view.
     bool continue_ground{true}; // False for sky/orbital art: never extrude a star into a floor.
+    // A finite distant surface continues its lower atlas edge without becoming
+    // local terrain or wrapping a second limb/stars into the widened view.
+    std::array<unsigned,2> surface_continuation_rows{};
     bool extend_tunnel_diagonals{}; // Source-art fitted margins; native columns stay exact.
     std::vector<BackgroundUniqueRegion> unique_regions;
     // Optional authored BG2 terrain rows [first,last), in source tilemap

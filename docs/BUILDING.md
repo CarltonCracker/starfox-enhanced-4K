@@ -15,6 +15,28 @@ Alt+0 restores automatic sizing for the current session.
 
 ## Development launcher
 
+### Smaller desktop binaries
+
+Enhanced background artwork accounts for most of the recent executable growth.
+Desktop flat-runtime builds can use `-DSTARFOX_EMBED_ENHANCED_BACKDROPS=OFF`
+to retain embedded import patches/symbols but load artwork from
+`assets/enhanced-backdrops/` beside the executable instead (inside Resources
+for a macOS `.app`). Use `cmake --install` to install that companion artwork
+with the runtime; keep it when distributing
+the smaller binary. Total artwork size is unchanged. Normal release builds
+still embed it; mobile, console and VR packaging is unchanged.
+
+The standalone asset builder now embeds only the import patches/symbols, not
+the unused enhanced artwork. It is not needed after successfully creating
+`Starfox-Assets.BIN`. Keep the BIN across updates; it needs regeneration only
+when the embedded patch/symbol manifest changes, not for a version-number,
+renderer, settings or artwork-only change. Keep your retail ROM available for
+that future rebuild. `-DSTARFOX_EMBED_RUNTIME_ASSETS=OFF` also removes embedded
+import resources, so it is for external-input development builds rather than
+a drop-in small player package.
+
+### Launching from source
+
 Release builds use the checked-in source-built BPS deltas and pinned symbol
 maps, so a clean checkout does not need either reconstructed ROM. Developers
 regenerating those inputs can build the pinned UltraStarFox and Star Fox EX

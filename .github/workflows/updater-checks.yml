@@ -12,6 +12,7 @@ on:
       - 'tools/check_release_version.py'
       - 'tests/*update*'
   workflow_dispatch:
+  workflow_call:
 permissions:
   contents: read
 jobs:
@@ -25,7 +26,7 @@ jobs:
             generator: Unix Makefiles
           - os: windows-2022
             generator: Visual Studio 17 2022
-          - os: macos-14
+          - os: macos-15
             generator: Unix Makefiles
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
@@ -56,6 +57,44 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Windows updater sandbox failed' }
           python tests/test_linux_app_update.py -v
           if ($LASTEXITCODE -ne 0) { throw 'Linux ZIP policy tests failed' }
+      - name: Verify Defender provisioning before release builds
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          STARFOX_UPDATE_TEST_FIXTURE: build/update-checks/Release/starfox_update_exit_fixture.exe
+        run: |
+          # GitHub's disposable Windows image disables Defender by default.
+          # Enable protection here only, never on a developer/player machine.
+          if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted') {
+            throw 'Defender provisioning is restricted to GitHub-hosted runners'
+          }
+          $policy = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Advanced Threat Protection'
+          if (Test-Path -LiteralPath $policy) {
+            Set-ItemProperty -LiteralPath $policy -Name ForceDefenderPassiveMode -Value 0 -Type DWord
+          }
+          Start-Service WinDefend
+          Set-MpPreference -DisableRealtimeMonitoring $false -DisableArchiveScanning $false `
+            -DisableBehaviorMonitoring $false -DisableIOAVProtection $false -DisableScriptScanning $false
+          # Enabling the service can trigger an engine restart. Retry only
+          # signature initialization, never a detection or failed file scan.
+          for ($updateAttempt = 0; $updateAttempt -lt 4; $updateAttempt++) {
+            try { Update-MpSignature -UpdateSource MMPC -ErrorAction Stop; break }
+            catch {
+              if ($updateAttempt -eq 3) { throw }
+              Write-Output 'Waiting for Defender signature service to initialize'
+              Start-Sleep -Seconds 15
+              Start-Service WinDefend
+            }
+          }
+          for ($attempt = 0; $attempt -lt 30; $attempt++) {
+            $health = Get-MpComputerStatus
+            if ($health.AMServiceEnabled -and $health.AntivirusEnabled -and $health.RealTimeProtectionEnabled) { break }
+            Start-Sleep -Seconds 1
+          }
+          $health | Select-Object AMServiceEnabled, AntivirusEnabled, RealTimeProtectionEnabled, AMRunningMode
+          ./tools/check_windows_defender.ps1 -UpdateSignatures `
+            -Files @($env:STARFOX_UPDATE_TEST_FIXTURE) `
+            -ReportPath build/validation/active/windows-defender-preflight.json
       - name: Native Linux preservation, permissions and restart/rollback sandbox
         if: runner.os == 'Linux'
         env:

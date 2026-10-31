@@ -187,7 +187,12 @@ assigned from CONTROLLER REMAP.
 Star Fox EX can consume up to five connected gamepads for its native two-player
 and multitap modes. Devices with an SDL/Steam player index are assigned first
 in player-number order, followed by the remaining detected controllers;
-keyboard input belongs to player one only. EX's own `MULTITAP SUPPORT` and
+the keyboard defaults to sharing player one with the first controller.
+For controller + keyboard co-op, open **CONTROLLER REMAP**, switch to **KEYBOARD**
+with Left/Right, choose **KEYBOARD PLAYER** (after RESET), and select **PLAYER 2**.
+The first controller stays P1; additional controllers use P3 onward. The choice
+is saved in `input-bindings.cfg`; pre-game navigation still works from either
+device. EX's own `MULTITAP SUPPORT` and
 `NUMBER OF PLAYERS` settings remain authoritative, including its one-player
 mode that deliberately mirrors player-one input to all five ships.
 

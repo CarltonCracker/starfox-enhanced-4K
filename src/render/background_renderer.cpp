@@ -398,7 +398,8 @@ void BackgroundRenderer::draw_bg2(
     std::uint32_t single_occurrence_top_rows,
     std::span<const BackgroundUniqueRegion> unique_regions,
     bool ending_star_extension, bool game_over_star_extension,
-    std::uint32_t sky_source_min, bool continue_ground, bool extend_tunnel_diagonals) const noexcept {
+    std::uint32_t sky_source_min, bool continue_ground, bool extend_tunnel_diagonals,
+    std::array<unsigned,2> surface_continuation_rows) const noexcept {
     if ((ppu.main_screen & 0x02U) == 0U) return;
     const int ceiling_guard=extend_tunnel_diagonals?tunnel_ceiling_guard_page(ppu):0;
     const auto row_scroll_y=[&](int y) {
@@ -463,6 +464,9 @@ void BackgroundRenderer::draw_bg2(
         : 1;
     const auto expanded_mode2 = extend_horizontal && target.width() > 256U
         && ppu.background_mode == 2U && ppu.bg2_vertical_offsets_enabled;
+    const bool bounded_surface=expanded_mode2 && !ppu.tunnel_scene
+        && surface_continuation_rows[0]<surface_continuation_rows[1]
+        && surface_continuation_rows[1]<=unsigned(height_pixels);
     // Tunnel cross-sections and generated star patches use the original
     // unwrapped world phase; only ordinary landscape banks are periodic fits.
     const bool landscape_roll = !ppu.tunnel_scene && !ending_star_extension && !game_over_star_extension;
@@ -493,7 +497,7 @@ void BackgroundRenderer::draw_bg2(
         if (fit_difference > period / 2 - 1) fit_difference -= period;
         const auto unwrapped = have_previous
             ? previous_unwrapped + fit_difference
-            : raw;
+            : bounded_surface ? signed_difference(vertical_value(index),0) : raw;
         const auto x = static_cast<double>(index + 1U);
         const auto y = static_cast<double>(unwrapped);
         sum_x += x;
@@ -554,7 +558,8 @@ void BackgroundRenderer::draw_bg2(
         return fallback;
     };
 
-    const auto extend_ground_down = continue_ground && expanded_mode2 && target.height() > 192U;
+    const auto extend_ground_down = continue_ground && !bounded_surface
+        && expanded_mode2 && target.height() > 192U;
     const auto first_x = extend_horizontal ? 0U
         : static_cast<std::uint32_t>(std::max<std::int32_t>(horizontal_origin, 0));
     const auto final_x = extend_horizontal ? target.width()
@@ -870,6 +875,14 @@ void BackgroundRenderer::draw_bg2(
                 auto source_y = wrap_tilemap_coordinate(
                     sample_y + current_scroll_y,
                     height_pixels);
+                if(bounded_surface) {
+                    // A planet is one sky-to-surface atlas occurrence, not a
+                    // vertically repeated tile. Preserve its banked horizon
+                    // and continue the lower edge instead of wrapping to stars.
+                    const int offset=(current_scroll_y&8191)>4095
+                        ?(current_scroll_y&8191)-8192:(current_scroll_y&8191);
+                    source_y=std::clamp(sample_y+offset,0,int(surface_continuation_rows[1])-1);
+                }
                 if(expanded_mode2 && screen_y<144U && (logical_x<0 || logical_x>=256)
                     && sky_source_min<unsigned(height_pixels) && source_y<int(sky_source_min))
                     source_y=int(sky_source_min);

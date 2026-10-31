@@ -503,7 +503,8 @@ void GpuSceneRecording::replay(Framebuffer& frame,SurfaceBuffer* surfaces) const
                 s.extend_horizontal,s.horizontal_inset,s.transparent_cgram_black,s.mosaic_staging_inset,s.text_outline);
             else if(s.layer==2) BackgroundRenderer{}.draw_bg2(*bg->ppu,s.scroll_x,s.scroll_y,frame,s.priority,
                 s.horizontal_origin,s.extend_horizontal,s.wrap_horizontal,s.transparent_cgram_black,s.single_occurrence_top_rows,s.unique_regions,
-                s.ending_star_extension,s.game_over_star_extension,s.sky_source_min,s.continue_ground,s.extend_tunnel_diagonals);
+                s.ending_star_extension,s.game_over_star_extension,s.sky_source_min,s.continue_ground,s.extend_tunnel_diagonals,
+                s.surface_continuation_rows);
             else BackgroundRenderer{}.draw_bg3(*bg->ppu,frame,s.priority,s.horizontal_origin,s.extend_horizontal);
         } else if(const auto* layer=std::get_if<GpuIndexedLayerDraw>(&draw)) {
             Framebuffer source(layer->commands->width()/layer->source_scale,layer->commands->height()/layer->source_scale,layer->source_scale);

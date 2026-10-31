@@ -1,5 +1,6 @@
 #include "starfox/render/enhanced_terrain.hpp"
 #include "starfox/render/environment_effects.hpp"
+#include "starfox/render/scenery_flow.hpp"
 #include "starfox/render/software_renderer.hpp"
 #include "starfox/render/packed_faces.hpp"
 #include "starfox/render/packed_bsp.hpp"
@@ -13,6 +14,37 @@
 static void require(bool yes,const char* message){if(!yes) throw std::runtime_error(message);}
 int main() {
     using namespace starfox::render;
+    {
+        using starfox::simulation::GameFlowState;
+        for(const auto flow:{GameFlowState::gameplay,GameFlowState::training,
+                GameFlowState::intro,GameFlowState::stage_results})
+            require(world_scenery_flow(flow),"Fly-away scenery was reclassified as protected UI");
+        for(const auto flow:{GameFlowState::pregame_menu,GameFlowState::ex_pregame_menu,
+                GameFlowState::planet_select,GameFlowState::continue_choice,GameFlowState::credits})
+            require(!world_scenery_flow(flow),"Front-end art was reclassified as world scenery");
+        require(!late_cartridge_objects(true,false,0x13)
+            && late_cartridge_objects(false,false,0x13)
+            && !late_cartridge_objects(false,true,0x13)
+            && !late_cartridge_objects(false,false,3),
+            "Late cartridge OBJ pass can overwrite a restored stage tally or briefing");
+        require(gradient_space_background("BG_1_4") && gradient_space_background("BG_1_14")
+            && !gradient_space_background("BG_1_2") && !gradient_space_background("BG_3_6"),
+            "Meteor gradient continuation leaked into star-only or orbital maps");
+        require(original_orbital_surface_rows("BG_2_2")==std::array<unsigned,2>{416,480}
+            && original_orbital_surface_rows("BG_3_6")==std::array<unsigned,2>{376,496}
+            && original_orbital_surface_rows("BG_1_2")==std::array<unsigned,2>{},
+            "Orbital continuation lost source atlas boundaries or included a starfield");
+        const std::uint16_t purple=12U|(8U<<5U)|(24U<<10U);
+        require(automatic_ground_material(purple)==5,"Venom fixture did not exercise the liquid misclassification");
+        for(const auto name:{"BG_1_6A","BG_3_7A","BG_1_7B"}) {
+            for(unsigned r=0;r<32;++r) for(unsigned b=0;b<32;++b)
+                require(landscape_ground_material(name,false,std::uint16_t(r|(8U<<5U)|(b<<10U)))==2,
+                    "Original Venom's palette transition changed dry terrain into a liquid");
+            require(landscape_ground_material(name,true,purple)==5,"Original ground rule changed an EX atlas");
+        }
+        require(landscape_ground_material("BG_6_2",true,purple)==5,
+            "Dry Venom correction disabled real automatic water");
+    }
     check_packed_backdrop_extents([](const auto& frame,auto pixels,const auto& effects) {
         apply_environment(effects,frame,pixels);return pixels;
     });
@@ -583,9 +615,9 @@ int main() {
         && gameplay_landscape_horizon("BG_2_2",true)==408
         && gameplay_landscape_horizon("BG_2_5",true)==200
         && gameplay_landscape_horizon("BG_3_6",true)==200
-        && gameplay_landscape_horizon("BG_3_6",false)==200
-        && gameplay_landscape_horizon("BG_2_5",false)==200
-        && gameplay_landscape_horizon("BG_1_5",false)==200
+        && gameplay_landscape_horizon("BG_3_6",false)==376
+        && gameplay_landscape_horizon("BG_2_5",false)==376
+        && gameplay_landscape_horizon("BG_1_5",false)==376
         && !gameplay_landscape_horizon("BG_5_5",false),
         "Storm artwork overwrites the original ground bands");
     {

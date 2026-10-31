@@ -136,7 +136,7 @@ class LinuxUpdateTests(unittest.TestCase):
 
     def test_download_accepts_three_four_and_five_component_releases(self):
         payload = b"synthetic update download"
-        for version in ("0.0.8", "0.0.8.8", "0.0.8.8.1"):
+        for version in ("0.0.8", "0.0.8.8", "0.0.8.8.1", "0.0.8.8.2"):
             with self.subTest(version=version):
                 response = io.BytesIO(payload)
                 response.status = 200

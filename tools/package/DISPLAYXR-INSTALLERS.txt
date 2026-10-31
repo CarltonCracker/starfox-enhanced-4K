@@ -3,11 +3,15 @@ Optional DisplayXR route (Windows x64 only)
 You do NOT need these installers for OUTPUT: SR PLATFORM. That direct-SDK
 route uses your display's existing SR Platform runtime/service.
 
-These are untouched, signed upstream installers bundled for convenience:
-  DisplayXRSetup-2.21.11.exe - open-source DisplayXR runtime
-  DisplayXRLeiaSRSetup-2.7.6.exe - DisplayXR's Leia SR display plug-in
+No system installers are bundled in this game package. The previously bundled
+DisplayXRSetup-2.21.11.exe is detected by multiple antivirus vendors. Do not
+disable antivirus or add an exclusion to install it. Use the upstream project
+for current downloads and security/support information:
+  https://displayxr.org/download
+  https://github.com/DisplayXR/displayxr-runtime/releases
+  https://github.com/DisplayXR/displayxr-leia-plugin/releases
 
-The game and package verifier never execute them automatically. Installing
+The game and package verifier never download or execute them. Installing
 them is optional and requires administrator approval. The upstream installers
 can stop running DisplayXR clients, install/register software, and change
 system OpenXR runtime/service settings. Save work and close XR applications
@@ -16,7 +20,9 @@ first. Do not use them to replace a newer installation unnecessarily.
 If you specifically want DISPLAYXR LEIA:
 1. Install the SR Platform software supplied for your physical display.
    Its vendor service/drivers are NOT supplied in this game package.
-2. Run the runtime installer first, then the Leia SR plug-in installer.
+2. Follow the upstream installation instructions for a supported runtime and
+   Leia SR plug-in. If security software blocks a download, stop and report
+   that exact file/hash to the publisher and antivirus vendor.
 3. Restart the game and select DISPLAYXR LEIA in Stereoscopic 3D.
    Missing/incompatible hardware still cannot be enabled by an installer.
 
@@ -24,10 +30,10 @@ For the direct route instead, leave DISPLAYXR LEIA OFF and select
 OUTPUT: SR PLATFORM. An unavailable optional DisplayXR menu selection in
 new builds preserves the previous OUTPUT instead of disabling that route.
 
-Pinned versions, SHA-256 checksums and source revisions are in manifest.json.
-Upstream licenses/notices are under licenses/displayxr-runtime and
-licenses/displayxr-leia-plugin at the package root. The adapted interface
-header notices are separately in licenses/displayxr.
+Historical reference versions, SHA-256 checksums and source revisions are in
+manifest.json; this is not an instruction to install an old flagged version.
+The adapted interface header notices are in licenses/displayxr. The upstream
+installer packages carry their own licenses and notices.
 
 Sources:
 https://github.com/DisplayXR/displayxr-runtime/releases/tag/v2.21.11

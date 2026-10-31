@@ -1,7 +1,7 @@
 # The ordinary PC executable owns these optional integration components. No
 # runtime DLL or proprietary SR library is linked; normal launches do not invoke
-# them. Release packaging supplies upstream installers separately and never
-# runs them automatically (tools/package_displayxr.ps1).
+# them. Release packaging provides upstream download instructions, never
+# system installers (tools/package_displayxr.ps1).
 FetchContent_Declare(starfox_displayxr_headers
     URL https://codeload.github.com/KhronosGroup/OpenXR-SDK/tar.gz/f2448a8797c85814aa892efc1ab8707900fbcc78
     URL_HASH SHA256=1681e0f6c9633c73117c2fc376d1fe71cbd6fdd2aeb896ed5854ff022aa82eaa

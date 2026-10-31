@@ -31,6 +31,8 @@ def pe(machine=0x8664):
 @unittest.skipUnless(sys.platform == "win32", "Windows updater helper")
 class AppUpdateTests(unittest.TestCase):
     def setUp(self):
+        self.prior_no_ui = os.environ.get('STARFOX_UPDATE_TEST_NO_UI')
+        os.environ['STARFOX_UPDATE_TEST_NO_UI'] = '1'
         SCRATCH.mkdir(parents=True, exist_ok=True)
         self.temp = tempfile.TemporaryDirectory(prefix="app-update-", dir=SCRATCH)
         self.root = Path(self.temp.name)
@@ -46,6 +48,10 @@ class AppUpdateTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+        if self.prior_no_ui is None:
+            os.environ.pop('STARFOX_UPDATE_TEST_NO_UI', None)
+        else:
+            os.environ['STARFOX_UPDATE_TEST_NO_UI'] = self.prior_no_ui
 
     def package(self, entries=None):
         entries = entries or [("starfox_pc.exe", pe()), ("README.md", b"new notes"),
@@ -95,6 +101,16 @@ class AppUpdateTests(unittest.TestCase):
         self.package()
         self.run_prepare(False, "0" * 64, "checksum or file size mismatch")
         self.assertFalse((self.work / "stage").exists())
+
+    def test_new_package_without_builder_and_no_optional_installer(self):
+        self.package([('starfox_pc.exe', pe()),
+                      ('optional-runtimes/displayxr/README.txt', b'download instructions'),
+                      ('optional-runtimes/displayxr/manifest.json', b'{}'),
+                      ('optional-runtimes/displayxr/DisplayXRSetup-2.21.11.exe', b'inert fixture')])
+        self.run_prepare()
+        self.assertTrue((self.work / 'stage/optional-runtimes/displayxr/README.txt').is_file())
+        self.assertFalse((self.work / 'stage/starfox_asset_builder.exe').exists())
+        self.assertFalse((self.work / 'stage/optional-runtimes/displayxr/DisplayXRSetup-2.21.11.exe').exists())
 
     def test_wrong_architecture(self):
         self.package([("starfox_pc.exe", pe(0x14C))])

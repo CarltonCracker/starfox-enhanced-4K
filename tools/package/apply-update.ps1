@@ -38,7 +38,7 @@ function Package-File([string]$Name) {
     # Explicitly exclude settings, layouts, ROMs, BIN/PAK data, saves, logs,
     # vrpreferences.json and files from unrelated applications. Unknown files
     # are skipped; only these package-owned paths may be replaced.
-    return $Name -match '^(licenses/[^:]+|optional-runtimes/displayxr/[^:]+)$' -or
+    return $Name -match '^(licenses/[^:]+|optional-runtimes/displayxr/(README\.txt|manifest\.json))$' -or
         $Name -match '^(starfox_pc\.exe|starfox_asset_builder\.exe|starfox_leia_sr_check\.exe|starfox_leia_sr\.dll|SDL3\.dll|dxcompiler\.dll|dxil\.dll|openxr_loader\.dll|README\.md|CREDITS\.md|THIRD_PARTY_NOTICES\.md|LICENSE-XBRZ\.txt|LEIA-SR\.txt|Diagnose-Leia-SR\.cmd)$'
 }
 function Safe-Name([string]$Name) {
@@ -208,7 +208,11 @@ try {
         if (Test-Path -LiteralPath $destination) { Move-Item -LiteralPath $destination -Destination $old }
         Move-Item -LiteralPath (Child-Path $backup ('incoming/' + $file.name)) -Destination $destination
     }
-    Start-Process -FilePath $exe -WorkingDirectory $Target | Out-Null
+    if ($env:STARFOX_UPDATE_TEST_NO_UI -eq '1') {
+        Start-Process -FilePath $exe -WorkingDirectory $Target -WindowStyle Hidden | Out-Null
+    } else {
+        Start-Process -FilePath $exe -WorkingDirectory $Target | Out-Null
+    }
     # These absolute directories were created and validated above. No glob,
     # source checkout, application folder or user-data directory is removed.
     try {
@@ -238,7 +242,7 @@ try {
     if ($rollbackFailed) { $failure += " Rollback needs attention; keep the backup at $backup." }
     if ($rollbackOperations -gt 0) { $failure += " Rollback restored $rollbackOperations file operations." }
     try { $failure | Set-Content -LiteralPath (Child-Path $Work 'error.txt') -Encoding UTF8 } catch {}
-    if ($Mode -eq 'Apply') {
+    if ($Mode -eq 'Apply' -and $env:STARFOX_UPDATE_TEST_NO_UI -ne '1') {
         Add-Type -AssemblyName System.Windows.Forms
         [Windows.Forms.MessageBox]::Show("Update could not be installed: $failure`nDetails: $Work", 'Star Fox Enhanced update') | Out-Null
     }

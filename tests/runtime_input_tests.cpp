@@ -67,6 +67,24 @@ int main(int argc, char** argv) {
     check_atomic_files();
     check_android_renderer_window();
     {
+        using starfox::app::player_buttons;
+        using namespace starfox::input;
+        const std::array<ButtonMask, 5> pads{a, b, x, y, left_shoulder};
+        require(player_buttons(start, pads, 0, 0) == (start | a)
+                && player_buttons(start, pads, 0, 1) == b,
+            "Default keyboard/P1 gamepad sharing changed");
+        require(player_buttons(start, pads, 1, 0) == a
+                && player_buttons(start, pads, 1, 1) == start
+                && player_buttons(start, pads, 1, 2) == b
+                && player_buttons(start, pads, 1, 3) == x
+                && player_buttons(start, pads, 1, 4) == y,
+            "Keyboard P2 stole a gamepad or leaked into another player");
+        require(player_buttons(start, {}, 1, 0) == 0
+                && player_buttons(start, {}, 1, 1) == start
+                && player_buttons(0, pads, 0, 5) == 0,
+            "Disconnected or released devices retained player input");
+    }
+    {
         using starfox::app::display_guide_visible;
         using starfox::simulation::PregamePage;
         for (const auto page : {PregamePage::main, PregamePage::options,
@@ -803,6 +821,13 @@ int main(int argc, char** argv) {
                 && (bindings.sample_gamepad_only(player_gamepads[0])
                     & starfox::input::a) == 0U,
             "secondary gamepad sampling leaked across EX player slots");
+    bindings.set_keyboard_player(1);
+    require((bindings.sample_player(player_gamepads, 1) & starfox::input::a) == 0
+            && (bindings.sample_player(player_gamepads, 2) & starfox::input::a) != 0,
+        "Virtual second pad did not move past the reserved keyboard P2 slot");
+    bindings.set_keyboard_player(0);
+    require((bindings.sample_player(player_gamepads, 1) & starfox::input::a) != 0,
+        "Restoring keyboard P1 did not restore native gamepad slots");
     for (auto* opened : player_gamepads) SDL_CloseGamepad(opened);
 
 #if defined(STARFOX_UWP)
@@ -854,6 +879,7 @@ int main(int argc, char** argv) {
         "legacy SRAM fixture failed");
     starfox::app::InputBindings old_input;
     old_input.bind_reset_key(SDL_SCANCODE_T);
+    old_input.set_keyboard_player(1U);
     old_input.save(old_bindings / "input-bindings.cfg");
     starfox::app::set_portable_data_directory(portable);
     const auto original_cwd = std::filesystem::current_path();
@@ -872,6 +898,15 @@ int main(int argc, char** argv) {
     require(starfox::app::load_starfox_ex_save_ram(portable / "starfox-ex.srm", migrated_sram)
             && migrated_sram == old_sram, "migration changed SRAM bytes");
     starfox::app::InputBindings migrated_input;
+    migrated_input.load();
+    require(migrated_input.keyboard_player() == 1U
+            && migrated_input.binding_name(starfox::app::BindingDevice::keyboard,
+                starfox::app::InputBindings::keyboard_player_action) == "PLAYER 2",
+        "Keyboard player assignment was not saved/migrated");
+    migrated_input.set_keyboard_player(99U);
+    require(migrated_input.keyboard_player() == 1U, "Invalid keyboard player accepted");
+    migrated_input.reset(starfox::app::BindingDevice::keyboard);
+    require(migrated_input.keyboard_player() == 0U, "Keyboard defaults did not restore P1");
     migrated_input.load();
     require(migrated_input.binding_name(starfox::app::BindingDevice::keyboard,
                 starfox::app::InputBindings::reset_action) == "CTRL+SHIFT+T",

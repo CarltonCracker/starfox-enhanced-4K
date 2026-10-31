@@ -17,8 +17,8 @@ presentation, widescreen support, and optional visual enhancements using Codex A
 Codex and AI tools used for programming, testing, documentation and some visual
 assets.
 
-**[Download 0.0.8.8.1](https://github.com/kandowontu2/starfox-enhanced/releases/tag/v0.0.8.8.1)** ·
-[Changelog](https://github.com/kandowontu2/starfox-enhanced/blob/main/docs/RELEASE-0.0.8.8.1.md) ·
+**[Download 0.0.8.8.2](https://github.com/kandowontu2/starfox-enhanced/releases/tag/v0.0.8.8.2)** ·
+[Changelog](https://github.com/kandowontu2/starfox-enhanced/blob/main/docs/RELEASE-0.0.8.8.2.md) ·
 [Settings and controls](https://github.com/kandowontu2/starfox-enhanced/blob/main/docs/SETTINGS-AND-CONTROLS.md) ·
 [Build guide](https://github.com/kandowontu2/starfox-enhanced/blob/main/docs/BUILDING.md) ·
 [Report a bug](https://github.com/kandowontu2/starfox-enhanced/issues)
@@ -43,7 +43,8 @@ assets.
 
 For devices needing prepared assets, the release includes a standalone Windows
 [asset builder](https://github.com/kandowontu2/starfox-enhanced/blob/main/platform/mobile/ASSET_BUILDER.md). It accepts the same ROMs;
-mobile users can also select a ROM directly.
+mobile users can also select a ROM directly. The Windows builder is a separate
+download; the game can import your ROM without it.
 
 ### Supported ROMs
 
@@ -113,9 +114,15 @@ Model and world effects are independent; CEL-DRAWN is model-only and BLUEPRINT
 is world-only. Most visual enhancements are optional. Higher render scales and
 additional effects can increase CPU, GPU and memory use.
 
-Optional Original MSU-1 music requires `Starfox-MSU1.PAK` beside the desktop
+Optional Original MSU-1 music requires [Starfox-MSU1.PAK](https://github.com/kandowontu2/starfox-enhanced/releases/download/v0.0.8/Starfox-MSU1.PAK) beside the desktop
 executable (or in the platform's writable storage). It is not included in the
 standard packages. Without it, native SPC music remains available.
+
+Windows packages do not bundle optional DisplayXR system installers. Direct
+Leia **SR PLATFORM** support is unchanged; the separate DisplayXR route has
+upstream download instructions in `optional-runtimes/displayxr/README.txt`.
+If an antivirus blocks a file, do not disable it or add an exclusion. Report
+the exact file, detection name and SHA-256 hash for investigation.
 
 See [Settings and controls](https://github.com/kandowontu2/starfox-enhanced/blob/main/docs/SETTINGS-AND-CONTROLS.md) for detailed options,
 EX peripherals, multiplayer and presentation debugging.

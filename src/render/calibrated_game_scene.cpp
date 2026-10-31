@@ -215,8 +215,7 @@ struct CalibratedGameScene::State {
         std::array<std::uint32_t,256> classes{};
         const bool palette_fading_ground=ex && (name=="BG_5_1" || name=="BG_6_1" || name=="BG_7_1");
         for(unsigned ink=1;ink<256;++ink) if(ground_regions[ink]==1)
-            classes[ink]=palette_fading_ground?4:name=="BG_7_2"?3:name=="BG_2_3A"?titania_ground_material(ppu.cgram[ink])
-                :automatic_ground_material(ppu.cgram[ink]);
+            classes[ink]=palette_fading_ground?4:name=="BG_7_2"?3:landscape_ground_material(name,ex,ppu.cgram[ink]);
         // Retain automatic water as a real liquid receiver, not a basic floor.
         if(!material) {
             std::array<unsigned,6> population{};

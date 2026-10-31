@@ -25,6 +25,9 @@ param(
     [switch]$UnbatchedTerrain,
     [switch]$ArmadaApproach,
     [switch]$GodMode,
+    [ValidatePattern('^[A-Za-z0-9_]*$')][string]$ClearRoutine='',
+    [switch]$CaptureResults,
+    [ValidateRange(-1,8000)][int]$EndingTicks=-1,
     [switch]$AudioPreroll,
     [switch]$Msu1,
     [ValidateRange(1,30000)][int]$Frames=1,
@@ -122,6 +125,11 @@ try {
     }
     $env:STARFOX_TEST_SKIP_PREROLL='1'
     $env:STARFOX_TEST_UNPACED='1'
+    if($ClearRoutine) {$env:STARFOX_TEST_CLEAR=$ClearRoutine}
+    if($CaptureResults) {$env:STARFOX_CAPTURE_RESULTS='1'}
+    if($EndingTicks -ge 0) {
+        $env:STARFOX_TEST_ENDING='1';$env:STARFOX_TEST_ENDING_PREROLL=[string]$EndingTicks
+    }
     $env:STARFOX_TEST_EXPERIENCE=$Experience
     $env:STARFOX_TEST_RENDERER=$Renderer
     if($RenderThreads) {$env:STARFOX_RENDER_THREADS=[string]$RenderThreads}
