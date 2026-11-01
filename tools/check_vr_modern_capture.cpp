@@ -23,6 +23,8 @@
 // STARFOX_TEST_DEFEAT=SHAPE,STRATEGY,TICK (starfox_pc's): at that source tick
 // the first object of that shape dies through that strategy.
 // STARFOX_VR_OBJECTS=1 lists the last tick's objects and world packets.
+// STARFOX_VR_FIRST_PERSON=1 presses SELECT once the level starts (the
+// first-person view).
 // STARFOX_VR_HIDE=key,key,... (hex) leaves those world packets out (finding
 // which object draws what).
 // STARFOX_VR_TIME=N redraws the Vulkan eye N more times and reports the
@@ -203,6 +205,17 @@ int main(int argc,char** argv) try {
         game.map().start(symbols.find(label).at(0),game.player());
         game.map().advance_distance(1);
     }
+    if(std::getenv("STARFOX_VR_FIRST_PERSON")) {
+        for(unsigned tick=0;tick<40;++tick) {
+            input::TickInput press{};
+            if(tick==20) {press.held=press.pressed=input::select;}
+            else if(tick==21) press.released=input::select;
+            const auto advanced=game.tick(press);
+            audio::render_mixed_tick(spc,msu,advanced.audio_port_writes,game.map().take_msu_register_writes(),
+                game.music_volume(),game.sfx_volume(),mixed);
+            game.synchronize_apu_output_ports(spc.output_ports());
+        }
+    }
     vr::GameSceneHistory history(game,rom,symbols);
     vr::GameFrameDriver driver(game,[&](auto apu,auto writes) {
         audio::render_mixed_tick(spc,msu,apu,writes,game.music_volume(),game.sfx_volume(),mixed);
@@ -212,6 +225,7 @@ int main(int argc,char** argv) try {
     render::ScaledTextRenderer dialogue_layout(rom,symbols);
     // application.cpp's MODERN inputs (VR's own cockpit, no flat-screen
     // substitutes); the STARFOX_MODERN_* switches apply as they do there.
+    const auto trigonometry=simulation::TrigTables::load(rom,symbols);
     vr::FrameLayerInputs inputs;
     inputs.rom=&rom;inputs.symbols=&symbols;inputs.dialogue_layout=&dialogue_layout;
     inputs.language=game.language();inputs.srgb=srgb;
@@ -223,6 +237,7 @@ int main(int argc,char** argv) try {
         inputs.classic_ground_scroll=enabled("STARFOX_MODERN_CLASSIC_SCROLL");
         inputs.landscape_ground_dots=enabled("STARFOX_MODERN_GROUND_DOTS");
         inputs.vector_reticle=true;inputs.bg3_behind_bg2=true;
+        inputs.trigonometry=&trigonometry; // MHUD wing indicators, as application.cpp
     }
     // Replacement artwork (MODERN only), shared by both paths.
     const auto textures=(std::filesystem::absolute(argv[0]).parent_path()/"textures").string()+"/";
@@ -476,7 +491,7 @@ int main(int argc,char** argv) try {
                 }
                 if(last && std::getenv("STARFOX_VR_OBJECTS")) {
                     const auto& p=game.objects().at(game.player());
-                    std::cout<<"objects bg="<<current->background_id<<" flow="<<int(current->flow)<<" camera-player=("<<int(current->camera.x)-int(p.world_x)<<","<<int(current->camera.y)-int(p.world_y)<<","<<int(std::int16_t(std::uint16_t(current->camera.z-p.world_z)))<<") ground="<<int(current->shadow_height)-int(current->camera.y)<<'\n';
+                    std::cout<<"objects bg="<<current->background_id<<" flow="<<int(current->flow)<<" camera-player=("<<int(current->camera.x)-int(p.world_x)<<","<<int(current->camera.y)-int(p.world_y)<<","<<int(std::int16_t(std::uint16_t(current->camera.z-p.world_z)))<<") ground="<<int(current->shadow_height)-int(current->camera.y)<<" mhud="<<std::hex<<current->cockpit_hud_roll<<std::dec<<'\n';
                     for(const auto handle:game.objects().active_handles()) {
                         const auto& o=game.objects().at(handle);
                         std::cout<<"  handle="<<handle<<" shape="<<symbol_name(o.shape,true)<<" strat="<<symbol_name(o.strategy_address,false)
@@ -517,10 +532,14 @@ int main(int argc,char** argv) try {
                 const auto caster=[&](uint32_t key) {return emitters.caster(*current,key);};
                 const vr::RayEmitterKind emitter=[&](uint32_t key)->unsigned {return emitters.kind(*current,key);};
                 auto* command=SDL_AcquireGPUCommandBuffer(sdl);require(command!=nullptr,"Acquire SDL command buffer");
-                if(!flat.prepare(command,*previous,*current,alpha,world_packets,inputs)) {
+                // STARFOX_VR_FORCE_MHUD=1: MHUD's wing indicators on (HUDROT bit 15), to
+                // check both paths draw them without reaching first person.
+                auto shown=*current;
+                if(std::getenv("STARFOX_VR_FORCE_MHUD")) shown.cockpit_hud_roll|=0x8000U;
+                if(!flat.prepare(command,*previous,shown,alpha,world_packets,inputs)) {
                     SDL_CancelGPUCommandBuffer(command);throw std::runtime_error("SDL prepare: "+flat.status());
                 }
-                frame.prepare(*previous,*current,alpha,std::move(world_packets),inputs);
+                frame.prepare(*previous,shown,alpha,std::move(world_packets),inputs);
                 if(last && std::getenv("STARFOX_VR_OBJECTS")) {
                     // Each layer set's upload totals, as ScenePacketValidator counts them.
                     const auto totals=[&](const char* name,std::span<const vr::DrawPacket> packets) {

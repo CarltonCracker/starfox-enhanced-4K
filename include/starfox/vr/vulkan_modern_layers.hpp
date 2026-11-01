@@ -70,11 +70,11 @@ private:
     VkDevice device_{};PFN_vkGetDeviceProcAddr get_{};
     VkPhysicalDeviceMemoryProperties memory_{};VkRenderPass pass_{};
     VulkanPipelineCache* cache_{};
-    VulkanDrawPackets stars_,backgrounds_,textures_,tunnel_surround_,sprites_,reticle_,engine_glow_;
+    VulkanDrawPackets stars_,backgrounds_,textures_,tunnel_surround_,sprites_,reticle_,engine_glow_,cockpit_;
     VulkanLayerFilter layer_filter_;
     bool filter_enabled_{};
     Overlay circle_,colour_math_,shutter_;
-    bool textures_active_{},reticle_active_{},engine_glow_active_{};
+    bool textures_active_{},reticle_active_{},engine_glow_active_{},cockpit_active_{};
     uint32_t landscape_heading_{},texture_mapping_{};
     std::string status_{"MODERN layers not initialized"};
 };

@@ -105,9 +105,9 @@ struct ModernRuntime::State {
         vr::set_inset_decals(true);
         vr::set_solid_decals(true);
         if(preview) {
-            // The PCVR app's inputs (application.cpp): VR's own cockpit, no
-            // flat-screen layer substitutes, no widescreen HUD shift.
-            inputs.trigonometry=nullptr;inputs.flat_landscape=inputs.space_roll_geometry=false;
+            // The PCVR app's inputs (application.cpp): no flat-screen layer
+            // substitutes, no widescreen HUD shift (MHUD's wing indicators stay).
+            inputs.flat_landscape=inputs.space_roll_geometry=false;
             inputs.flat_space_horizon=inputs.flat_tunnel_extension=false;
             inputs.comms_offset={};inputs.pause_text=false;
         }

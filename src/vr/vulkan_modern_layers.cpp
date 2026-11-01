@@ -11,7 +11,7 @@ constexpr Matrix4 identity{1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
 void VulkanModernLayers::initialize(VkDevice device,PFN_vkGetDeviceProcAddr get,
     const VkPhysicalDeviceMemoryProperties& memory,VkRenderPass pass,VulkanPipelineCache* cache,bool srgb) {
     device_=device;get_=get;memory_=memory;pass_=pass;cache_=cache;
-    for(auto* layer:{&stars_,&backgrounds_,&textures_,&tunnel_surround_,&sprites_,&reticle_,&engine_glow_}) layer->set_pipeline_cache(cache);
+    for(auto* layer:{&stars_,&backgrounds_,&textures_,&tunnel_surround_,&sprites_,&reticle_,&engine_glow_,&cockpit_}) layer->set_pipeline_cache(cache);
     static const bool xbrz=[] {
         const char* value=std::getenv("STARFOX_MODERN_XBRZ");return !(value && std::string_view(value)=="0");
     }();
@@ -85,6 +85,9 @@ bool VulkanModernLayers::upload(const ModernFrame& plan) {
             reticle_.set_blend(plan.reticle->blend);
             layer(reticle_,std::span(&plan.reticle->packet,1));
         }
+        // First person: MHUD's wing indicators (ModernFrame::cockpit).
+        cockpit_active_=plan.cockpit.has_value();
+        if(cockpit_active_) layer(cockpit_,std::span(&*plan.cockpit,1));
         engine_glow_active_=plan.engine_glow.has_value();
         if(engine_glow_active_) {
             engine_glow_.set_blend(plan.engine_glow->blend);
@@ -140,6 +143,8 @@ bool VulkanModernLayers::record_after_world(VkCommandBuffer command,VkExtent2D e
     return !engine_glow_active_ || engine_glow_.record(command,extent,fogged(camera,0));
 }
 bool VulkanModernLayers::record_below_hud(VkCommandBuffer command,VkExtent2D extent,const EyeCamera& camera) const {
+    // MHUD above the world, below the circle and the HUD (as SdlFrameRenderer).
+    if(cockpit_active_ && !cockpit_.record(command,extent,camera)) return false;
     if(circle_.active && !circle_.over_hud && !record_overlay(command,extent,camera,circle_,false)) return false;
     return !(colour_math_.active && !colour_math_.over_hud && !record_overlay(command,extent,camera,colour_math_,true));
 }

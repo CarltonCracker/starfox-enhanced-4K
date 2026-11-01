@@ -521,6 +521,8 @@ int starfox::vr::run_application(int argc,char** argv,const ApplicationHost& hos
     starfox::vr::VulkanRayShadows ray_shadows;
     bool ray_shadows_ready=false,rt_hide_shadows=false;
     std::unique_ptr<starfox::vr::RayEmitters> rt_emitters;
+    std::unique_ptr<starfox::simulation::TrigTables> modern_trig;
+    const starfox::assets::SymbolMap* modern_trig_symbols{};
     const starfox::assets::SymbolMap* rt_emitter_symbols{};
     starfox::vr::VulkanPipelineCache shader_cache;
     starfox::vr::VulkanDrawPackets scene;
@@ -956,6 +958,14 @@ int starfox::vr::run_application(int argc,char** argv,const ApplicationHost& hos
                         inputs.classic_ground_scroll=enabled("STARFOX_MODERN_CLASSIC_SCROLL");
                         inputs.landscape_ground_dots=enabled("STARFOX_MODERN_GROUND_DOTS");
                         inputs.vector_reticle=true;inputs.bg3_behind_bg2=true;
+                        // First person: MHUD's green wing indicators (the
+                        // cartridge's trig tables, per game).
+                        if(modern_trig_symbols!=&live->symbols) {
+                            modern_trig=std::make_unique<starfox::simulation::TrigTables>(
+                                starfox::simulation::TrigTables::load(live->rom,live->symbols));
+                            modern_trig_symbols=&live->symbols;
+                        }
+                        inputs.trigonometry=modern_trig.get();
                         // The engine glow on the ground: the DYNAMIC LIGHTING row, or
                         // STARFOX_MODERN_RT_LIGHTS=1 as for MODERN's coloured lights;
                         // straight below the engine.
